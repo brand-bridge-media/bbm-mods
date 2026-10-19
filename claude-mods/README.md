@@ -212,14 +212,28 @@ every BBM session should run whatever its repo (jira-closer), install it at user
 environment's **setup script**, the path measured to load above:
 
 ```
-claude plugin marketplace add mykhaylenkostan/bbm-infrastructure && claude plugin install jira-closer@bbm-mods --scope user || echo "WARN jira-closer install FAILED: sessions run without it" >&2
-claude plugin install fleet-tracker@bbm-mods --scope user || echo "WARN fleet-tracker install FAILED: orchestrators run without stall detection" >&2
+{
+  claude plugin marketplace add mykhaylenkostan/bbm-mods; echo "rc_marketplace_add=$?"
+  claude plugin install jira-closer@bbm-mods --scope user; echo "rc_jira_closer=$?"
+  claude plugin install fleet-tracker@bbm-mods --scope user; echo "rc_fleet_tracker=$?"
+  claude plugin list
+} >> "$HOME/.bbm-mods-setup.log" 2>&1 || true
 ```
+
+**Install from the public mirror, never from this repo (LC-1729, measured 2026-10-19).** The
+setup script runs before the session has GitHub credentials, so cloning this private repo fails
+(`could not read Username for 'https://github.com'`), with or without the repo attached to the
+session. `mykhaylenkostan/bbm-mods` is a public snapshot of `.claude-plugin/` + `claude-mods/`
+that `.github/workflows/mirror-claude-mods.yml` overwrites on every merge touching a mod (tracked
+files only, no history, secret-scanned by `.github/scripts/build_bbm_mods_mirror.sh`, fails closed).
+Edit mods HERE; edits in the mirror are lost on the next sync. A PR on the mirror from anyone but
+the owner is closed automatically and @mentions Stan (`.github/mirror/bbm-mods/`). The log file is
+how a session checks the install ran: `cat ~/.bbm-mods-setup.log`.
 
 fleet-tracker belongs on that list (LC-1834): orchestrators run from other repos too, and a
 child session the mod is not loaded in is never watched. The setup script is per cloud
 environment, so every repo that environment serves gets the mods; a second environment
-needs the same lines. Installed mods track `main` of this repo as of the container's start.
+needs the same lines. Installed mods track the mirror's `main` (this repo's `main` as of the last sync) at container start.
 
 With both present nothing loads twice (the plugin-dir copy overrides the installed one).
 
