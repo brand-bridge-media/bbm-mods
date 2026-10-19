@@ -192,3 +192,39 @@ export const LIVE_BUCKETS = new Set(['WORKING', 'NEEDS_INPUT'])
 // and archiving a session that still holds unpushed work destroys it.
 export const CLOSABLE_BUCKETS = new Set(['COMPLETED', 'REVIEW_READY'])
 
+
+// LC-1843: a child spawned in default permission mode that calls a claude-code-remote
+// tool (report back with send_message, arm a check-in with send_later) opens a permission
+// prompt nobody is watching, and sits in NEEDS_INPUT until the orchestrator notices. Two
+// children stalled this way in one hour on 2026-10-19. Every create_session therefore
+// pre-approves the tools a child legitimately uses to talk to its parent. The platform drops
+// any entry the parent itself has not pre-approved, so this can never widen a grant.
+export const CHILD_REMOTE_TOOLS = [
+  'mcp__claude-code-remote__send_message',
+  'mcp__claude-code-remote__send_later',
+]
+
+// The pre-approval alone is not enough: probes on 2026-10-19 showed the child still prompted
+// (session_01Qdxi4smDu2NopVYu5iXfDE: the parent lacks the grant, so the platform drops it;
+// session_01TLmP2Mv2ig879JrahPF1nB: a user-settings allow written mid-session did not apply).
+// The child never NEEDS these tools: fleet-tracker already wakes the parent on every state
+// change and the parent reads the child's transcript. So every child is also told, in its
+// system prompt, not to call them and to end each turn with its result instead.
+export const CHILD_NOTE =
+  'Orchestrator note (fleet-tracker, LC-1843): your parent session watches your transcript and is woken ' +
+  'when your state changes. Do NOT call claude-code-remote tools (send_message, send_later, create_session, ' +
+  'create_trigger): in this session they open a permission prompt nobody is watching and you stall. End each ' +
+  'turn with your result in your final message (PR URL, head SHA, CI state, anything unverified).'
+
+// Returns the create_session input with CHILD_REMOTE_TOOLS merged into extra_allowed_tools
+// (caller's entries first, no duplicates) and CHILD_NOTE appended to append_system_prompt
+// (after the caller's text, once).
+export function withChildTools<T extends { extra_allowed_tools?: unknown; append_system_prompt?: unknown }>(input: T): T {
+  const given = Array.isArray(input.extra_allowed_tools)
+    ? input.extra_allowed_tools.filter((t): t is string => typeof t === 'string')
+    : []
+  const merged = [...given, ...CHILD_REMOTE_TOOLS.filter(t => !given.includes(t))]
+  const prior = typeof input.append_system_prompt === 'string' ? input.append_system_prompt : ''
+  const note = prior.includes(CHILD_NOTE) ? prior : [prior, CHILD_NOTE].filter(Boolean).join('\n\n')
+  return { ...input, extra_allowed_tools: merged, append_system_prompt: note }
+}

@@ -4,7 +4,7 @@ import type { Register } from 'claude-code'
 import type { FleetRow } from '../types'
 import {
   childIdOf, CLOSABLE_BUCKETS, closeoutLine, decideCloseout, decideStall, decideWake, ESCALATE_MS, newestActivity, NEEDS_STAN,
-  NUDGE_TEXT, STALL_MS, ticketOf,
+  NUDGE_TEXT, STALL_MS, ticketOf, withChildTools,
 } from './logic'
 
 // Fleet tracker: one line per cloud session the orchestrator spins up.
@@ -381,7 +381,8 @@ export const register: Register = on => {
   // Auto-track (LC-1834): every session this orchestrator creates lands on the
   // dashboard without a step to forget. An explicit `track` later relabels it.
   on('tool.call', { tool: 'mcp__claude-code-remote__create_session' }, async ($, e: any, next) => {
-    const res: any = await next(e)
+    // LC-1843: the child may report back without stalling on an unwatched permission prompt.
+    const res: any = await next(withChildTools(e))
     try {
       if (res.isError || res.deny) return res
       const id = childIdOf(String(res.text ?? JSON.stringify(res.result ?? '')), await ownId($))
