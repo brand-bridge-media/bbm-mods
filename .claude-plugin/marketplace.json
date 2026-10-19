@@ -1,0 +1,44 @@
+{
+  "name": "bbm-mods",
+  "owner": {
+    "name": "Brand Bridge Media"
+  },
+  "plugins": [
+    {
+      "name": "fleet-tracker",
+      "source": "./claude-mods/fleet-tracker",
+      "description": "Live dashboard of cloud sessions an orchestrator spins up, with wake-ups on blocked/failed/review/done."
+    },
+    {
+      "name": "draft-session",
+      "source": "./claude-mods/draft-session",
+      "description": "v2_s6 Draft session guard: contract injected from the refresh-agent file, draft-lint on /draft-done, Draft receipt blocked until lint passes."
+    },
+    {
+      "name": "run-state",
+      "source": "./claude-mods/run-state",
+      "description": "Band with the refresh run's stage, next READY section, Pass A age and missing receipts, plus a guard that refuses receipt writes for sections the conductor has not marked READY (asks when the plan is unreadable)."
+    },
+    {
+      "name": "session-close",
+      "source": "./claude-mods/session-close",
+      "description": "Lists the close-out obligations a session left unmet (INGEST, Jira comment, run state, scheduled checkpoints, Pass verdicts) on /close-out or a wrap-up turn."
+    },
+    {
+      "name": "refresh-run-guard",
+      "source": "./claude-mods/refresh-run-guard",
+      "description": "Guards the refresh run: denies hand-written receipts and Bash publish paths, tracks Pass A freshness, checks Webflow item payloads."
+    },
+    {
+      "name": "jira-closer",
+      "source": "./claude-mods/jira-closer",
+      "description": "When a session merges a PR or arms auto-merge, makes it update the PR's Jira ticket (Done, or a state comment); blocks the turn's end once while a ticket is untouched."
+    },
+    {
+      "name": "pillar-brief-guard",
+      "source": "./claude-mods/pillar-brief-guard",
+      "description": "Enforces the pillar-brief rules in any session: article ideas name a parent article, product selection and new article files need an approved (<= 365 days) brief, approvals name an approver."
+    }
+  ],
+  "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."
+}

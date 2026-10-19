@@ -1,0 +1,9 @@
+{
+  "name": "jira-closer",
+  "version": "0.1.0",
+  "description": "When a session merges a PR (or arms auto-merge), makes it update the PR's Jira ticket: Done, or a state comment. Blocks the turn's end once while a ticket is untouched.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

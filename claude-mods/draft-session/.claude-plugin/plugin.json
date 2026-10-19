@@ -1,0 +1,40 @@
+{
+  "name": "draft-session",
+  "version": "0.1.0",
+  "description": "v2_s6 Draft session guard: injects the Draft contract from the refresh-agent checkout, runs draft-lint on /draft-done, and blocks the Draft receipt until lint passes.",
+  "author": {
+    "name": "Brand Bridge Media"
+  },
+  "userConfig": {
+    "runId": {
+      "type": "string",
+      "title": "Refresh run id",
+      "description": "refresh_runs.id this session drafts for. Leave empty and use /draft-start <run_id> <article_id> instead.",
+      "default": ""
+    },
+    "articleId": {
+      "type": "string",
+      "title": "Article id",
+      "description": "articles.id of the run's article (== refresh_runs.article_id).",
+      "default": ""
+    },
+    "slug": {
+      "type": "string",
+      "title": "Article slug (optional)",
+      "description": "Lets the guard also pin file edits and --slug writes to this article.",
+      "default": ""
+    },
+    "templateVariant": {
+      "type": "string",
+      "title": "Run template (v1 | v2 | standard)",
+      "description": "refresh_runs.page_variables.template_variant. Empty or unknown is treated as v2 (the strict side): the receipt stays locked unless the V2 method rules ran.",
+      "default": ""
+    },
+    "contractPath": {
+      "type": "string",
+      "title": "Path to stages/v2_s6_draft.md",
+      "description": "Checkout of bbm-refresh-agent. Empty = try /home/user/bbm-refresh-agent and ../bbm-refresh-agent.",
+      "default": ""
+    }
+  }
+}

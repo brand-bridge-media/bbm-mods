@@ -1,0 +1,43 @@
+# Close any PR not opened by the owner and notify the owner (LC-1729).
+#
+# WHY. Every BBM cloud session installs the mods from this repo, so whatever lands
+# on main runs inside every session. Only the bbm-infrastructure sync (a deploy key,
+# pushing directly) should ever write here. A PR from anyone else is closed at once,
+# so it can never be merged by mistake, and the @mention sends Stan a GitHub
+# notification (email + mobile).
+#
+# SAFE WITH pull_request_target: nothing from the PR is checked out or executed;
+# the PR author's login is passed as data to the API, never into a shell.
+#
+# Source of truth: .github/mirror/bbm-mods/ in bbm-infrastructure. Edits here are
+# overwritten by the next sync.
+name: Outside PR alert
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  alert:
+    if: github.event.pull_request.user.login != 'mykhaylenkostan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: pr.number,
+              body: [
+                `@mykhaylenkostan an outside pull request was opened here by @${pr.user.login} and has been closed automatically.`,
+                '',
+                `This repo is a read-only mirror of bbm-infrastructure/claude-mods; every session installs from it, so nothing is merged here. Review the diff before reopening anything.`,
+              ].join('\n'),
+            });
+            await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: 'closed' });

@@ -1,0 +1,9 @@
+{
+  "name": "fleet-tracker",
+  "version": "0.1.0",
+  "description": "Live dashboard of the cloud sessions this orchestrator spins up, with a wake-up when one needs attention.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

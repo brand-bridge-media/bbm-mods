@@ -1,0 +1,28 @@
+{
+  "name": "pillar-brief-guard",
+  "version": "0.1.0",
+  "description": "Enforces the pillar-brief rules in any session: no article idea without a parent article, no product selection or article writing without an approved (<= 365 days) pillar brief, no brief approval without a named approver.",
+  "author": {
+    "name": "Brand Bridge Media"
+  },
+  "userConfig": {
+    "supabaseServer": {
+      "type": "string",
+      "title": "Supabase MCP server name",
+      "description": "Server name as /mcp lists it, used for read-only execute_sql on pillar_briefs and refresh_runs.",
+      "default": "Supabase"
+    },
+    "projectId": {
+      "type": "string",
+      "title": "Supabase project id",
+      "description": "project_id passed to execute_sql (livingcozy-hub).",
+      "default": "tlcbwwgfqnasmiipgmmd"
+    },
+    "approvers": {
+      "type": "string",
+      "title": "Approved human approvers",
+      "description": "Comma-separated names allowed to approve a pillar brief (pillar_brief.py approve --by, run-pillar-brief.yml approved_by). Case-insensitive.",
+      "default": "Stan"
+    }
+  }
+}

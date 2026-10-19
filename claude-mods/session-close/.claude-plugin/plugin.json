@@ -1,0 +1,9 @@
+{
+  "name": "session-close",
+  "version": "0.1.0",
+  "description": "Watches what a session touched and, on /close-out or a wrap-up turn, lists the close-out obligations still unmet. A nudge, never a block, $0.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

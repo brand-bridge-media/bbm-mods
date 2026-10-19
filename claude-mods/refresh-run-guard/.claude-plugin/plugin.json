@@ -1,0 +1,1 @@
+{ "name": "refresh-run-guard", "version": "0.1.0", "description": "Guards the refresh run: no hand-written receipts, no Bash publish path, Pass A freshness tracking, Webflow payload checks.", "types": "./types/index.d.ts" }

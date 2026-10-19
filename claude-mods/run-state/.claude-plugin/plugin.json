@@ -1,0 +1,29 @@
+{
+  "name": "run-state",
+  "version": "0.1.0",
+  "description": "Band above the prompt with the refresh run's stage, next READY section, Pass A age and missing receipts; plus a guard that refuses receipt writes for sections the conductor has not marked READY.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  },
+  "userConfig": {
+    "supabaseServer": {
+      "type": "string",
+      "title": "Supabase MCP server name",
+      "description": "Server name as /mcp lists it, used for read-only execute_sql on refresh_runs.",
+      "default": "Supabase"
+    },
+    "projectId": {
+      "type": "string",
+      "title": "Supabase project id",
+      "description": "project_id passed to execute_sql (livingcozy-hub).",
+      "default": "tlcbwwgfqnasmiipgmmd"
+    },
+    "conductorPath": {
+      "type": "string",
+      "title": "refresh_conductor.py path",
+      "description": "Relative to the session's working directory (the bbm-infrastructure checkout).",
+      "default": "webflow/bulk-operations/refresh-conductor/refresh_conductor.py"
+    }
+  }
+}
