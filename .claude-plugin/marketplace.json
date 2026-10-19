@@ -5,6 +5,11 @@
   },
   "plugins": [
     {
+      "name": "ci-preflight",
+      "source": "./claude-mods/ci-preflight",
+      "description": "Runs the fast CI checks (schema-drift, portal selftests, migration lints, workflow pins) before a git push leaves the session; refuses update-branch while checks fail or run; warns on repeat pushes within 10 minutes."
+    },
+    {
       "name": "fleet-tracker",
       "source": "./claude-mods/fleet-tracker",
       "description": "Live dashboard of cloud sessions an orchestrator spins up, with wake-ups on blocked/failed/review/done."

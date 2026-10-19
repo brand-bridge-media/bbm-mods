@@ -1,0 +1,8 @@
+{
+  "name": "ci-preflight",
+  "version": "0.1.0",
+  "description": "Runs the fast CI checks (scripts/ci/preflight.sh) before a git push leaves the session; guards update-branch against failing or still-running checks; nudges when pushes to one branch come within 10 minutes.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
