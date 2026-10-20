@@ -34,7 +34,7 @@ file under `claude-mods/` is not found).
 | --- | --- | --- |
 | `fleet-tracker` | Dashboard line per cloud session an orchestrator spawns (polls `get_session` every 90 s, wakes the orchestrator on blocked/failed/review_ready/completed, `/fleet` pane). **Auto-tracks** every `create_session` (ticket from the title/brief; `track` relabels). **Stall detection:** a WORKING session with no transcript event for 15 min gets one automatic nudge (`send_message`, priority `next`, no orchestrator tokens); still silent 10 min later, the orchestrator is woken with `STALLED` and Stan gets a toast. Transcript reads happen only when the turn-level `updated_at` is already 15 min old. A wake the host refuses (poll run inside a tool call) is queued and delivered at turn end. **Close-out (LC-1835):** `untrack` now ARCHIVES the child, but only when a fresh, error-free poll shows it COMPLETED or REVIEW_READY (anything else is refused: it may hold unpushed work); an archive error keeps the row with the error, unless the session's own status reads ARCHIVED; `keep_reason` skips the archive and records why), and a row idle in COMPLETED/REVIEW_READY for 60 min gets ONE reminder wake per bucket episode. `open_children` feeds a session-close obligation. Tools: `mcp__fleet-tracker__{track,note,untrack,status,open_children}`. | LC-1711, LC-1834, LC-1835 |
 | `ci-preflight` | Before a `git push` leaves the session, runs `scripts/ci/preflight.sh` (schema-drift replica, portal selftests, migration lints, workflow pins) and DENIES the push on a failure; refuses `update_pull_request_branch` while a check is failing or unfinished; warns on a second push to a branch within 10 minutes. See below. | LC-1846 |
-| `draft-session` | v2_s6 Draft guard: contract injected from the refresh-agent file, `/draft-done` runs draft-lint, the Draft receipt is blocked until lint passes. See below. | LC-1714 |
+| `draft-session` | v2_s6 Draft guard: contract injected from the refresh-agent file, `/draft-done` runs draft-lint, the Draft receipt is blocked until lint passes. Cloud sessions: `draft_pin` tool, and with no service role the lint is dispatched to CI (`stage-6-draft` gate). See below. | LC-1714, LC-1869 |
 | `refresh-run-guard` | Fail-closed guards for the refresh run: denies `execute_sql` writes to receipt tables, Bash/Webflow publish paths and bad Webflow item payloads (non-go.livingcozy.com `product-link`, Products `main-image`, dropped `lc-deal-pill` spans); tracks Pass A freshness in the status line. | LC-1712 |
 | `run-state` | Band above the prompt (run, stage, next READY section, Pass A age, missing receipts) and a write guard: a receipt write (`write_stage_receipt.py`, `article_audit.py --write-receipt`, or SQL on `refresh_runs.stages` / `refresh_run_sections`) for a BLOCKED section is **denied**; a human barrier (WAITING_STAN), a DONE/IN_PROGRESS/unknown section, an unreadable plan, or several active runs with no pin **asks** (and refuses when nobody answers). READY and FAILED (conductor re-run) pass. A write is judged against the run it names (`--run-id`/`--slug`, or the id in the SQL), else the pinned/only active run; with no active run the guard is inert for writes that name no run (a named run is still judged against its own plan). Supabase MCP server defaults to `Supabase` (userConfig `supabaseServer`). Plan = the conductor's own `evaluate()` on a `refresh_runs` row, read via the Supabase MCP, else (cloud build sessions have no MCP) PostgREST with `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`; if neither works it asks, naming every path tried, and refuses when unanswered. An empty active-run list over PostgREST is not trusted as "no active run" (a key that cannot see the table also reads `[]`): it counts as a failed path and asks. Exemptions (see "Receipt guard: plain commands" below) apply only to a plain command. `/run-state <slug\|run_id\|clear>` pins the run. Scope: gates Bash receipt writers and SQL tools only; Edit/Write and other MCP tools are intentionally not gated. Needs the repo checkout as cwd + `python3` with pydantic. | LC-1715 |
 | `session-close` | Also lists the `[mod:<name>]` actions it saw (see Callout convention). Learns what a session touched from observed tool calls; `/close-out` (and a wrap-up turn) lists unmet obligations: open fleet children (from fleet-tracker's `open_children`, LC-1835; "not checked" when it is not loaded), knowledge INGEST, Jira comment per served ticket, `refresh_runs` left in_progress, +2/+4wk cannibalization and 30/60/90 GSC scheduled after a publish, Pass A/B verdicts. Nudge only, $0. | LC-1713 |
@@ -134,11 +134,12 @@ an unstated or unknown template is treated as v2, so the receipt stays locked un
   `/home/user/bbm-refresh-agent/stages/v2_s6_draft.md`) on every prompt compose. Unreadable = a loud
   "do not draft" section, and `/draft-done` refuses.
 - **`/draft-done [plan.json]`:** runs `draft_lint.py` from `$BBM_INFRA_PATH` (else the session root; never the
-  cwd) with `--run-id` and `--output`, then reads the lint's own receipt. Exit 0 AND a receipt that says the
+  cwd) with `--run-id`, `--pre-receipt` (LC-1869: skips ONLY the "v2_s6 status is not done" finding, since that status is the outcome this lint decides; recorded as `counts.checks_scoped`, and the mod refuses a receipt whose `checks_scoped` is anything but exactly `["draft_receipt_complete.status"]`) and `--output`, then reads the lint's own receipt. Exit 0 AND a receipt that says the
   locked-heading rule ran (and, for a V2 plan, the approved-method rules) unlocks the Draft receipt. A PASS that
   skipped a check prints "PARTIAL LINT, receipt stays locked". A plan for another article never unlocks.
   Because `--run-id` is passed, the lint needs Supabase creds; a cloud session without them gets exit 2 and
-  stays locked (by design: no creds, no proof).
+  stays locked (by design: no creds, no proof). **Since LC-1869 such a session is not run locally at all:** with no
+  `SUPABASE_SERVICE_ROLE_KEY`, `/draft-done` runs nothing and prints the CI dispatch (below).
 - **Receipt gate:** blocks `write_stage_receipt.py` for stage 6 (missing or garbled `--stage` counts), and any
   write to `refresh_run_sections` / `refresh_runs` that mentions `status` unless it only carries not-passing
   words. Default-deny, so a findings write that also says "done" is gated too.
@@ -149,7 +150,62 @@ an unstated or unknown template is treated as v2, so the receipt stays locked un
   `articles/`) must match the slug exactly, and with no slug every article file is refused.
 - **A gate that throws before reaching the tool denies** (after the tool ran, the catch handler reports the real outcome).
 
-Not covered: Webflow MCP CMS writes; shell writes built from variables/globs/`python -c` (the Bash file check is
+#### Cloud drafting path (LC-1869)
+
+A session an orchestrator spawns cannot type `/draft-start` and never holds the service role. Two additions, neither of which
+lets a session produce a passing stage-6 receipt:
+
+- **`draft_pin {run_id, article_id, slug?}`** (tool `mcp__draft-session__draft_pin`): validates uuid shapes and sets the same
+  state `/draft-start` sets. A pin only ADDS restrictions (an unpinned session is not gated), so setting one is safe. The same
+  run again is a no-op (it does not re-lock a lint pass); a different run, or the same run with a different article/slug, is
+  **refused**; a slug may be added to a pin that has none. There is no unpin and no template argument (the template is only
+  ever read from userConfig, so a model cannot ask for the looser v1 reading). Optional: set `BBM_DRAFT_RUN_ID` and
+  `BBM_DRAFT_ARTICLE_ID` in the session environment and the pin is taken at session start (both must be uuids, else nothing is
+  pinned and a toast says so). While pinned, a `run-refresh-stage-gate.yml` dispatch must name the pinned `run_id`.
+- **No service role = CI lint.** `/draft-done`, and the tool **`draft_lint_request`**, do not run the lint when
+  `SUPABASE_SERVICE_ROLE_KEY` is absent. They return the exact dispatch (`mcp__github__actions_run_trigger`,
+  `run_workflow`, `run-refresh-stage-gate.yml`, `inputs {run_id, gate: stage-6-draft, dry_run: "false"}`) and change nothing:
+  the receipt stays blocked, and `draft_lint_request` re-locks any earlier pass. The `stage-6-draft` gate
+  (`webflow/bulk-operations/refresh-stage-gate/gate_runner.py`) runs `draft_lint.py --article-id --run-id` with credentials and
+  writes the stage-6 receipt from the real result.
+
+Hardening (LC-1869 security review):
+
+- **Orchestrated sessions MUST set `BBM_DRAFT_RUN_ID` and `BBM_DRAFT_ARTICLE_ID`.** A tool pin lives in memory and is lost when the
+  mod reloads; the env pin is not. While the env var is set, `draft_pin` refuses any other run/article even with no in-memory pin.
+- **Once pinned, every `actions_run_trigger` call is held to one shape:** method `run_workflow`, owner/repo exactly
+  `mykhaylenkostan/bbm-infrastructure`, `ref` exactly `main`, `workflow_id` exactly `run-refresh-stage-gate.yml` (a numeric id or any
+  other workflow is denied), `inputs.gate` exactly `stage-6-draft`, `inputs.run_id` the pinned run. The ref rule matters: the workflow
+  runs with the service role, so a branch's edited `draft_lint.py` / `gate_runner.py` would run with it. Other methods (rerun, cancel)
+  are denied too.
+- **Shell routes are denied too.** While pinned, Bash is refused for `gh workflow ...`, `gh run ...`, `gh api ...` (leading flags,
+  quoting and extra whitespace tolerated, case-insensitive; `GH_TOKEN=x gh ...` and `bash -c "gh ..."` wrappers included) and for any
+  `curl` / `wget` / `http` call to `api.github.com` whose path reaches `dispatches`, `actions/workflows` or `actions/runs`. Not seen: a
+  script or another HTTP client that builds the request elsewhere.
+- **The dispatch and shell guards fall back to the env pin** when the in-memory pin is null, so a mod reload does not lift them
+  (both env vars must be uuids).
+- **These mod guards are defence in depth.** A mod only governs the session it is loaded in. The structural control is LC-1874 (the
+  service-role key held in a GitHub Environment restricted to `main`), which makes a branch's copy of the lint unable to read the key
+  whatever a session does.
+- A findings-race loss (the `v2_s6` findings kept changing while CI built the merge) exits 1 and writes nothing; the recovery is to
+  re-dispatch once the session has stopped writing.
+- The local lint receipt is written under a directory `mktemp -d` creates for that call (no predictable `/tmp` name); no directory = no
+  lint. In CI, `gate_runner` deletes the previous lint receipt file before running the lint.
+- `gate_runner` re-reads the `v2_s6` findings right before writing and rebuilds if they changed (the writer replaces the whole column);
+  if they never settle it writes nothing and fails.
+- **`findings.draft_lint_ci` is advisory evidence only.** The session can write that key (it can write any `v2_s6` finding), so it must
+  NEVER be used as a gate input. The authoritative record is the stage-6 entry in `refresh_runs.stages` that CI writes. `lint_sha` is a
+  hash of the lint RESULT (used only to recognise a repeat), not a signature; gate 6.5 re-lints from scratch and does not read it.
+
+Who writes what: the **session** posts its findings to `refresh_run_sections` (`v2_s6`: `article_content`, `product_copy`, ...)
+through the Supabase MCP, BEFORE dispatching (the lint reads them). **CI** writes the stage-6 `refresh_runs.stages` entry and
+the `v2_s6` section status (`done` only on exit 0 AND a lint receipt that says passed, heading rule ran and, where the run
+needs it, the V2 method rules ran; `fail` with the lint's reasons on exit 1; nothing at all, exit 1, when the lint could not
+examine the draft), and adds one key, `findings.draft_lint_ci`, to the findings the session posted (the others are carried
+over and read back). Re-running on an unchanged result writes nothing (`lint_sha` in the receipt note). `dry_run` defaults to
+true. The session then reads the receipt back (read only).
+
+Not covered: a stage-gate dispatch by numeric workflow id (the `run_id` pin is judged only when `workflow_id` names `run-refresh-stage-gate`); Webflow MCP CMS writes; shell writes built from variables/globs/`python -c` (the Bash file check is
 best-effort: cp/mv/install/rsync/ln/tee/sed -i/redirects naming an article file); the interpreter is `python3` from
 PATH (draft_lint_tool.py uses its own `sys.executable`).
 

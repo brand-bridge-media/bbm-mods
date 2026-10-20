@@ -1,7 +1,7 @@
 {
   "name": "draft-session",
-  "version": "0.1.0",
-  "description": "v2_s6 Draft session guard: injects the Draft contract from the refresh-agent checkout, runs draft-lint on /draft-done, and blocks the Draft receipt until lint passes.",
+  "version": "0.2.0",
+  "description": "v2_s6 Draft session guard: injects the Draft contract from the refresh-agent checkout, runs draft-lint on /draft-done, and blocks the Draft receipt until lint passes. A cloud session (no service role) pins itself with draft_pin and gets the credentialed CI lint dispatch instead of a local lint.",
   "author": {
     "name": "Brand Bridge Media"
   },

@@ -10,7 +10,7 @@ const OPTS = { runId: RUN, articleId: ART, slug: 'best-sofas', templateVariant: 
 const RECEIPT = `python3 webflow/bulk-operations/refresh-receipt-writer/write_stage_receipt.py --run-id ${RUN} --stage 6 --status done --summary "Draft done"`
 
 const GOOD_RECEIPT = { result: { passed: true, brief_scanned: true, testers_block_scanned: true, experts_block_scanned: true, counts: {} } }
-type Extra = { engineTool?: () => unknown; receipt?: unknown; plan?: unknown; infra?: string | null; stat?: boolean }
+type Extra = { engineTool?: () => unknown; receipt?: unknown; plan?: unknown; infra?: string | null; stat?: boolean; key?: boolean; mktemp?: boolean }
 
 // lintExit: what draft_lint.py exits with. contract: null = file unreadable.
 // The mock plays the lint: it records argv and serves the receipt the real lint would write to --output.
@@ -26,7 +26,12 @@ function setup($: any, on: any, lintExit: number, contract: string | null = '# v
     if (e.path === '/work/plan.json') return { value: JSON.stringify(x.plan ?? { article_id: ART, entries: [] }) } as any
     throw new Error(`ENOENT ${e.path}`)
   })
-  on('env.get', () => ({ value: x.infra === null ? undefined : (x.infra ?? '/infra') }) as any)
+  // BBM_INFRA_PATH names the checkout; SUPABASE_SERVICE_ROLE_KEY present = the session can run the lint (LC-1869: absent routes to CI).
+  on('env.get', (_$: any, e: any) => {
+    if (e.name === 'SUPABASE_SERVICE_ROLE_KEY') return { value: x.key === false ? undefined : 'service-role-key' } as any
+    if (e.name === 'BBM_INFRA_PATH') return { value: x.infra === null ? undefined : (x.infra ?? '/infra') } as any
+    return { value: undefined } as any
+  })
   on('session.root', () => ({ value: '/work' }) as any)
   on('fs.stat', (_$: any, e: any) => {
     if (x.stat === false) throw new Error(`ENOENT ${e.path}`)
@@ -34,6 +39,7 @@ function setup($: any, on: any, lintExit: number, contract: string | null = '# v
   })
   on('clock.now', () => ({ value: 1 }) as any)
   on('process.run', (_$: any, e: any) => {
+    if (e.argv[0] === 'mktemp') return x.mktemp === false ? { value: { exitCode: 1, stdout: '', stderr: 'no tmp' } } as any : { value: { exitCode: 0, stdout: '/tmp/draft-session-lint-Zq81xW02\n', stderr: '' } } as any
     ran.push([...e.argv])
     return { value: { exitCode: lintExit, stdout: lintExit === 0 ? 'PASS' : 'FAIL [tester_not_anonymous] entry 3', stderr: '' } } as any
   })
@@ -320,5 +326,54 @@ test('a plan with no article_id is refused explicitly', { options: OPTS }, async
   setup($, on, 0, undefined, { plan: { entries: [] } })
   const done = JSON.stringify(await $.command.run({ command: 'draft-done', args: '/work/plan.json' } as any))
   expect(done).toContain('carries no article_id')
+  expect(await callBash($, RECEIPT)).toContain('Draft receipt blocked')
+})
+
+// LC-1869: the local /draft-done is the same pre-receipt lint as the stage-6 gate.
+const SCOPE = 'draft_receipt_complete.status'
+const withScope = (scoped: unknown) => ({ result: { ...GOOD_RECEIPT.result, counts: { v2_method_rules_run: true, checks_scoped: scoped } } })
+
+test('/draft-done runs the lint with --pre-receipt, in both modes', { options: OPTS }, async ($, on) => {
+  const ran = setup($, on, 0)
+  await $.command.run({ command: 'draft-done', args: '' } as any)
+  await $.command.run({ command: 'draft-done', args: '/work/plan.json' } as any)
+  expect(ran.length).toBe(2)
+  for (const argv of ran) expect(argv).toContain('--pre-receipt')
+})
+
+test('a receipt scoped to exactly the status check unlocks; any other checks_scoped never does', { options: OPTS }, async ($, on) => {
+  setup($, on, 0, undefined, { receipt: withScope([SCOPE]) })
+  await $.command.run({ command: 'draft-done', args: '' } as any)
+  expect(await callBash($, RECEIPT)).not.toContain('blocked')
+})
+
+for (const [label, scoped] of [
+  ['an extra check', [SCOPE, 'vos_records_present']],
+  ['a different check', ['vos_records_present']],
+  ['the whole rule', ['draft_receipt_complete']],
+  ['an empty list', []],
+  ['a bare string', SCOPE],
+  ['null', null],
+] as const) {
+  test(`the mod refuses a lint receipt whose checks_scoped is ${label}`, { options: OPTS }, async ($, on) => {
+    setup($, on, 0, undefined, { receipt: withScope(scoped) })
+    const done = JSON.stringify(await $.command.run({ command: 'draft-done', args: '' } as any))
+    expect(done).toContain('scoped out')
+    expect(await callBash($, RECEIPT)).toContain('Draft receipt blocked')
+  })
+}
+
+test('the lint receipt goes in a directory the mod just created (mktemp), never a predictable /tmp name', { options: OPTS }, async ($, on) => {
+  const ran = setup($, on, 0)
+  await $.command.run({ command: 'draft-done', args: '' } as any)
+  const out = ran[0][ran[0].indexOf('--output') + 1]
+  expect(out).toBe('/tmp/draft-session-lint-Zq81xW02/lint.json')
+})
+
+test('no private directory for the receipt = no lint, and the receipt stays locked', { options: OPTS }, async ($, on) => {
+  const ran = setup($, on, 0, undefined, { mktemp: false })
+  const done = JSON.stringify(await $.command.run({ command: 'draft-done', args: '' } as any))
+  expect(done).toContain('private directory')
+  expect(ran.length).toBe(0)
   expect(await callBash($, RECEIPT)).toContain('Draft receipt blocked')
 })

@@ -17,7 +17,7 @@
     {
       "name": "draft-session",
       "source": "./claude-mods/draft-session",
-      "description": "v2_s6 Draft session guard: contract injected from the refresh-agent file, draft-lint on /draft-done, Draft receipt blocked until lint passes."
+      "description": "v2_s6 Draft session guard: contract injected from the refresh-agent file, draft-lint on /draft-done, Draft receipt blocked until lint passes; cloud sessions pin with draft_pin and get the credentialed CI lint."
     },
     {
       "name": "run-state",
