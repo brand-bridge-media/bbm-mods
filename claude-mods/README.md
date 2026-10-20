@@ -27,13 +27,12 @@ repeats it when a session writes a hook, `settings.json` or a mod manifest here.
    `*.test.ts`, and is listed in `.claude-plugin/marketplace.json`.
 6. **Merged is not shipped.** See "Shipping a mod".
 
-### Transition fallback (LCH-528, temporary)
+### Transition fallback (LCH-528, removed 2026-10-20)
 
-Until Stan's environment installs the LCH-528/LCH-531 mods, `.claude/settings.json` also runs their
-Python checks (`claude-mods/<mod>/hooks/<mod>.py`) and keeps the old `permissions.ask` list, so
-`bbm-infrastructure` sessions are never less guarded than before the move. Once
-`~/.bbm-mods-setup.log` shows `rc_<mod>=0` for every one, remove those entries in a PR; until then a
-guard's message may appear twice.
+While the LCH-528/LCH-531 mods were being installed, `.claude/settings.json` also ran their Python
+checks and kept the old `permissions.ask` list. It was removed once `~/.bbm-mods-setup.log` in a
+fresh session showed `rc_<mod>=0` for all 11. Mods now reach sessions only through the environment
+lines below; a project hook that re-runs a mod's check would fire it twice.
 
 ### Shipping a mod
 
