@@ -19,6 +19,13 @@ export type FleetRow = {
   // entered its current bucket, and when its one reminder for this episode was sent.
   bucketSince?: number
   closeoutWokeAt?: number
+  // Waiting reminder state (LC-1881; optional so older rows load): the waiting bucket the clock
+  // runs for, when the row entered it, when it was last reminded, and the child's own words.
+  waitBucket?: string
+  waitSince?: number
+  waitRemindedAt?: number
+  needsAction?: string
+  statusDetail?: string
 }
 
 declare module 'claude-code' {

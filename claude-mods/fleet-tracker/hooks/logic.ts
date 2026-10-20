@@ -184,6 +184,54 @@ export function closeoutLine(ticket: string, label: string, bucket: string, buck
   return `${ticket} (${label}) idle in ${bucket} for ${mins}m: close it out — untrack (archives) or untrack with keep_reason`
 }
 
+// ---- Waiting reminder (LC-1881) ----
+// A child that waits on a human produces no further signal after its entry wake: decideStall
+// only reads WORKING and decideCloseout only COMPLETED / REVIEW_READY. Measured 2026-10-20:
+// session_01GqXYnPc475jd5Lfxmt9CJN sat in NEEDS_INPUT/BLOCKED from ~15:58 UTC for an hour
+// ("Stan types the 'yes' in this session...") and Stan noticed before the orchestrator did.
+// A row that stays in NEEDS_INPUT or BLOCKED gets a wake every WAITING_REMIND_MS, measured from
+// the later of entering the bucket and the last reminder, until the bucket changes.
+export const WAITING_REMIND_MS = 20 * 60_000
+export const WAITING_BUCKETS = new Set(['NEEDS_INPUT', 'BLOCKED'])
+
+// `bucketSince` is when the row entered this waiting episode, `lastRemindedAt` when it was last
+// reminded in it (0 = never). The caller owns the clock: it must not restart it on UNKNOWN (a bad
+// poll is not a bucket change) and must restart it on any other bucket change.
+export function decideWaitingReminder(bucket: string, bucketSince: number, lastRemindedAt: number, now: number): boolean {
+  if (!WAITING_BUCKETS.has(bucket) || !bucketSince) return false
+  return now - Math.max(bucketSince, lastRemindedAt) >= WAITING_REMIND_MS
+}
+
+// The child names a person, not a machine, as the one who must act. A person word on its own,
+// or a phrase that only a prompt waiting on a person produces. Bare "types", "approve" and
+// "permission" are NOT enough: "permission denied reading the lockfile" and "several types of
+// merge conflicts" are machine text (CI review of PR #1909).
+const HUMAN_NEEDED =
+  /\b(?:stan|user|human|owner)\b|\bpermission (?:prompt|rule)\b|\bneeds (?:your )?approval\b|\bapproval needed\b/i
+
+export function needsHuman(...texts: unknown[]): boolean {
+  return texts.some(t => HUMAN_NEEDED.test(String(t ?? '')))
+}
+
+export const HUMAN_ACTION =
+  'A relayed message cannot satisfy this. Tell Stan in chat now, starting the reply with the NEEDS YOU banner, include the session link, and set the note needs_you=true. Do not use PushNotification.'
+
+// A human-needed child leads its wake line with `NEEDS STAN:` and says what the orchestrator must do.
+export function humanWrap(line: string, sessionId: string, needsAction: string, statusDetail: string): string {
+  if (!needsHuman(needsAction, statusDetail)) return line
+  return `NEEDS STAN: ${line} (https://claude.ai/code/${sessionId}). ${HUMAN_ACTION}`
+}
+
+// Reminder line for a child still waiting: how long, and what it is waiting for.
+export function waitingLine(
+  ticket: string, label: string, sessionId: string, bucket: string, waitedMs: number,
+  needsAction: string, statusDetail: string,
+): string {
+  const text = (needsAction || statusDetail).trim()
+  const mins = Math.floor(waitedMs / 60_000)
+  return humanWrap(`${ticket} (${label}) still waiting in ${bucket} for ${mins}m: ${text}`, sessionId, needsAction, statusDetail)
+}
+
 // Buckets in which archiving would lose live work (unpushed commits, an unanswered question).
 export const LIVE_BUCKETS = new Set(['WORKING', 'NEEDS_INPUT'])
 // Archive is an ALLOWLIST (review of LC-1835): only a child that a fresh, error-free

@@ -3,8 +3,8 @@ import type { Register } from 'claude-code'
 
 import type { FleetRow } from '../types'
 import {
-  childIdOf, CLOSABLE_BUCKETS, closeoutLine, decideCloseout, decideStall, decideWake, ESCALATE_MS, newestActivity, NEEDS_STAN,
-  NUDGE_TEXT, STALL_MS, ticketOf, withChildTools,
+  childIdOf, CLOSABLE_BUCKETS, closeoutLine, decideCloseout, decideStall, decideWaitingReminder, decideWake, ESCALATE_MS, humanWrap, newestActivity, NEEDS_STAN,
+  NUDGE_TEXT, STALL_MS, ticketOf, WAITING_BUCKETS, waitingLine, withChildTools,
 } from './logic'
 
 // Fleet tracker: one line per cloud session the orchestrator spins up.
@@ -46,6 +46,9 @@ const stallOf = new Map<string, { nudgedAt: number; escalated: boolean }>()
 // Close-out reminder claims (LC-1835), same reason as stallOf: the episode (bucket @ entry time)
 // whose one reminder has been claimed, set synchronously so two overlapping polls cannot both send it.
 const closeoutClaim = new Map<string, string>()
+// Waiting-reminder claims (LC-1881), same reason: episode (bucket @ entry time) -> when its last
+// reminder was claimed, set synchronously so two overlapping polls cannot both send it.
+const waitClaim = new Map<string, { episode: string; at: number }>()
 
 const rows = atom({ plugin: 'fleet-tracker', key: 'rows' } as const, [] as FleetRow[])
 
@@ -104,6 +107,8 @@ async function poll($: any): Promise<FleetRow[]> {
           ...row,
           bucket,
           status: String(ccr.session_status ?? '').replace('SESSION_STATUS_', ''),
+          needsAction,
+          statusDetail: String(pts.status_detail ?? ''),
           summary: needsAction || String(pts.status_detail || pts.recent_action || ccr.task_summary || ''),
           costUsd: Number(ccr.external_metadata?.usage?.cost_usd ?? row.costUsd ?? 0),
           updatedAt: String(ccr.updated_at ?? row.updatedAt),
@@ -115,7 +120,10 @@ async function poll($: any): Promise<FleetRow[]> {
         const { wake, holdPrevBucket } = decideWake(lastWoken, row.sessionId, row.bucket, bucket, fresh.summary)
         if (holdPrevBucket) fresh.bucket = row.bucket
         if (wake) {
-          wakes.push(`${row.ticket} (${row.label}) ${row.bucket || 'NEW'} -> ${bucket}: ${fresh.summary}`)
+          const entry = `${row.ticket} (${row.label}) ${row.bucket || 'NEW'} -> ${bucket}: ${fresh.summary}`
+          wakes.push(
+            WAITING_BUCKETS.has(bucket) ? humanWrap(entry, row.sessionId, needsAction, fresh.statusDetail ?? '') : entry,
+          )
         }
         if (fresh.needsYou && !row.needsYou) stanToasts.push(`${row.ticket} needs you: ${bucket}`)
 
@@ -132,6 +140,31 @@ async function poll($: any): Promise<FleetRow[]> {
           closeoutClaim.set(row.sessionId, episode)
           fresh.closeoutWokeAt = now
           wakes.push(closeoutLine(row.ticket, row.label, fresh.bucket, fresh.bucketSince ?? now, now))
+        }
+
+        // Waiting clock (LC-1881): a child that waits on a human is reminded every
+        // WAITING_REMIND_MS until its bucket changes. UNKNOWN (a bad poll) leaves the clock alone;
+        // any other bucket change restarts it.
+        if (fresh.bucket !== 'UNKNOWN') {
+          if (!WAITING_BUCKETS.has(fresh.bucket)) {
+            delete fresh.waitBucket
+            delete fresh.waitSince
+            delete fresh.waitRemindedAt
+          } else if (fresh.waitBucket !== fresh.bucket || !fresh.waitSince) {
+            fresh.waitBucket = fresh.bucket
+            fresh.waitSince = now
+            delete fresh.waitRemindedAt
+          }
+        }
+        const waitEpisode = `${fresh.waitBucket}@${fresh.waitSince}`
+        const claim = waitClaim.get(row.sessionId)
+        const remindedAt = Math.max(claim?.episode === waitEpisode ? claim.at : 0, fresh.waitRemindedAt ?? 0)
+        if (decideWaitingReminder(fresh.bucket, fresh.waitSince ?? 0, remindedAt, now)) {
+          waitClaim.set(row.sessionId, { episode: waitEpisode, at: now })
+          fresh.waitRemindedAt = now
+          wakes.push(
+            waitingLine(row.ticket, row.label, row.sessionId, fresh.bucket, now - (fresh.waitSince ?? now), needsAction, fresh.statusDetail ?? ''),
+          )
         }
 
         // Stall check (LC-1834). Only fetch the transcript when the turn-level
@@ -210,6 +243,7 @@ async function poll($: any): Promise<FleetRow[]> {
   // A row untracked mid-poll must not keep stall state a later re-track would inherit.
   for (const id of [...stallOf.keys()]) if (!merged.some(r => r.sessionId === id)) stallOf.delete(id)
   for (const id of [...closeoutClaim.keys()]) if (!merged.some(r => r.sessionId === id)) closeoutClaim.delete(id)
+  for (const id of [...waitClaim.keys()]) if (!merged.some(r => r.sessionId === id)) waitClaim.delete(id)
   for (const t of stanToasts) say($, t)
   pendingWakes.push(...wakes)
   flushWakes($)
@@ -279,7 +313,7 @@ function flushWakes($: any) {
         text:
           '[mod:fleet-tracker] Session state changed:\n' +
           lines.map(w => `- ${w}`).join('\n') +
-          '\nTriage each: inspect the session, act or relay. If it needs Stan, PushNotification him and set the row note with needs_you=true.',
+          '\nTriage each: inspect the session, act or relay. If it needs Stan, tell him in chat starting with the NEEDS YOU banner and set the note needs_you=true. Never use PushNotification.',
       }),
     )
     .catch(() => {
@@ -449,6 +483,7 @@ export const register: Register = on => {
       lastWoken.delete(id)
       stallOf.delete(id)
       closeoutClaim.delete(id)
+      waitClaim.delete(id)
       return mutate($, list => list.filter(r => r.sessionId !== id))
     }
     // Deliberately kept open: no archive, the reason goes in the result for the record.
