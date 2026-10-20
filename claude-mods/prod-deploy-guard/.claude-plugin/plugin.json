@@ -1,0 +1,8 @@
+{
+  "name": "prod-deploy-guard",
+  "version": "0.1.0",
+  "description": "Refuses production deploys and DDL from a session (MCP deploy_edge_function, wrangler/supabase CLI deploys, DDL via execute_sql); apply_migration asks. GitHub is production (LC-421).",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

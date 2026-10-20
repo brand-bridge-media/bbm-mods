@@ -43,6 +43,61 @@
       "name": "pillar-brief-guard",
       "source": "./claude-mods/pillar-brief-guard",
       "description": "Enforces the pillar-brief rules in any session: article ideas name a parent article, product selection and new article files need an approved (<= 365 days) brief, approvals name an approver."
+    },
+    {
+      "name": "prod-deploy-guard",
+      "source": "./claude-mods/prod-deploy-guard",
+      "description": "Refuses production deploys and DDL from a session (MCP deploy_edge_function, wrangler/supabase CLI deploys, DDL via execute_sql); apply_migration asks. GitHub is production (LC-421)."
+    },
+    {
+      "name": "bulk-write-guard",
+      "source": "./claude-mods/bulk-write-guard",
+      "description": "Refuses Supabase execute_sql writes that do not prove, in their own text, that they touch 5 rows or fewer; larger writes go through a data-changes/ package (LC-1683)."
+    },
+    {
+      "name": "spend-delete-ask",
+      "source": "./claude-mods/spend-delete-ask",
+      "description": "Asks Stan before any tool that moves money, spends a balance or deletes something a session cannot restore (Stripe, PayPal, QuickBooks, link carts, Roominate, Airtable/Notion/Drive/GitHub/Cloudflare/Supabase deletes)."
+    },
+    {
+      "name": "no-browser-as-me",
+      "source": "./claude-mods/no-browser-as-me",
+      "description": "Refuses driving Stan's own browser or desktop: the chrome-browser / computer-use skills and any Chrome or computer-use MCP server."
+    },
+    {
+      "name": "recurring-successor-guard",
+      "source": "./claude-mods/recurring-successor-guard",
+      "description": "Refuses closing a recurring Jira ticket (label `recurring` or a 'next due' line) until the session created its successor ticket or scheduled task."
+    },
+    {
+      "name": "reply-footer-check",
+      "source": "./claude-mods/reply-footer-check",
+      "description": "Blocks a turn's end once when the reply's last line is not `Noted separately: <keys>` / `Nothing`, or names a ticket no Jira call touched."
+    },
+    {
+      "name": "knowledge-superseded-check",
+      "source": "./claude-mods/knowledge-superseded-check",
+      "description": "After a read of knowledge_memories / knowledge_articles, names superseded rows and their replacements, and nudges a query that skips is_active / superseded_by."
+    },
+    {
+      "name": "session-title-nudge",
+      "source": "./claude-mods/session-title-nudge",
+      "description": "Puts the session-naming convention (`<TICKET> — <summary>`) in front of the model at session start, and a rename reminder when createJiraIssue mints a key."
+    },
+    {
+      "name": "skill-copy-guard",
+      "source": "./claude-mods/skill-copy-guard",
+      "description": "Refuses edits to .claude/skills/ byte copies; skills change in mykhaylenkostan/claude-skills, and the mirror brings them here."
+    },
+    {
+      "name": "dispatch-watch",
+      "source": "./claude-mods/dispatch-watch",
+      "description": "After a session dispatches a workflow through the github-dispatch bridge, checks the run every minute and wakes the session when it finishes, fails to start, or runs long; flags a finish under 2 minutes as the did-nothing shape."
+    },
+    {
+      "name": "supabase-guard",
+      "source": "./claude-mods/supabase-guard",
+      "description": "Supabase exposure rules before SQL runs or a migration is written (execute_sql, apply_migration, migration-file Write/Edit): blocks a table without RLS, a view without security_invoker, an unrevoked or search_path-less SECURITY DEFINER, and an unmarked GRANT to anon/authenticated; warns on a function without search_path. Same rules as the lint-supabase-rules PR gate."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."

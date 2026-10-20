@@ -8,6 +8,45 @@ above the prompt, a status line or a toast, or register a tool the model can cal
 Business analogy: `.claude/hooks/*.py` are door locks that say yes/no; a mod is a
 dashboard bolted onto the cockpit.
 
+## Where a rule lives (LCH-528)
+
+Read this before writing any guard, nudge or policy. `.claude/hooks/policy-placement-nudge.py`
+repeats it when a session writes a hook, `settings.json` or a mod manifest here.
+
+1. **A rule about a tool** usable from any repo (MCP, Bash, Skill, Write/Edit) is a **mod** in
+   `claude-mods/`, installed at user scope from the `bbm-mods` mirror. This is the default.
+2. **A rule about this repo's own files or pipeline** (a path that exists only here) stays a
+   **project hook** in `.claude/hooks/`, wired in `.claude/settings.json`.
+3. **One mod, one job.** No bundles: each mod is disabled alone (`claude plugin disable <name>`),
+   versioned alone and tested alone. A hook fires only on its own matcher, so many small mods
+   cost nothing at rest.
+4. **Logic may be stdlib Python** in `hooks/<name>.py` with a `--selftest` count line; the mod's
+   `register.ts` stays thin through `hooks/py.ts`. Shared files (`py.ts`, `sql_lexer.py`,
+   `transcript_reader.py`, `supabase_rules.py`, also under `supabase/tools/`) are byte-identical copies; `claude-mods.yml` fails on drift.
+5. **Every mod** prefixes what it says with `[mod:<name>]`, fails open on its own errors, carries a
+   `*.test.ts`, and is listed in `.claude-plugin/marketplace.json`.
+6. **Merged is not shipped.** See "Shipping a mod".
+
+### Transition fallback (LCH-528, temporary)
+
+Until Stan's environment installs the LCH-528/LCH-531 mods, `.claude/settings.json` also runs their
+Python checks (`claude-mods/<mod>/hooks/<mod>.py`) and keeps the old `permissions.ask` list, so
+`bbm-infrastructure` sessions are never less guarded than before the move. Once
+`~/.bbm-mods-setup.log` shows `rc_<mod>=0` for every one, remove those entries in a PR; until then a
+guard's message may appear twice.
+
+### Shipping a mod
+
+A mod reaches sessions in other repos only after Stan adds two things to the cloud environment
+(claude.ai → environment → Edit). Put both in the PR body; the nudge prints them for the mod's name.
+
+- **Setup script**, inside the `{ ... }` block: `claude plugin install <mod>@bbm-mods --scope user; echo "rc_<mod>=$?"`
+- **`CLAUDE_CODE_PLUGIN_DIRS`**: append `:/home/user/bbm-infrastructure/claude-mods/<mod>` (this repo's
+  sessions then load the live checkout copy).
+
+Order: merge, wait for `mirror-claude-mods.yml` to publish, then save the environment. An install
+before the mirror has the mod fails (the setup log, `~/.bbm-mods-setup.log`, shows `rc_<mod>=1`).
+
 ## Layout
 
 ```
@@ -40,6 +79,17 @@ file under `claude-mods/` is not found).
 | `session-close` | Also lists the `[mod:<name>]` actions it saw (see Callout convention). Learns what a session touched from observed tool calls; `/close-out` (and a wrap-up turn) lists unmet obligations: open fleet children (from fleet-tracker's `open_children`, LC-1835; "not checked" when it is not loaded), knowledge INGEST, Jira comment per served ticket, `refresh_runs` left in_progress, +2/+4wk cannibalization and 30/60/90 GSC scheduled after a publish, Pass A/B verdicts. Nudge only, $0. | LC-1713 |
 | `jira-closer` | When a session merges a PR or arms auto-merge, reads the PR's Jira keys (title, else fetched) and tells the session to read each ticket's newest comment, then transition it to Done or post a state comment. Blocks the turn's end **once** per ticket while it is untouched (the second Stop always passes, so it cannot loop). Any transition/comment/edit clears it. Sees only merges made inside a session. | LC-1729 |
 | `pillar-brief-guard` | Enforces the pillar-brief rules in ANY session, on RECOGNISED actions only (tool + argv shapes; a heredoc, grep, echo or commit message that merely names a script, table or workflow is untouched). (1) `createJiraIssue` in LCC with label `article-idea` (labels read from every shape; an unreadable one fails closed) is **denied** unless the description has a `Parent article: <slug>` line AND that slug exists in `public.articles`; on allow it injects the next steps. (2) Selection/writing needs the article's approved `pillar_briefs` row (looked up through `public.articles`, Supabase MCP, default server `Supabase`; userConfig `supabaseServer`/`projectId`). Gated: a `run-heading-research.yml` dispatch with `step=shortlist` **and `apply` true** (unset, empty or false is the workflow's selftest; 1/yes/on count as true; any other value is denied), via the GitHub MCP or `gh workflow run ... -f step=shortlist -f apply=true` (numeric workflow ids count when the inputs say step=shortlist); `product_shortlist.py` / `python -m ...product_shortlist` invocations that carry a target (`--run-id`/`--article`/`--article-id`; not `--selftest`/`--dry-run`/`--render`/`--help`; no target = not a selection); `roster_materialize.py apply` (article read from `--plan`); a Write of a NEW `.md` under `bbm-content/**/articles/` whose frontmatter has `slug:` and `title:`; and the same new article via GitHub MCP `create_or_update_file` (no `sha`) / `push_files`. Shell keywords and grouping (`then do else if while ( { ! nohup exec command`) before the command are seen through. No approved brief, or a lookup that cannot run (no Supabase MCP, SQL error, unknown run, unresolvable article): **deny**, naming the step or the fix ("connect the Supabase MCP so the approved pillar brief can be checked; nothing selects products without it"); never an ask, since an unattended session cannot answer. Only a brief older than 365 days (lookup succeeded) **asks** (refused when nobody answers). (3) `pillar_brief.py approve --by`, `run-pillar-brief.yml` / `gh workflow run run-pillar-brief.yml -f mode=approve -f approved_by=`: the approver must be a configured human (userConfig `approvers`, comma-separated, default `Stan`, case-insensitive); blank, `claude`, `x` are **denied**. `run-pillar-brief.yml` defaults `approved_by` to `Stan`, so leaving it out would attribute the approval to Stan without Stan: the guard requires it to be named explicitly. `gh workflow run` of either guarded workflow with `--json` is denied (its inputs are hidden). **Not covered:** adding the `article-idea` label to an existing ticket (`editJiraIssue`); Webflow MCP writes; other selection writers (`write_stage_receipt.py`); `gh api .../dispatches`, `curl` or other HTTP dispatches; a workflow numeric id whose inputs are not step=shortlist/mode=approve; scripts run via variables, `$(...)`, `xargs`, `make` or a wrapper script; `--by "$VAR"` (the literal is judged, not its value); `push_files` cannot tell a new article from an update, so any article file in a push needs an approved brief; article files written by other tools (Bash redirects, `git`, editors outside Claude); a Write whose path has no `bbm-content` segment (the checkout directory is named otherwise); a `--selftest`/`--dry-run`/`--render` flag is trusted not to select or write (verified against `product_shortlist.py`: selftest returns first, render is local, dry-run writes nothing). Argparse prefixes of the target flags (`--run`, `--article-i`) count as targets; ambiguous or odd shell shapes err toward a deny; nested `bash -c`/`eval` payloads are followed up to 8 levels deep (beyond that, or through variables, they are not covered). $0. | LC-1731 |
+| `prod-deploy-guard` | Denies production deploys and DDL from a session: MCP `deploy_edge_function`, `wrangler`/`supabase` CLI deploys (a shell tokenizer judges each command's argv: wrappers such as `sudo`, `timeout`, `npx`, `bash -c` are unwrapped; `--dry-run` passes), DDL through `execute_sql` (incl. `SELECT INTO`, `explain analyze`). `apply_migration` asks. | LCH-528, LC-421, LC-428 |
+| `bulk-write-guard` | Denies `execute_sql` writes that do not bound themselves to 5 rows or fewer in their own text (the statement's own top-level WHERE on an id key of the TARGET table, or ≤5 VALUES rows); larger writes go through `data-changes/`. | LCH-528, LC-1683 |
+| `spend-delete-ask` | Asks before tools that move money or delete what a session cannot restore (explicit list in `hooks/logic.ts`; every `mcp__Stripe__*`). | LCH-528 |
+| `no-browser-as-me` | Denies the chrome-browser / computer-use skills and any Chrome or computer-use MCP server (judged on the server segment, any casing). | LCH-528 |
+| `recurring-successor-guard` | Denies a Done-category transition of a recurring ticket (`recurring` label or a "next due" line) until the session created a successor (createJiraIssue / scheduled task) naming it. Records the Jira calls it needs itself (PreToolUse carries no transcript). | LCH-528 |
+| `reply-footer-check` | Blocks the turn's end once when the reply's last line is not `Noted separately: <keys>` / `Nothing`, or names a key no Jira call touched. | LCH-528 |
+| `knowledge-superseded-check` | After a read of `knowledge_memories`/`knowledge_articles`, names superseded rows and their replacements; nudges a query that skips `is_active`/`superseded_by`. Nudge only. | LCH-528 |
+| `session-title-nudge` | Session-start reminder of the `<TICKET> — <summary>` naming rule; rename reminder when `createJiraIssue` mints a key. Nudge only. | LCH-528 |
+| `skill-copy-guard` | Denies Write/Edit under `.claude/skills/` (byte copies of claude-skills). | LCH-528 |
+| `dispatch-watch` | After a dispatch through the `github-dispatch` bridge (the session has no GitHub access to the target repo), sends the bridge's read-only `status` request every minute and wakes the session when the run finishes, never registers (6 min) or runs past 90 min; a finish under 2 min carries the did-nothing warning (memory 1440431b). Replaces "schedule a check-in and wait". | LCH-528, LC-1879 |
+| `supabase-guard` | Supabase exposure rules before SQL runs or a migration is written (`execute_sql`, `apply_migration`, Write/Edit/MultiEdit of `supabase/migrations/*.sql`, judged on the file after the edit). Blocks **R1** table without RLS, **R2** view without `security_invoker` (OR REPLACE without it resets it), **R3** `SECURITY DEFINER` without `SET search_path` or `REVOKE ... FROM public, anon, authenticated`, **R4** `GRANT` to anon/authenticated without `-- supabase-guard: allow-grant <object> -- <reason>`. Warns **R5** function without `search_path`. Each rule reports PASS / BLOCK / WARN / NOT CHECKED with a reason; the rule list is data (`supabase_rules.RULES`). Logic is `supabase/tools/supabase_rules.py` (byte-identical copy), which the `lint-supabase-rules.yml` PR gate also runs. | LCH-531, LCH-530, LCH-104 |
 
 ### ci-preflight (LC-1846)
 

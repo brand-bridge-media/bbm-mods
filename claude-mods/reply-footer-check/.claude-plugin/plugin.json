@@ -1,0 +1,8 @@
+{
+  "name": "reply-footer-check",
+  "version": "0.1.0",
+  "description": "Blocks a turn's end once when the reply's last line is not `Noted separately: <keys>` / `Nothing`, or names a ticket no Jira call touched.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

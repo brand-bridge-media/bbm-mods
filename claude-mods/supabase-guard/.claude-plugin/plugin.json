@@ -1,0 +1,8 @@
+{
+  "name": "supabase-guard",
+  "version": "0.1.0",
+  "description": "Supabase exposure rules before SQL runs or a migration is written (execute_sql, apply_migration, migration-file Write/Edit): blocks a table without RLS, a view without security_invoker, an unrevoked or search_path-less SECURITY DEFINER, and an unmarked GRANT to anon/authenticated; warns on a function without search_path. Same rules as the lint-supabase-rules PR gate.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

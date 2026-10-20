@@ -1,0 +1,8 @@
+{
+  "name": "bulk-write-guard",
+  "version": "0.1.0",
+  "description": "Refuses Supabase execute_sql writes that do not prove, in their own text, that they touch 5 rows or fewer; larger writes go through a data-changes/ package (LC-1683).",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "session-title-nudge",
+  "version": "0.1.0",
+  "description": "Puts the session-naming convention (`<TICKET> \u2014 <summary>`) in front of the model at session start, and a rename reminder when createJiraIssue mints a key.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

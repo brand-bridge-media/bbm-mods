@@ -1,0 +1,8 @@
+{
+  "name": "knowledge-superseded-check",
+  "version": "0.1.0",
+  "description": "After a read of knowledge_memories / knowledge_articles, names superseded rows and their replacements, and nudges a query that skips is_active / superseded_by.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

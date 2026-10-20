@@ -1,0 +1,8 @@
+{
+  "name": "spend-delete-ask",
+  "version": "0.1.0",
+  "description": "Asks Stan before any tool that moves money, spends a balance or deletes something a session cannot restore (Stripe, PayPal, QuickBooks, link carts, Roominate, Airtable/Notion/Drive/GitHub/Cloudflare/Supabase deletes).",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

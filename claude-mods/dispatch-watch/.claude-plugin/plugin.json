@@ -1,0 +1,9 @@
+{
+  "name": "dispatch-watch",
+  "version": "0.1.0",
+  "description": "After a session dispatches a workflow through the github-dispatch bridge, checks the run every minute and wakes the session when it finishes, fails to start, or runs long; flags a finish under 2 minutes as the did-nothing shape.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

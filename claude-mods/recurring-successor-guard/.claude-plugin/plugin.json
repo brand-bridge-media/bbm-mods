@@ -1,0 +1,9 @@
+{
+  "name": "recurring-successor-guard",
+  "version": "0.1.0",
+  "description": "Refuses closing a recurring Jira ticket (label `recurring` or a 'next due' line) until the session created its successor ticket or scheduled task.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
