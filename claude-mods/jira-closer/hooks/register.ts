@@ -17,6 +17,9 @@ import type { PendingTicket } from '../types'
 const KEY = /\b(LC|LCH|LCC|BBM)-\d+\b/gi
 const IS_KEY = /^(LC|LCH|LCC|BBM)-\d+$/
 const MERGE = /__(merge_pull_request|enable_pr_auto_merge)$/
+// Arming auto-merge still makes this session the ticket's owner (the merge train merges later with
+// no tool call to hook), but the PR is NOT merged yet: never ask for Done on it (LC-1884).
+const QUEUE = /__enable_pr_auto_merge$/
 const CREATE_PR = /__create_pull_request$/
 const JIRA_TOUCH = /__(transitionJiraIssue|addCommentToJiraIssue|editJiraIssue)$/
 const WATCHED = /^mcp__[^_].*__(merge_pull_request|enable_pr_auto_merge|create_pull_request|transitionJiraIssue|addCommentToJiraIssue|editJiraIssue)$/
@@ -80,6 +83,7 @@ export const register: Register = on => {
 
     if (MERGE.test(tool)) {
       const id = prId(e)
+      const queued = QUEUE.test(tool)
       let source = (await read($, titles))[id] ?? String(e.commit_title ?? '')
       let unread = false
       if (keysIn(source).length === 0) {
@@ -101,7 +105,7 @@ export const register: Register = on => {
         // Could not examine the PR: say so rather than pass silently, and hold
         // the turn's end once until the session touches some Jira ticket.
         const key = `?${id}`
-        await update($, pending, list => [...list.filter(p => p.key !== key), { key, pr: id, nagged: false }])
+        await update($, pending, list => [...list.filter(p => p.key !== key), { key, pr: id, nagged: false, queued }])
         return {
           ...ran,
           context: [...(ran.context ?? []), say($, `could not read ${id}'s title to find its Jira ticket. ` +
@@ -112,18 +116,17 @@ export const register: Register = on => {
 
       await update($, pending, list => [
         ...list.filter(p => !keys.includes(p.key)),
-        ...keys.map(key => ({ key, pr: id, nagged: false })),
+        ...keys.map(key => ({ key, pr: id, nagged: false, queued })),
       ])
       waitingStatus($, await read($, pending))
-      return {
-        ...ran,
-        context: [
-          ...(ran.context ?? []),
-          say($, `${id} references ${keys.join(', ')}. Before this turn ends, for each: read the ticket's ` +
-            `NEWEST comment and its done-criteria, check live state, then either transition it to Done ` +
-            `(this PR finished it) or post a one-line state comment (what shipped, what remains).`),
-        ],
-      }
+      const ask = queued
+        ? `${id} is QUEUED to merge (auto-merge armed), not merged, and references ${keys.join(', ')}. Before ` +
+          `this turn ends, post a one-line state comment on each (PR ready, auto-merge armed, what remains). ` +
+          `Do not transition to Done until the merge lands: the train can still evict the PR.`
+        : `${id} references ${keys.join(', ')}. Before this turn ends, for each: read the ticket's ` +
+          `NEWEST comment and its done-criteria, check live state, then either transition it to Done ` +
+          `(this PR finished it) or post a one-line state comment (what shipped, what remains).`
+      return { ...ran, context: [...(ran.context ?? []), say($, ask)] }
     }
 
     if (JIRA_TOUCH.test(tool)) {
@@ -143,10 +146,15 @@ export const register: Register = on => {
     const due = (await read($, pending)).filter(p => !p.nagged)
     if (due.length === 0) return next(e)
     await update($, pending, l => l.map(p => ({ ...p, nagged: true })))
-    return {
-      block: say($, `merged PR(s) left these Jira tickets untouched: ` +
-        due.map(p => `${p.key} (${p.pr})`).join(', ') +
-        `. Read each newest comment, then transition to Done or post a state comment.`),
-    }
+    const list = (ps: PendingTicket[]) => ps.map(p => `${p.key} (${p.pr})`).join(', ')
+    const merged = due.filter(p => !p.queued)
+    const queued = due.filter(p => p.queued)
+    const parts = [
+      merged.length ? `merged PR(s) left these Jira tickets untouched: ${list(merged)}. Read each newest ` +
+        `comment, then transition to Done or post a state comment.` : '',
+      queued.length ? `PR(s) queued to merge (auto-merge armed, NOT merged yet) left these Jira tickets ` +
+        `untouched: ${list(queued)}. Post a state comment on each; Done only after the merge lands.` : '',
+    ]
+    return { block: say($, parts.filter(Boolean).join(' ')) }
   })
 }

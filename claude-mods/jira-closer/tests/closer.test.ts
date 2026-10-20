@@ -45,6 +45,30 @@ test('auto-merge counts as a merge, and the key is matched case-insensitively on
   expect(s.block).toBeUndefined()
 })
 
+test('auto-merge is reported as queued, never as merged, and asks for no Done yet (LC-1884)', async ($: any, on: any) => {
+  on('tool.call', () => ({ result: { content: [] } }))
+  on('classic.Stop', () => ({}))
+  const r = await $.tool.call({ tool: 'mcp__github__enable_pr_auto_merge', owner: 'o', repo: 'r', pullNumber: 21, commit_title: 'LCH-531 rules' })
+  const ctx = String(r.context ?? '')
+  expect(ctx).toContain('QUEUED to merge')
+  expect(ctx).toContain('Do not transition to Done')
+  const s = await $.classic.Stop({ stop_hook_active: false })
+  const block = String(s.block ?? '')
+  expect(block).toContain('NOT merged yet')
+  expect(block).toContain('LCH-531 (o/r#21)')
+  expect(block).not.toContain('merged PR(s) left')
+})
+
+test('a real merge and a queued one in the same turn are each named for what they are', async ($: any, on: any) => {
+  on('tool.call', () => ({ result: { content: [] } }))
+  on('classic.Stop', () => ({}))
+  await $.tool.call({ tool: 'mcp__github__merge_pull_request', owner: 'o', repo: 'r', pullNumber: 1, commit_title: 'LC-1 a' })
+  await $.tool.call({ tool: 'mcp__github__enable_pr_auto_merge', owner: 'o', repo: 'r', pullNumber: 2, commit_title: 'LC-2 b' })
+  const block = String((await $.classic.Stop({ stop_hook_active: false })).block ?? '')
+  expect(block).toMatch(/merged PR\(s\) left these Jira tickets untouched: LC-1 \(o\/r#1\)\./)
+  expect(block).toMatch(/NOT merged yet\) left these Jira tickets untouched: LC-2 \(o\/r#2\)\./)
+})
+
 const prJson = (pr: object) => ({ content: [{ type: 'text', text: JSON.stringify(pr) }] })
 
 test('a PR opened elsewhere: title and Closes lines count, Refs lines do not', async ($: any, on: any) => {
