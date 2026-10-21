@@ -11,6 +11,6 @@ automatically and the owner is notified.
 Install (what the cloud environment setup script runs):
 
 ```
-claude plugin marketplace add mykhaylenkostan/bbm-mods
+claude plugin marketplace add brand-bridge-media/bbm-mods
 claude plugin install fleet-tracker@bbm-mods --scope user
 ```

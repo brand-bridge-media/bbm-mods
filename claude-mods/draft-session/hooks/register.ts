@@ -90,7 +90,7 @@ async function hasServiceKey($: any): Promise<boolean> {
 function ciDispatchText(run: Run): string {
   const call = {
     method: 'run_workflow',
-    owner: 'mykhaylenkostan',
+    owner: 'brand-bridge-media',
     repo: 'bbm-infrastructure',
     workflow_id: GATE_WORKFLOW,
     ref: 'main',
@@ -113,7 +113,7 @@ function ciDispatchText(run: Run): string {
 // workflow exactly run-refresh-stage-gate.yml (a numeric id or any other workflow is refused outright), gate exactly
 // stage-6-draft, run_id the pinned run. Any other method of the tool (rerun, cancel ...) is refused too: a rerun
 // would execute a run's own ref.
-const GATE_OWNER = 'mykhaylenkostan'
+const GATE_OWNER = 'brand-bridge-media'
 const GATE_REPO = 'bbm-infrastructure'
 const GATE_REF = 'main'
 const GATE_NAME = 'stage-6-draft'

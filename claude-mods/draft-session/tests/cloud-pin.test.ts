@@ -185,7 +185,7 @@ test('a session-written passing stage-6 receipt stays denied in every form (the 
 
 const OWN = { run_id: RUN, gate: 'stage-6-draft', dry_run: 'false' }
 const dispatch = ($: any, over: any = {}) =>
-  $.tool.call({ tool: DISPATCH, method: 'run_workflow', owner: 'mykhaylenkostan', repo: 'bbm-infrastructure',
+  $.tool.call({ tool: DISPATCH, method: 'run_workflow', owner: 'brand-bridge-media', repo: 'bbm-infrastructure',
     workflow_id: 'run-refresh-stage-gate.yml', ref: 'main', inputs: OWN, ...over } as any)
 
 test('unpinned: dispatches are not gated at all (pinning only adds restrictions)', async ($, on) => {
@@ -205,8 +205,8 @@ for (const [label, over, needle] of [
   ['a branch ref', { ref: 'my-branch' }, 'ref'],
   ['refs/heads/main', { ref: 'refs/heads/main' }, 'ref'],
   ['a missing ref', { ref: undefined }, 'ref'],
-  ['a different repo', { repo: 'other-repo' }, 'only mykhaylenkostan/bbm-infrastructure'],
-  ['a different owner', { owner: 'someone-else' }, 'only mykhaylenkostan/bbm-infrastructure'],
+  ['a different repo', { repo: 'other-repo' }, 'only brand-bridge-media/bbm-infrastructure'],
+  ['a different owner', { owner: 'someone-else' }, 'only brand-bridge-media/bbm-infrastructure'],
   ['a different gate', { inputs: { ...OWN, gate: 'both' } }, 'gate'],
   ['a missing gate', { inputs: { run_id: RUN } }, 'gate'],
   ['a different run', { inputs: { ...OWN, run_id: OTHER_RUN } }, OTHER_RUN],
@@ -243,7 +243,7 @@ test('BBM_DRAFT_RUN_ID is the only run draft_pin accepts, even with no in-memory
 // ---- shell routes to a workflow run (gh, direct API calls) ----
 const SHELL_DENIED = [
   'gh workflow run x --ref evil',
-  'gh api repos/mykhaylenkostan/bbm-infrastructure/dispatches -f event_type=x',
+  'gh api repos/brand-bridge-media/bbm-infrastructure/dispatches -f event_type=x',
   'GH_TOKEN=x gh workflow run run-refresh-stage-gate.yml --ref my-branch',
   'curl -X POST https://api.github.com/repos/o/r/actions/workflows/1/dispatches -d \'{"ref":"evil"}\'',
   'bash -c "gh workflow run x --ref evil"',

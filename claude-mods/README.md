@@ -223,7 +223,7 @@ Hardening (LC-1869 security review):
 - **Orchestrated sessions MUST set `BBM_DRAFT_RUN_ID` and `BBM_DRAFT_ARTICLE_ID`.** A tool pin lives in memory and is lost when the
   mod reloads; the env pin is not. While the env var is set, `draft_pin` refuses any other run/article even with no in-memory pin.
 - **Once pinned, every `actions_run_trigger` call is held to one shape:** method `run_workflow`, owner/repo exactly
-  `mykhaylenkostan/bbm-infrastructure`, `ref` exactly `main`, `workflow_id` exactly `run-refresh-stage-gate.yml` (a numeric id or any
+  `brand-bridge-media/bbm-infrastructure`, `ref` exactly `main`, `workflow_id` exactly `run-refresh-stage-gate.yml` (a numeric id or any
   other workflow is denied), `inputs.gate` exactly `stage-6-draft`, `inputs.run_id` the pinned run. The ref rule matters: the workflow
   runs with the service role, so a branch's edited `draft_lint.py` / `gate_runner.py` would run with it. Other methods (rerun, cancel)
   are denied too.
@@ -294,14 +294,14 @@ nudges excluded). It is a floor, not a census: an action that never reaches its 
 Not enabled repo-wide. In an orchestrator session, run at the prompt:
 
 ```
-/plugin install fleet-tracker --marketplace mykhaylenkostan/bbm-infrastructure
+/plugin install fleet-tracker --marketplace brand-bridge-media/bbm-infrastructure
 ```
 
 (answer `y` to add the marketplace, choose user scope). Or non-interactively, e.g. as
 the first step of an orchestrator session:
 
 ```
-claude plugin marketplace add mykhaylenkostan/bbm-infrastructure
+claude plugin marketplace add brand-bridge-media/bbm-infrastructure
 claude plugin install fleet-tracker@bbm-mods --scope user
 ```
 
@@ -316,7 +316,7 @@ claude plugin install fleet-tracker@bbm-mods --scope user
 So the opt-in is the two-command install above (a SessionStart hook could run it, but
 that is deliberately not wired: enable per orchestrator session, not for everyone).
 The marketplace must exist on the ref you add: until this lands on `main`, use
-`mykhaylenkostan/bbm-infrastructure@<branch>`. The install applies to the next session
+`brand-bridge-media/bbm-infrastructure@<branch>`. The install applies to the next session
 start; an interactive session also activates it immediately with no reload.
 
 ### Enabling the mods in cloud sessions (LC-1711, measured 2026-10-08, claude 2.1.294)
@@ -347,7 +347,7 @@ environment's **setup script**, the path measured to load above:
 
 ```
 {
-  claude plugin marketplace add mykhaylenkostan/bbm-mods; echo "rc_marketplace_add=$?"
+  claude plugin marketplace add brand-bridge-media/bbm-mods; echo "rc_marketplace_add=$?"
   claude plugin install jira-closer@bbm-mods --scope user; echo "rc_jira_closer=$?"
   claude plugin install fleet-tracker@bbm-mods --scope user; echo "rc_fleet_tracker=$?"
   claude plugin list
@@ -357,7 +357,7 @@ environment's **setup script**, the path measured to load above:
 **Install from the public mirror, never from this repo (LC-1729, measured 2026-10-19).** The
 setup script runs before the session has GitHub credentials, so cloning this private repo fails
 (`could not read Username for 'https://github.com'`), with or without the repo attached to the
-session. `mykhaylenkostan/bbm-mods` is a public snapshot of `.claude-plugin/` + `claude-mods/`
+session. `brand-bridge-media/bbm-mods` is a public snapshot of `.claude-plugin/` + `claude-mods/`
 that `.github/workflows/mirror-claude-mods.yml` overwrites on every merge touching a mod (tracked
 files only, no history, secret-scanned by `.github/scripts/build_bbm_mods_mirror.sh`, fails closed).
 Edit mods HERE; edits in the mirror are lost on the next sync. A PR on the mirror from anyone but

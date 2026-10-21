@@ -3,7 +3,7 @@
 
 WHAT IT DOES. DENIES Write / Edit / NotebookEdit on any path under `.claude/skills/`.
 
-WHY. Skills live in mykhaylenkostan/claude-skills; merging a PR there is the whole
+WHY. Skills live in brand-bridge-media/claude-skills; merging a PR there is the whole
 deploy, and every Claude Code repo receives a byte copy by CI mirror (e.g. BBM-83
 "Mirror skills from claude-skills@..."). An edit to the copy changes nothing at the
 source, is overwritten by the next mirror, and meanwhile makes this repo's sessions
@@ -26,7 +26,7 @@ COPY_PATH = re.compile(r"(?:^|[/\\])\.claude[/\\]skills[/\\]")
 TOOLS = {"Write", "Edit", "NotebookEdit", "MultiEdit"}
 
 REASON = ("[mod:skill-copy-guard] REFUSED: {path} is a byte copy mirrored from "
-          "mykhaylenkostan/claude-skills; edits here are overwritten by the next mirror and never "
+          "brand-bridge-media/claude-skills; edits here are overwritten by the next mirror and never "
           "reach chat or Cowork. Change the skill in claude-skills (add_repo it, branch, PR; the "
           "merge is the deploy), and the mirror brings it here.")
 

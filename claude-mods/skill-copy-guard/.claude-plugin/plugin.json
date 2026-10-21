@@ -1,7 +1,7 @@
 {
   "name": "skill-copy-guard",
   "version": "0.1.0",
-  "description": "Refuses edits to .claude/skills/ byte copies; skills change in mykhaylenkostan/claude-skills, and the mirror brings them here.",
+  "description": "Refuses edits to .claude/skills/ byte copies; skills change in brand-bridge-media/claude-skills, and the mirror brings them here.",
   "author": {
     "name": "Brand Bridge Media"
   }
