@@ -28,7 +28,7 @@ import {
 
 // Callout convention (LC-1711): every deny / block / refusal / changed-state message starts with
 // `[mod:draft-session]` (that text reaches the model in the tool result, so it can say who acted) and fires a
-// toast naming the mod and the reason (so Stan sees it too). One helper keeps the two together.
+// toast naming the mod and the reason (so the operator sees it too). One helper keeps the two together.
 const MOD = 'draft-session'
 function say($: any, reason: string, timeoutMs?: number): string {
   const text = `[mod:${MOD}] ${reason.replace(/^draft-session: /, '')}`
@@ -254,7 +254,7 @@ export const register: Register = (on, options) => {
   let lintedPlan = ''
   let lintNote = 'draft-lint has not been run in this session'
 
-  // Re-locking is a state change the model and Stan should see, but only when a pass was actually lost:
+  // Re-locking is a state change the model and the operator should see, but only when a pass was actually lost:
   // it returns the call-out text to say (or '' when nothing was lost). The engine follows `$` only into
   // top-level functions, so the caller says it.
   const dirty = (why: string): string => {

@@ -1,7 +1,7 @@
 {
   "name": "no-browser-as-me",
   "version": "0.1.0",
-  "description": "Refuses driving Stan's own browser or desktop: the chrome-browser / computer-use skills and any Chrome or computer-use MCP server.",
+  "description": "Refuses driving the operator's own browser or desktop: the chrome-browser / computer-use skills and any Chrome or computer-use MCP server.",
   "author": {
     "name": "Brand Bridge Media"
   }

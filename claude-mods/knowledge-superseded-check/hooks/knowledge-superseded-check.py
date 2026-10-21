@@ -9,7 +9,7 @@ WHAT IT DOES. After a Supabase `execute_sql` that reads `knowledge_memories` or
   * the query neither filters `is_active` nor selects `superseded_by` — the result
     may silently include retired memories.
 
-WHY. Stan's preference and the knowledge-system skill both say "walk superseded_by
+WHY. The operator's preference and the knowledge-system skill both say "walk superseded_by
 before trusting a memory". The query that skips it looks exactly like the one that
 does; only the result tells them apart, and PostToolUse is the one place a hook
 sees the result. A nudge, not a block: the read already happened and is harmless.

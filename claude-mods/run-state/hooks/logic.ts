@@ -500,7 +500,7 @@ export function decide(view: RunView, t: WriteTarget): Decision {
   }
   const barrier = verdicts.find(v => v.s!.state === 'WAITING_STAN')
   if (barrier) {
-    return { action: 'ask', reason: `run-state: ${barrier.id} is a human barrier (waiting on Stan or the content manager) on ${view.slug}; confirm the person has answered.` }
+    return { action: 'ask', reason: `run-state: ${barrier.id} is a human barrier (waiting on the operator or the content manager) on ${view.slug}; confirm the person has answered.` }
   }
   const redo = verdicts.find(v => v.s!.state === 'DONE' || v.s!.state === 'IN_PROGRESS')
   if (redo) {

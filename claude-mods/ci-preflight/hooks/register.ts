@@ -14,7 +14,7 @@ const UPDATE_BRANCH = /^mcp__(github|GitHub_Custom)__update_pull_request_branch$
 const STORE_KEY = 'lastPushByBranch'
 const SCRIPT = 'scripts/ci/preflight.sh'
 
-// Callout convention (claude-mods/README.md): prefix for the model, toast for Stan.
+// Callout convention (claude-mods/README.md): prefix for the model, toast for the operator.
 function say($: any, text: string, toast?: string, isQuiet = false): string {
   const msg = `[mod:ci-preflight] ${text}`
   if (!isQuiet) $.ui.toast(toast ? `[mod:ci-preflight] ${toast}` : msg)

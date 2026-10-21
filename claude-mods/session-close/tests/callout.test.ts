@@ -3,7 +3,7 @@ import { test, expect, mock } from 'claude-code/testing'
 import { modActionsIn, withModActions } from '../hooks/modlog'
 
 // LC-1711. session-close never denies or asks, so its callout is the one thing it does that the
-// model and Stan should not miss: the wrap-up nudge. It carries `[mod:session-close]` and a toast,
+// model and the operator should not miss: the wrap-up nudge. It carries `[mod:session-close]` and a toast,
 // and it lists what the OTHER mods did ("Mod actions this session: ...") learned from the
 // `[mod:<name>]` prefix on tool results and toasts.
 

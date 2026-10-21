@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 import { childIdOf, closeoutLine, decideCloseout, CLOSEOUT_MS } from '../hooks/logic'
 
-// LC-1835: Claude closes out every child session it spins up (Stan, 2026-10-15).
+// LC-1835: Claude closes out every child session it spins up (the operator, 2026-10-15).
 //  - untrack ARCHIVES, refuses a live session, keeps the row when archiving fails,
 //    and only skips the archive with an explicit keep_reason;
 //  - a row idle in COMPLETED / REVIEW_READY for 60 min gets ONE reminder per bucket episode;
@@ -91,14 +91,14 @@ test('untrack on a NEEDS_INPUT session is refused: no archive, row kept', async 
 
 test('an archive error keeps the row, keeps a person\'s note, and returns the error', async ($, on) => {
   const w = await setup($, on, { bucket: 'COMPLETED', archiveFails: true })
-  await $.tool.call({ tool: 'mcp__fleet-tracker__note', session_id: 'session_s', note: 'Stan: check the diff', needs_you: true } as any)
+  await $.tool.call({ tool: 'mcp__fleet-tracker__note', session_id: 'session_s', note: 'The operator: check the diff', needs_you: true } as any)
   const out = await w.untrack()
   expect(out).toContain('[mod:fleet-tracker]')
   expect(out).toContain('session is busy: cannot archive')
   expect(w.archived.length).toBe(1)
   const st = await w.status()
   expect(st).toContain('LC-9')
-  expect(st).toContain('Stan: check the diff') // the failure went to `error`, not over the note
+  expect(st).toContain('The operator: check the diff') // the failure went to `error`, not over the note
   expect(w.toasts.join(' ')).toContain('Archive of session_s failed')
 })
 
@@ -146,17 +146,17 @@ test('untrack refuses when the fresh poll fails, even if the row last read COMPL
 
 test('keep_reason removes the row without archiving and records the reason', async ($, on) => {
   const w = await setup($, on, { bucket: 'COMPLETED' })
-  const out = await w.untrack({ keep_reason: 'Stan wants to read the transcript' })
+  const out = await w.untrack({ keep_reason: 'The operator wants to read the transcript' })
   expect(out).toContain('[mod:fleet-tracker] Untracked session_s WITHOUT archiving')
-  expect(out).toContain('Stan wants to read the transcript')
+  expect(out).toContain('The operator wants to read the transcript')
   expect(w.archived.length).toBe(0)
   expect(await w.status()).toContain('No sessions tracked')
 })
 
 test('keep_reason also works on a live session (nothing is archived, so nothing is lost)', async ($, on) => {
   const w = await setup($, on, { bucket: 'WORKING' })
-  const out = await w.untrack({ keep_reason: 'handed to Stan' })
-  expect(out).toContain('handed to Stan')
+  const out = await w.untrack({ keep_reason: 'handed to the operator' })
+  expect(out).toContain('handed to the operator')
   expect(w.archived.length).toBe(0)
   expect(await w.status()).toContain('No sessions tracked')
 })

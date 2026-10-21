@@ -16,7 +16,7 @@ test('a deny is prefixed and toasted', async ($, on) => {
 })
 
 test('an ask is prefixed and toasted', async ($, on) => {
-  const w = world(on, { brief: { approved_at: iso(400 * DAY), approved_by: 'Stan' } })
+  const w = world(on, { brief: { approved_at: iso(400 * DAY), approved_by: 'The operator' } })
   await $.tool.call(d())
   expect(w.asked.length).toBe(1)
   expect(w.asked[0]).toContain('[mod:pillar-brief-guard]')

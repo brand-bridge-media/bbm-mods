@@ -13,7 +13,7 @@ forbids outside a declared emergency:
   * Supabase MCP `apply_migration`                           -> ASK
 
 WHY. "GitHub IS production" (LC-421) and "migrations are forward-only" (LC-428)
-were sentences in CLAUDE.md and in Stan's preferences. A sentence is enforced only
+were sentences in CLAUDE.md and in the operator's preferences. A sentence is enforced only
 when it happens to be remembered. Commits cause deploys; a deploy that skips the PR
 has no diff review, no CI gate and no audit row. DDL run through execute_sql is the
 worst case: it changes the live schema AND leaves no migration file, so the repo and
@@ -21,7 +21,7 @@ production silently disagree from then on.
 
 WHY apply_migration ASKS INSTEAD OF DENYING. It at least records a migration in
 Supabase's history, and a declared emergency is the one sanctioned exception. An
-ask puts that call in front of Stan; deploy-supabase-migrations.yml remains the
+ask puts that call in front of the operator; deploy-supabase-migrations.yml remains the
 normal path (commit supabase/migrations/<ts>_name.sql, merge, CI applies it).
 
 WHAT IS NOT GATED, DELIBERATELY. `--dry-run` deploys (they change nothing). SET ROLE / SET SESSION AUTHORIZATION: they change
@@ -74,8 +74,8 @@ _ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 PR_PATH = (" Production deploys originate from a merged PR (CLAUDE.md §4, LC-421): "
            "PR -> review diff -> merge to main -> GitHub Actions deploys. Push this to a "
-           "branch and open a PR instead. If this is a declared emergency, stop and ask Stan; "
-           "he runs it himself.")
+           "branch and open a PR instead. If this is a declared emergency, stop and ask the operator; "
+           "they run it themselves.")
 
 
 def ddl_statements(sql: str) -> list[str]:

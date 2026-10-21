@@ -10,7 +10,7 @@ import { MOD_TOOLS, OWN_MOD, modActionsIn, withModActions } from './modlog'
 // session touched from tool calls it actually observed, and on /close-out (or a
 // turn that sounds like wrapping up) lists the obligations still unmet.
 // It is a nudge: it never denies a call, never calls a model ($0), and never
-// touches Stan's two gates (live-site publish, irreversible money/data).
+// touches the operator's two gates (live-site publish, irreversible money/data).
 
 const KEY = 'session-close:ledger'
 // A quiet stretch of turns after which an unmet obligation is worth repeating.
@@ -139,7 +139,7 @@ function observe(l: Ledger, tool: string, input: any, resultText: string): Ledge
   const next: Ledger = { ...l, runs: { ...l.runs } }
 
   // Jira: a comment on a ticket (session-handoff SKILL.md:189 treats tickets
-  // moved in the session as the thread's record; Stan's rule is do -> verify
+  // moved in the session as the thread's record; the operator's rule is do -> verify
   // -> update ticket).
   if (name === 'addCommentToJiraIssue') {
     const k = keyIn(input?.issueIdOrKey)
@@ -177,7 +177,7 @@ function observe(l: Ledger, tool: string, input: any, resultText: string): Ledge
     if (/\brefresh_runs\b/i.test(codeOf(q))) observeRun(next, q, resultText)
   }
 
-  // Webflow writes and publish. The publish click is Stan's gate: this only
+  // Webflow writes and publish. The publish click is the operator's gate: this only
   // *records* that one happened.
   if (WEBFLOW_TOOL.test(name)) {
     // Match action NAMES (the keys of each `actions` entry, or an `action`
@@ -301,7 +301,7 @@ function unmet(l: Ledger): Unmet[] {
       })
     }
   }
-  // Standing ruling (Stan, 2026-10-15): Claude closes or archives the sessions it spins up.
+  // Standing ruling (the operator, 2026-10-15): Claude closes or archives the sessions it spins up.
   // Only a fleet-tracker that answered can raise this; "not loaded" is not "no children".
   if (l.fleetLoaded && (l.fleetOpen ?? []).length > 0) {
     out.push({
@@ -309,7 +309,7 @@ function unmet(l: Ledger): Unmet[] {
       text: `Fleet: ${l.fleetOpen.length} child session(s) still open: ${l.fleetOpen.join('; ')}. ` +
         'Close each out: mcp__fleet-tracker__untrack archives a finished one (COMPLETED / REVIEW_READY); one still working ' +
         'cannot be archived yet, so wait for it, or untrack with keep_reason if it stays open on purpose',
-      rule: 'Stan 2026-10-15 (LC-1835): Claude is responsible for the sessions it spins up and closes or archives them',
+      rule: 'The operator 2026-10-15 (LC-1835): Claude is responsible for the sessions it spins up and closes or archives them',
     })
   }
   if (l.published) {

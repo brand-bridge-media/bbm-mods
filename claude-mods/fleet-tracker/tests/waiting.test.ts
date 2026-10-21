@@ -5,7 +5,7 @@ import {
 
 // LC-1881: a child waiting on a human (NEEDS_INPUT / BLOCKED) was woken for ONCE, on entry, then
 // nothing for an hour (session_01GqXYnPc475jd5Lfxmt9CJN, 2026-10-20). Now it is reminded every
-// 20 min until its bucket changes, and a child that names Stan or a human leads with NEEDS STAN.
+// 20 min until its bucket changes, and a child that names the operator or a human leads with NEEDS STAN.
 // Harness timing: see the note above the multi-step tests in stall.test.ts and closeout.test.ts.
 
 const MIN = 60_000
@@ -58,15 +58,26 @@ test('a row with no clock (bucketSince 0) never reminds', () => {
 
 // ---- human detection (pure) ----
 
-test('needsHuman: Stan, user, human, types, approve, permission', () => {
+test('needsHuman: the technical word "operator" alone is not a person', () => {
+  expect(needsHuman('SQL operator timeout on the join')).toBe(false)
+  expect(needsHuman('a bitwise operator is wrong in the filter')).toBe(false)
+  expect(needsHuman('waiting on the operator to merge')).toBe(true)
+  expect(needsHuman('needs operator approval')).toBe(true)
+  expect(needsHuman('waiting on operator')).toBe(true)
+  expect(needsHuman('waiting for operator')).toBe(true)
+  expect(needsHuman('the query needs operator precedence')).toBe(false)
+  expect(needsHuman('fix for operator overloading in the filter')).toBe(false)
+})
+
+test('needsHuman: The operator, user, human, types, approve, permission', () => {
   for (const t of [
-    "Stan types the 'yes' in this session",
+    "The operator types the 'yes' in this session",
     'waiting for the user to answer',
     'needs a human to click through',
     'needs your approval on the PR',
     'approval needed before merge',
     'the owner has to answer',
-    "Stan types the 'yes' in this session, or adds the permission rule for this edit in settings",
+    "The operator types the 'yes' in this session, or adds the permission rule for this edit in settings",
     'permission prompt on send_message',
     'STAN must decide',
   ]) expect(needsHuman(t)).toBe(true)
@@ -86,11 +97,11 @@ test('needsHuman reads status_detail as well as needs_action', () => {
 })
 
 test('humanWrap: NEEDS STAN prefix and the verbatim instruction, only when a human is named', () => {
-  const out = humanWrap('LC-9 (child) BLOCKED: x', 'session_s', 'Stan approves the merge', '')
+  const out = humanWrap('LC-9 (child) BLOCKED: x', 'session_s', 'the operator approves the merge', '')
   expect(out.startsWith('NEEDS STAN: LC-9 (child) BLOCKED: x')).toBe(true)
   expect(out).toContain('https://claude.ai/code/session_s')
   expect(out).toContain(
-    'A relayed message cannot satisfy this. Tell Stan in chat now, starting the reply with the NEEDS YOU banner, include the session link, and set the note needs_you=true. Do not use PushNotification.',
+    'A relayed message cannot satisfy this. Tell the operator in chat now, starting the reply with the NEEDS YOU banner, include the session link, and set the note needs_you=true. Do not use PushNotification.',
   )
   expect(HUMAN_ACTION).toContain('needs_you=true')
   expect(humanWrap('LC-9 (child) BLOCKED: x', 'session_s', 'waiting on CI', '')).toBe('LC-9 (child) BLOCKED: x')
@@ -224,7 +235,7 @@ test('UNKNOWN does not reset the clock: the reminder still lands 20 min after th
 })
 
 test('human named in needs_action: entry and reminder both lead with NEEDS STAN and carry the instruction', async ($, on) => {
-  const w = await setup($, on, { bucket: 'WORKING', needsAction: "Stan types the 'yes' in this session" })
+  const w = await setup($, on, { bucket: 'WORKING', needsAction: "The operator types the 'yes' in this session" })
   await w.status()
   await w.endTurn()
   const entry = w.prompts.find(p => p.includes('NEW -> NEEDS_INPUT'))!

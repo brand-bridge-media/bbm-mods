@@ -12,8 +12,8 @@ call and DENIES it unless the text itself bounds the write to at most 5 rows:
 
 Everything above 5 rows goes through a `data-changes/` package PR: lint, a production
 dry-run with real counts on the PR, a CI apply that writes the data_change_runs
-ledger, and a rollback.sql. That is CLAUDE.md §4 and Stan's "bulk writes to live
-need my yes" gate, made mechanical.
+ledger, and a rollback.sql. That is CLAUDE.md §4 and the operator's gate (bulk writes to live
+data need explicit approval), made mechanical.
 
 WHY STATIC, NOT A COUNT. A hook gets no credentials and no MCP client (LC-1017,
 memory 995e6ea9 — rejected on blast radius), so it cannot run SELECT count(*). What

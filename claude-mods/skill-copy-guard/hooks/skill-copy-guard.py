@@ -7,8 +7,8 @@ WHY. Skills live in brand-bridge-media/claude-skills; merging a PR there is the 
 deploy, and every Claude Code repo receives a byte copy by CI mirror (e.g. BBM-83
 "Mirror skills from claude-skills@..."). An edit to the copy changes nothing at the
 source, is overwritten by the next mirror, and meanwhile makes this repo's sessions
-read a skill no other surface sees. Stan's preference: "Never save_skill a skill
-copy" — this is the same rule for the copy that lives in git.
+read a skill no other surface sees. Operator preference: never save_skill a skill
+copy; this is the same rule for the copy that lives in git.
 
 NOT GATED. The CI mirror (it is not a session). Bash writes: deliberately — the
 mirror's own scripts run from Bash in CI, and gating a shell text match would trade

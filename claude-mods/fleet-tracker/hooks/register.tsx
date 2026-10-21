@@ -18,8 +18,8 @@ import {
 // the wake-up turn's text) starts with `[mod:fleet-tracker]` (that text reaches the model in the tool
 // result or the queued turn) and fires a toast naming the mod and the reason. The dashboard itself
 // is informational and needs no toast; a routine wake-up turn is prefixed but not toasted (a toast
-// per REVIEW_READY would be noise; the ones that need Stan already toast through `say`). A plain
-// note is routine bookkeeping: prefixed for the model, silent for Stan. Only a needs_you flag toasts.
+// per REVIEW_READY would be noise; the ones that need the operator already toast through `say`). A plain
+// note is routine bookkeeping: prefixed for the model, silent for the operator. Only a needs_you flag toasts.
 const MOD = 'fleet-tracker'
 function say($: any, reason: string, toast = true): string {
   const text = `[mod:${MOD}] ${reason}`
@@ -34,7 +34,7 @@ const SERVER = 'claude-code-remote'
 const POLL_MS = 90_000
 const STORE_KEY = 'rows'
 
-// Buckets that mean "a human has to do something" (Stan gets flagged).
+// Buckets that mean "a human has to do something" (the operator gets flagged).
 
 const lastWoken = new Map<string, string>()
 // Stall state per session, the source of truth while the module lives. Two polls can
@@ -216,7 +216,7 @@ async function poll($: any): Promise<FleetRow[]> {
         fresh.stallEscalated = final.escalated
         return fresh
       } catch (err) {
-        // A failed poll is evidence about the poll, not the session: show it, don't flag Stan.
+        // A failed poll is evidence about the poll, not the session: show it, don't flag the operator.
         return { ...row, checkedAt: now, error: String(err).slice(0, 120) }
       }
     }),
@@ -306,14 +306,14 @@ function flushWakes($: any) {
   if (pendingWakes.length === 0) return
   const lines = pendingWakes.splice(0)
   // Queues a turn once the session is idle, so the orchestrator triages and,
-  // if Stan is needed, sends him a push notification.
+  // if the operator is needed, tells them in chat.
   Promise.resolve()
     .then(() =>
       $.prompt.submit({
         text:
           '[mod:fleet-tracker] Session state changed:\n' +
           lines.map(w => `- ${w}`).join('\n') +
-          '\nTriage each: inspect the session, act or relay. If it needs Stan, tell him in chat starting with the NEEDS YOU banner and set the note needs_you=true. Never use PushNotification.',
+          '\nTriage each: inspect the session, act or relay. If it needs the operator, tell them in chat starting with the NEEDS YOU banner and set the note needs_you=true. Never use PushNotification.',
       }),
     )
     .catch(() => {
@@ -360,7 +360,7 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'note',
       description:
-        "Set a row's note. needs_you=true flags it as waiting on Stan (e.g. merge approval, a decision); false clears the flag.",
+        "Set a row's note. needs_you=true flags it as waiting on the operator (e.g. merge approval, a decision); false clears the flag.",
       inputSchema: {
         type: 'object',
         properties: {

@@ -16,7 +16,7 @@ export type Ledger = {
   ingests: number
   // refresh_runs ids the session read or wrote -> last observed state.
   runs: Record<string, 'in_progress' | 'closed'>
-  // A Webflow publish call went through (Stan's gate; the mod never makes one).
+  // A Webflow publish call went through (the operator's gate; the mod never makes one).
   published: boolean
   // Scheduling writes (send_later / create_trigger / CronCreate / Jira "next due"),
   // split by what the scheduled text covers.

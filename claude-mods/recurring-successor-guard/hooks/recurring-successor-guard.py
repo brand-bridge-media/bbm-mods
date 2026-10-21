@@ -12,8 +12,8 @@ the call when all three hold:
   3. nothing this session scheduled the next occurrence: no createJiraIssue, and no
      scheduled task (create_trigger, send_later, CronCreate).
 
-WHY. Stan's preference: "recurring work gets its successor scheduled before it's
-closed". Closing a recurring ticket without one is how a monthly check silently
+WHY. Operator preference: recurring work gets its successor scheduled before it is
+closed. Closing a recurring ticket without one is how a monthly check silently
 stops happening; nobody notices an absence.
 
 WHAT IT CANNOT KNOW, STATED PLAINLY. A hook has no Jira client (LC-1017). If the
@@ -90,7 +90,7 @@ def evaluate(tool_name: str, tool_input: dict, rows: list[dict]) -> tuple[str, s
     return "deny", (
         f"[mod:recurring-successor-guard] REFUSED: {key} is recurring (label `recurring` or a "
         "'next due' line) and this transition closes it, but nothing this session scheduled the "
-        "next occurrence. Stan's rule: recurring work gets its successor before it is closed. "
+        "next occurrence. The operator's rule: recurring work gets its successor before it is closed. "
         f"Create the successor ticket (createJiraIssue, with its next-due date and `Successor of "
         f"{key}` in the description) or a scheduled task (create_trigger / send_later) whose "
         f"prompt names {key}, then transition.")

@@ -2,8 +2,8 @@ import type { Register } from 'claude-code'
 
 import { askFor } from './logic'
 
-// Why (LCH-528): money-moving and destructive tools were a sentence in Stan's preferences. This
-// puts the call in front of him through the engine's own permission prompt. The list is ./logic.ts.
+// Why (LCH-528): money-moving and destructive tools were a sentence in the operator's preferences. This
+// puts the call in front of them through the engine's own permission prompt. The list is ./logic.ts.
 export const register: Register = on => {
   on('classic.PreToolUse', { tool: /^mcp__/ }, async ($, e, next) => {
     const ask = askFor(String((e as any).tool ?? ''))

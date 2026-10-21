@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 
 // LC-1729 callout convention: the merge-time instruction and the Stop block both carry
-// [mod:jira-closer] (for the model) and fire the same text as a toast (for Stan).
+// [mod:jira-closer] (for the model) and fire the same text as a toast (for the operator).
 
 const toastsOf = (on: any) => {
   const toasts: string[] = []

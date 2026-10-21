@@ -63,7 +63,7 @@ test('a write for a READY section carries no callout and fires no toast', async 
   expect(toasts.length).toBe(0)
 })
 
-// A toast is for Stan's eyes only; if the toast surface throws, the guard must still decide.
+// A toast is for the operator's eyes only; if the toast surface throws, the guard must still decide.
 test('a throwing toast does not stop an ask (plan unreadable, write refused)', async ($, on) => {
   const { asked } = setup(on, true, true)
   const out = JSON.stringify(await $.tool.call({ tool: 'Bash', command: READY } as any))

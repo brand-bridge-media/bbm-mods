@@ -10,8 +10,8 @@ WHAT IT DOES.
 WHY A NUDGE, NOT A BAND. A hook cannot read the session's current title (no MCP
 client, LC-1017), so it cannot tell a misnamed session from a well-named one. It can
 put the rule in front of the model at the two moments it matters: the start, and
-the moment the ticket key first exists. Stan's preference: "Untracked -> <PROJ>-TBD,
-renamed once the ticket exists."
+the moment the ticket key first exists. Operator preference: an untracked session is named <PROJ>-TBD,
+renamed once the ticket exists.
 
 Self-test: python3 session-title-nudge.py --selftest
 """

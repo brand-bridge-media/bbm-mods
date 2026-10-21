@@ -5,7 +5,7 @@ import type { Row } from '../types'
 import type { HookOut } from './py'
 import { blockReason, contextOf, decisionOf, parseOut, resultText, runArgs, toastText, toolPayload } from './py'
 
-// Why (LCH-528, Stan: "recurring work gets its successor scheduled before it's closed"): closing a
+// Why (LCH-528, operator rule: recurring work gets its successor scheduled before it is closed): closing a
 // recurring ticket with no successor is how a monthly check silently stops. A PreToolUse hook gets
 // no transcript, so this mod records the calls the check reads (the ticket, its transitions, any
 // successor) and hands them over as transcript rows. Logic and tests: ./recurring-successor-guard.py.
@@ -29,7 +29,7 @@ function toast($: any, text: string): void {
   try { $.ui.toast(toastText(text)) } catch { /* a toast never changes a verdict */ }
 }
 
-// Deny and ask are toasted for Stan; a warning is not.
+// Deny and ask are toasted for the operator; a warning is not.
 function preToolUse($: any, v: HookOut | undefined) {
   const d = decisionOf(v)
   if (d && 'deny' in d) toast($, d.deny)

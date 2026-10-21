@@ -46,7 +46,7 @@ test('a named, existing parent (plain, Markdown-bold, ADF) is allowed and gets t
     expect(ctx).toContain('[mod:pillar-brief-guard]')
     expect(ctx).toContain('--parent-slug best-sofas')
     expect(ctx).toContain('LC-1728')
-    expect(ctx).toContain("Stan's approval")
+    expect(ctx).toContain("the operator's approval")
   }
   expect(w.reached.length).toBe(3)
   expect(w.queries[0]).toBe("select id from public.articles where slug = 'best-sofas' limit 1")
@@ -119,7 +119,7 @@ test('shortlist dispatch with no approved brief is denied and names the step to 
   const r: any = await $.tool.call(shortlist())
   expect(r.deny).toContain('no approved pillar brief for "best-sofas"')
   expect(r.deny).toContain('brief_stage.py draft --article-slug best-sofas')
-  expect(r.deny).toContain('--by Stan')
+  expect(r.deny).toContain('--by "the operator"')
   expect(w.reached.length).toBe(0)
 })
 
@@ -201,14 +201,20 @@ test('a numeric workflow id is a match when its inputs carry step=shortlist or m
   expect(w.reached.length).toBe(1)
 })
 
+test('a brief approved under the legacy spelling (before LC-1889) still passes the approver check', async ($, on) => {
+  const w = world(on, { brief: { version: 2, approved_at: iso(30 * DAY), approved_by: 'stan (chat)' } })
+  expect((await $.tool.call(shortlist()) as any).deny).toBeUndefined()
+  expect(w.asked.length).toBe(0)
+})
+
 test('age: exactly 365 days passes without a question', async ($, on) => {
-  const w = world(on, { brief: { version: 2, approved_at: iso(365 * DAY), approved_by: 'Stan' } })
+  const w = world(on, { brief: { version: 2, approved_at: iso(365 * DAY), approved_by: 'The operator' } })
   expect((await $.tool.call(shortlist()) as any).deny).toBeUndefined()
   expect(w.asked.length).toBe(0)
 })
 
 test('an expired brief asks; refusing denies', async ($, on) => {
-  const w = world(on, { brief: { version: 2, approved_at: iso(366 * DAY), approved_by: 'Stan' }, answer: 'Refuse' })
+  const w = world(on, { brief: { version: 2, approved_at: iso(366 * DAY), approved_by: 'The operator' }, answer: 'Refuse' })
   const r: any = await $.tool.call(shortlist())
   expect(w.asked.length).toBe(1)
   expect(w.asked[0]).toContain('366 days old')
@@ -217,7 +223,7 @@ test('an expired brief asks; refusing denies', async ($, on) => {
 })
 
 test('an expired brief asks; allowing lets the call through', async ($, on) => {
-  const w = world(on, { brief: { approved_at: iso(500 * DAY), approved_by: 'Stan' }, answer: 'Allow this call' })
+  const w = world(on, { brief: { approved_at: iso(500 * DAY), approved_by: 'The operator' }, answer: 'Allow this call' })
   const r: any = await $.tool.call(shortlist())
   expect(r.deny).toBeUndefined()
   expect(w.reached).toEqual(['mcp__github__actions_run_trigger'])
@@ -229,7 +235,7 @@ test('fail closed: a lookup that cannot run DENIES with the fix (never asks): er
     [{ sqlError: true }, FIX],
     [{ throwSql: true }, FIX],
     [{ runs: {} }, 'cannot find refresh run'],
-    [{ brief: { approved_at: 'garbage', approved_by: 'Stan' } }, 'no readable approved_at'],
+    [{ brief: { approved_at: 'garbage', approved_by: 'The operator' } }, 'no readable approved_at'],
     [{ brief: { approved_at: iso(DAY), approved_by: '  ' } }, 'names no configured approver'],
     [{ brief: { approved_at: iso(DAY), approved_by: 'claude' } }, 'names no configured approver'],
   ]
@@ -267,14 +273,14 @@ test('a non-UUID run id is never put into SQL: it is denied', async ($, on) => {
 
 // ---- rule 3: approvals name a configured human approver ----------------------------------------
 
-test('run-pillar-brief.yml mode=approve needs a configured approver (Stan), case-insensitively', async ($, on) => {
+test('run-pillar-brief.yml mode=approve needs a configured approver (the operator), case-insensitively', async ($, on) => {
   const w = world(on)
-  for (const inputs of [{ mode: 'approve' }, { mode: 'approve', approved_by: '' }, { mode: 'Approve', approved_by: '   ' }, { mode: 'approve', approved_by: 'claude' }, { mode: 'approve', approved_by: 'x' }]) {
+  for (const inputs of [{ mode: 'approve' }, { mode: 'approve', approved_by: '' }, { mode: 'Approve', approved_by: '   ' }, { mode: 'approve', approved_by: 'claude' }, { mode: 'approve', approved_by: 'x' }, { mode: 'approve', approved_by: 'claude (chat)' }, { mode: 'approve', approved_by: '(chat)' }]) {
     const r: any = await $.tool.call(dispatch('run-pillar-brief.yml', inputs))
-    expect(r.deny, JSON.stringify(inputs)).toContain('named human approver (Stan)')
+    expect(r.deny, JSON.stringify(inputs)).toContain('named human approver (the operator)')
   }
   expect(w.reached.length).toBe(0)
-  for (const inputs of [{ mode: 'approve', approved_by: 'Stan' }, { mode: 'approve', approved_by: ' stan ' }, { mode: 'draft' }]) {
+  for (const inputs of [{ mode: 'approve', approved_by: 'The operator' }, { mode: 'approve', approved_by: ' THE operator ' }, { mode: 'approve', approved_by: 'operator (chat)' }, { mode: 'approve', approved_by: 'stan (chat)' }, { mode: 'approve', approved_by: 'STAN' }, { mode: 'approve', approved_by: 'The operator (portal)' }, { mode: 'draft' }]) {
     expect(((await $.tool.call(dispatch('run-pillar-brief.yml', inputs))) as any).deny, JSON.stringify(inputs)).toBeUndefined()
   }
 })
@@ -300,11 +306,11 @@ test('pillar_brief.py approve without a configured --by is denied in every spell
   expect(w.reached.length).toBe(0)
 })
 
-test('approve by Stan, other subcommands, and mentions of approve are allowed', async ($, on) => {
+test('approve by the operator, other subcommands, and mentions of approve are allowed', async ($, on) => {
   const w = world(on)
   for (const c of [
-    'python3 pillar_brief.py approve --brief-id abc --by Stan',
-    'python3 pillar_brief.py approve --brief-id abc --by="stan"',
+    'python3 pillar_brief.py approve --brief-id abc --by "The operator"',
+    'python3 pillar_brief.py approve --brief-id abc --by="THE OPERATOR"',
     'python3 pillar_brief.py show --article-slug best-sofas',
     'grep -n approve webflow/bulk-operations/pillar-brief/pillar_brief.py',
     'git commit -m "pillar_brief.py approve needs --by"',
@@ -426,9 +432,9 @@ test('gh workflow run: shortlist honours apply; approve needs the approver', asy
     `gh workflow run 12345 --field mode=approve`,
   ]) expect(((await $.tool.call(bash(c))) as any).deny, c).toContain('named human approver')
   for (const c of [
-    `gh workflow run run-pillar-brief.yml -f mode=approve -f approved_by=Stan`,
-    `gh workflow run run-pillar-brief.yml -fmode=approve -fapproved_by=Stan`,
-    `gh workflow run run-pillar-brief.yml --field=mode=approve --field=approved_by=stan`,
+    `gh workflow run run-pillar-brief.yml -f mode=approve -f approved_by="the operator"`,
+    `gh workflow run run-pillar-brief.yml -fmode=approve -fapproved_by="the operator"`,
+    `gh workflow run run-pillar-brief.yml --field=mode=approve --field=approved_by="The Operator"`,
     `gh workflow run run-pillar-brief.yml -f mode=draft`,
   ]) expect(((await $.tool.call(bash(c))) as any).deny, c).toBeUndefined()
   void w
@@ -677,12 +683,12 @@ test('nested shells (bash -c inside bash -c inside eval) are seen through, to a 
   expect(((await $.tool.call(bash(harmless))) as any).deny).toBeUndefined()
 })
 
-test('real run-pillar-brief.yml inputs (mode, approved_by, dry_run): the workflow defaults approved_by to Stan, so omitting it is still denied', async ($, on) => {
+test('real run-pillar-brief.yml inputs (mode, approved_by, dry_run): the workflow defaults approved_by to the operator, so omitting it is still denied', async ($, on) => {
   const w = world(on)
-  // approve with the live-apply input shape and no approved_by would be attributed to Stan by the workflow default
+  // approve with the live-apply input shape and no approved_by would be attributed to the operator by the workflow default
   const omitted: any = await $.tool.call(dispatch('run-pillar-brief.yml', { mode: 'approve', brief_id: 'b1', dry_run: false }))
   expect(omitted.deny).toContain('named human approver')
-  const named: any = await $.tool.call(dispatch('run-pillar-brief.yml', { mode: 'approve', brief_id: 'b1', dry_run: false, approved_by: 'Stan' }))
+  const named: any = await $.tool.call(dispatch('run-pillar-brief.yml', { mode: 'approve', brief_id: 'b1', dry_run: false, approved_by: 'The operator' }))
   expect(named.deny).toBeUndefined()
   const gh: any = await $.tool.call(bash('gh workflow run run-pillar-brief.yml -f mode=approve -f brief_id=b1 -f dry_run=false'))
   expect(gh.deny).toContain('named human approver')

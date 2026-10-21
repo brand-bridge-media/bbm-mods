@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 
 // Tracking a session puts a row on the dashboard, filled from get_session;
-// a WORKING session never flags Stan.
+// a WORKING session never flags the operator.
 test('track adds a row filled from get_session', async ($, on) => {
   mock.store(on)
   mock.clock(on, { now: Date.parse('2026-10-07T12:00:00Z') })

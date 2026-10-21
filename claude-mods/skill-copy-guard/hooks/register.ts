@@ -23,7 +23,7 @@ function toast($: any, text: string): void {
   try { $.ui.toast(toastText(text)) } catch { /* a toast never changes a verdict */ }
 }
 
-// Deny and ask are toasted for Stan; a warning is not.
+// Deny and ask are toasted for the operator; a warning is not.
 function preToolUse($: any, v: HookOut | undefined) {
   const d = decisionOf(v)
   if (d && 'deny' in d) toast($, d.deny)

@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 
-// LC-1835: Claude closes out the child sessions it spins up (Stan, 2026-10-15), so /close-out lists the
+// LC-1835: Claude closes out the child sessions it spins up (the operator, 2026-10-15), so /close-out lists the
 // ones fleet-tracker still has open. session-close reads them through fleet-tracker's open_children
 // tool; fleet-tracker is another plugin, so these tests stand in for it with a tool.call handler.
 // When it is not loaded the call fails, and that must read as "not checked", never "zero children".

@@ -17,7 +17,7 @@ import { plainView } from './plain'
 
 // Callout convention (LC-1711): every deny / ask / block / changed-something message starts with
 // `[mod:refresh-run-guard]` (that text reaches the model in the tool result, so it can say who acted) and
-// fires a toast naming the mod and the reason (so Stan sees it too). One helper keeps both together.
+// fires a toast naming the mod and the reason (so the operator sees it too). One helper keeps both together.
 const MOD = 'refresh-run-guard'
 function say($: any, reason: string): string {
   const text = `[mod:${MOD}] ${reason.replace(/^refresh-run-guard: /, '')}`
@@ -392,7 +392,7 @@ function payloadVerdict(input: unknown, baseline: Record<string, number>): Verdi
           if (base !== undefined && now < base) {
             deny.push(
               `This \`${field}\` replace on item ${w.id} would drop lc-deal-pill spans (${base} seen in the live field, ${now} in the payload; LCH-302). ` +
-                'Carry the pill markup next to the same brand CTA, or have Stan declare the loss on the converter path (accept_pill_loss).',
+                'Carry the pill markup next to the same brand CTA, or have the operator declare the loss on the converter path (accept_pill_loss).',
             )
           } else if (base === undefined) {
             ask.push(

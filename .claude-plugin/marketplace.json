@@ -57,12 +57,12 @@
     {
       "name": "spend-delete-ask",
       "source": "./claude-mods/spend-delete-ask",
-      "description": "Asks Stan before any tool that moves money, spends a balance or deletes something a session cannot restore (Stripe, PayPal, QuickBooks, link carts, Roominate, Airtable/Notion/Drive/GitHub/Cloudflare/Supabase deletes)."
+      "description": "Asks the operator before any tool that moves money, spends a balance or deletes something a session cannot restore (Stripe, PayPal, QuickBooks, link carts, Roominate, Airtable/Notion/Drive/GitHub/Cloudflare/Supabase deletes)."
     },
     {
       "name": "no-browser-as-me",
       "source": "./claude-mods/no-browser-as-me",
-      "description": "Refuses driving Stan's own browser or desktop: the chrome-browser / computer-use skills and any Chrome or computer-use MCP server."
+      "description": "Refuses driving the operator's own browser or desktop: the chrome-browser / computer-use skills and any Chrome or computer-use MCP server."
     },
     {
       "name": "recurring-successor-guard",

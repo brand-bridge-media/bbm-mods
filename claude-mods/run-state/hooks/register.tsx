@@ -151,7 +151,7 @@ async function refresh($: any, o: Opts, force = false): Promise<Read> {
 
 // Callout convention (LC-1711): every deny / ask / changed-state message starts with `[mod:run-state]`
 // (that text reaches the model in the tool result, so it can say who acted) and fires a toast naming
-// the mod and the reason (so Stan sees it too). One helper keeps the two together.
+// the mod and the reason (so the operator sees it too). One helper keeps the two together.
 const MOD = 'run-state'
 function say($: any, reason: string): string {
   const text = `[mod:${MOD}] ${reason.replace(/^run-state: /, '')}`

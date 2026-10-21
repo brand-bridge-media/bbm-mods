@@ -1,4 +1,4 @@
-// Which tool calls ask Stan first (LCH-528, Stan's gate: "irreversible money/data").
+// Which tool calls ask the operator first (LCH-528, operator gate: irreversible money/data).
 // Kept as a list, not a pattern: a broad `*__delete_*` would also ask before routine,
 // reversible cleanup (a session deleting its own scheduled check-in) and stall unattended
 // sessions. A tool named here asks; anything else is untouched.
@@ -62,10 +62,10 @@ const DESTRUCTIVE = new Set(DESTRUCTIVE_TOOLS)
 /** The ask text for a tool, or undefined when it does not ask. */
 export function askFor(tool: string): string | undefined {
   if (MONEY.has(tool) || MONEY_SERVERS.some(p => tool.startsWith(p))) {
-    return `[mod:spend-delete-ask] ${tool} moves money or spends a balance. Approve only if Stan asked for exactly this.`
+    return `[mod:spend-delete-ask] ${tool} moves money or spends a balance. Approve only if the operator asked for exactly this.`
   }
   if (DESTRUCTIVE.has(tool)) {
-    return `[mod:spend-delete-ask] ${tool} deletes something a session cannot restore. Approve only if Stan asked for exactly this.`
+    return `[mod:spend-delete-ask] ${tool} deletes something a session cannot restore. Approve only if the operator asked for exactly this.`
   }
   return undefined
 }

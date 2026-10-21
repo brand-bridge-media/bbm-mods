@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 import { decideWake, NEEDS_STAN } from '../hooks/logic'
 
-// Transition gate: which bucket changes wake the orchestrator, which flag Stan,
+// Transition gate: which bucket changes wake the orchestrator, which flag the operator,
 // and which are suppressed. A broken gate would otherwise stay green (LC-1711 review).
 
 type Reply = { bucket: string; summary?: string; needsAction?: string }
@@ -34,7 +34,7 @@ async function setup($: any, on: any) {
   return poll
 }
 
-test('BLOCKED wakes the orchestrator and flags Stan', async ($, on) => {
+test('BLOCKED wakes the orchestrator and flags the operator', async ($, on) => {
   const poll = await setup($, on)
   const out = await poll({ bucket: 'BLOCKED', summary: 'needs a decision' })
   expect(out.prompts.length).toBe(1)
@@ -43,14 +43,14 @@ test('BLOCKED wakes the orchestrator and flags Stan', async ($, on) => {
   expect(out.toasts.join(' ')).toContain('needs you')
 })
 
-test('FAILED wakes the orchestrator and flags Stan', async ($, on) => {
+test('FAILED wakes the orchestrator and flags the operator', async ($, on) => {
   const poll = await setup($, on)
   const out = await poll({ bucket: 'FAILED' })
   expect(out.prompts.length).toBe(1)
   expect(out.toasts.join(' ')).toContain('needs you')
 })
 
-test('REVIEW_READY wakes the orchestrator without flagging Stan', async ($, on) => {
+test('REVIEW_READY wakes the orchestrator without flagging the operator', async ($, on) => {
   const poll = await setup($, on)
   const out = await poll({ bucket: 'REVIEW_READY' })
   expect(out.prompts.length).toBe(1)

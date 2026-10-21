@@ -4,7 +4,7 @@ import type { Register } from 'claude-code'
 import type { PendingTicket } from '../types'
 
 // Why this exists (LC-1729): on 2026-10-08 LC-1537 and LC-1551 were put in
-// front of Stan as open work weeks after their code shipped. Measured that day:
+// front of the operator as open work weeks after their code shipped. Measured that day:
 // 34 of the 64 tickets with code merged since Sept 1 were still not Done.
 // Closing a ticket was a manual step no session owned; sessions stop at merge.
 // So the session that merges a PR now owns its ticket: it is told at merge time
@@ -27,7 +27,7 @@ const WATCHED = /^mcp__[^_].*__(merge_pull_request|enable_pr_auto_merge|create_p
 const pending = atom({ plugin: 'jira-closer', key: 'pending' } as const, [] as PendingTicket[])
 const titles = atom({ plugin: 'jira-closer', key: 'titles' } as const, {} as Record<string, string>)
 
-// Callout convention (claude-mods/README.md): prefix for the model, toast for Stan.
+// Callout convention (claude-mods/README.md): prefix for the model, toast for the operator.
 function say($: any, text: string): string {
   const msg = `[mod:jira-closer] ${text}`
   $.ui.toast(msg)

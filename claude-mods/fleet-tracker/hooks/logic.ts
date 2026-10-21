@@ -65,7 +65,7 @@ export function decideWake(
 
 // ---- Stall detection (LC-1834) ----
 // A hung session never changes bucket: it sits in WORKING, so the wake gate above
-// never fires (Stan, 2026-10-15: "it gets hung and nobody nudges it for an hour").
+// never fires (operator report, 2026-10-15: a hung child sat for an hour with nobody nudging it).
 // get_session's updated_at only moves at turn boundaries (measured 2026-10-15: it
 // stayed put across a dozen tool calls in one turn), so progress is read from the
 // newest transcript event instead, which moves on every tool call and reply.
@@ -168,7 +168,7 @@ export function childIdOf(resultText: string, ownId: string): string | null {
 }
 
 // ---- Close-out reminder (LC-1835) ----
-// Claude is responsible for the sessions it spins up (Stan, 2026-10-15): a child that
+// Claude is responsible for the sessions it spins up (the operator, 2026-10-15): a child that
 // finished and was never archived is a leak. A row that has sat in COMPLETED or
 // REVIEW_READY for CLOSEOUT_MS without changing bucket gets ONE wake per bucket episode.
 export const CLOSEOUT_MS = 60 * 60_000
@@ -188,7 +188,7 @@ export function closeoutLine(ticket: string, label: string, bucket: string, buck
 // A child that waits on a human produces no further signal after its entry wake: decideStall
 // only reads WORKING and decideCloseout only COMPLETED / REVIEW_READY. Measured 2026-10-20:
 // session_01GqXYnPc475jd5Lfxmt9CJN sat in NEEDS_INPUT/BLOCKED from ~15:58 UTC for an hour
-// ("Stan types the 'yes' in this session...") and Stan noticed before the orchestrator did.
+// (it needed the operator to type a confirmation in that session) and the operator noticed before the orchestrator did.
 // A row that stays in NEEDS_INPUT or BLOCKED gets a wake every WAITING_REMIND_MS, measured from
 // the later of entering the bucket and the last reminder, until the bucket changes.
 export const WAITING_REMIND_MS = 20 * 60_000
@@ -207,14 +207,14 @@ export function decideWaitingReminder(bucket: string, bucketSince: number, lastR
 // "permission" are NOT enough: "permission denied reading the lockfile" and "several types of
 // merge conflicts" are machine text (CI review of PR #1909).
 const HUMAN_NEEDED =
-  /\b(?:stan|user|human|owner)\b|\bpermission (?:prompt|rule)\b|\bneeds (?:your )?approval\b|\bapproval needed\b/i
+  /\b(?:stan|the operator|user|human|owner)\b|\boperator (?:approval|decision|input)\b|\bwaiting (?:on|for) operator\b|\bpermission (?:prompt|rule)\b|\bneeds (?:your )?approval\b|\bapproval needed\b/i
 
 export function needsHuman(...texts: unknown[]): boolean {
   return texts.some(t => HUMAN_NEEDED.test(String(t ?? '')))
 }
 
 export const HUMAN_ACTION =
-  'A relayed message cannot satisfy this. Tell Stan in chat now, starting the reply with the NEEDS YOU banner, include the session link, and set the note needs_you=true. Do not use PushNotification.'
+  'A relayed message cannot satisfy this. Tell the operator in chat now, starting the reply with the NEEDS YOU banner, include the session link, and set the note needs_you=true. Do not use PushNotification.'
 
 // A human-needed child leads its wake line with `NEEDS STAN:` and says what the orchestrator must do.
 export function humanWrap(line: string, sessionId: string, needsAction: string, statusDetail: string): string {

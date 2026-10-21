@@ -1,13 +1,13 @@
 import type { Register } from 'claude-code'
 
-// Why this exists (LC-1731, rulings in memories 2ef2354a / 1c7e219e, LC-1726): Stan, 2026-10-08,
-// "memories are suggestions sessions ignore". The pillar-brief rules are enforced here, at the
+// Why this exists (LC-1731, rulings in memories 2ef2354a / 1c7e219e, LC-1726): operator ruling, 2026-10-08,
+// that memories are suggestions sessions ignore. The pillar-brief rules are enforced here, at the
 // moment they matter, in ANY session (not only refresh runs):
 //   1. a new article idea (Jira LCC, label article-idea) names a parent article that EXISTS, so its
 //      brief can inherit from it;
 //   2. product selection and article writing happen only against an APPROVED pillar brief
 //      (public.pillar_briefs, status='approved', approved_at within 365 days);
-//   3. every approval names a configured human approver (userConfig `approvers`, default Stan).
+//   3. every approval names a configured human approver (userConfig `approvers`, default the operator).
 // Business analogy: the foreman who will not let the crew order materials until the blueprint
 // is signed, and who wants to see whose signature it is.
 //
@@ -46,10 +46,10 @@ type Target =
 
 const STEP_TO_RUN = (slug: string): string =>
   `Step to run: draft the brief (brief_stage.py draft --article-slug ${slug} [--parent-slug <parent>], LC-1728; ` +
-  `until it lands, pillar_brief.py draft --file <brief.json> --apply), get Stan's approval ` +
-  `(pillar_brief.py approve --brief-id <id> --by Stan), then retry.`
+  `until it lands, pillar_brief.py draft --file <brief.json> --apply), get the operator's approval ` +
+  `(pillar_brief.py approve --brief-id <id> --by "the operator"), then retry.`
 
-// Callout convention (claude-mods/README.md): prefix for the model, toast for Stan.
+// Callout convention (claude-mods/README.md): prefix for the model, toast for the operator.
 function say($: any, text: string): string {
   const msg = `[mod:${NAME}] ${text}`
   $.ui.toast(msg)
@@ -68,18 +68,27 @@ function asObject(v: unknown): Record<string, unknown> {
 // ---------------------------------------------------------------- approvers
 
 function approversOf(o: Opts): string[] {
-  const raw = Array.isArray(o.approvers) ? o.approvers : typeof o.approvers === 'string' ? o.approvers.split(',') : ['Stan']
+  const raw = Array.isArray(o.approvers) ? o.approvers : typeof o.approvers === 'string' ? o.approvers.split(',') : ['the operator']
   const list = raw.map(a => String(a).trim()).filter(Boolean)
-  return list.length ? list : ['Stan']
+  return list.length ? list : ['the operator']
 }
 
-// "Stan approves every brief": the approver must be one of the configured humans, so `claude` or `x` fail.
+// The operator approves every brief: the approver must be one of the configured humans, so `claude` or `x` fail.
+// Recorded approvals carry the channel ("operator (chat)", "operator (portal)") and may drop the article, so both
+// sides are compared as a bare name: a leading "the " and a trailing "(...)" are ignored, nothing else is.
+// Briefs approved before LC-1889 were recorded under the owner's first name; they stay valid, so that
+// legacy spelling (lowercase, compared case-insensitively) counts as the same approver as "operator".
+const LEGACY_APPROVER_ALIASES: Record<string, string> = { stan: 'operator' }
+const bareName = (s: string): string => {
+  const n = s.trim().toLowerCase().replace(/\s*\([^)]*\)\s*$/, '').replace(/^the\s+/, '')
+  return LEGACY_APPROVER_ALIASES[n] ?? n
+}
 function approverOk(o: Opts, v: unknown): boolean {
-  return typeof v === 'string' && approversOf(o).some(a => a.toLowerCase() === v.trim().toLowerCase())
+  return typeof v === 'string' && !!bareName(v) && approversOf(o).some(a => bareName(a) === bareName(v))
 }
 
 const approverDeny = (o: Opts, where: string): string =>
-  `${where} needs a named human approver (${approversOf(o).join(' or ')}): an approval must say who gave it, and Stan approves every brief.`
+  `${where} needs a named human approver (${approversOf(o).join(' or ')}): an approval must say who gave it, and the operator approves every brief.`
 
 // ---------------------------------------------------------------- text helpers
 
@@ -346,8 +355,8 @@ async function briefVerdict($: any, o: Opts, t: Target, what: string): Promise<V
     }
     const b = rows[0]
     const at = Date.parse(String(b.approved_at))
-    if (Number.isNaN(at)) return { deny: `the approved brief for "${label}" has no readable approved_at, so its age cannot be checked and this ${what} is refused. Re-approve it with pillar_brief.py approve --by Stan.` }
-    if (!approverOk(o, b.approved_by)) return { deny: `the approved brief for "${label}" names no configured approver (${approversOf(o).join(' or ')}), and every approval must; this ${what} is refused. Re-approve it with pillar_brief.py approve --by Stan.` }
+    if (Number.isNaN(at)) return { deny: `the approved brief for "${label}" has no readable approved_at, so its age cannot be checked and this ${what} is refused. Re-approve it with pillar_brief.py approve --by "the operator".` }
+    if (!approverOk(o, b.approved_by)) return { deny: `the approved brief for "${label}" names no configured approver (${approversOf(o).join(' or ')}), and every approval must; this ${what} is refused. Re-approve it with pillar_brief.py approve --by "the operator".` }
     const age = (await $.clock.now()) - at
     if (age > YEAR_MS) {
       const days = Math.floor(age / 86_400_000)
@@ -510,7 +519,7 @@ export const register: Register = (on, options) => {
         say(
           $,
           `article idea created under parent "${parent}". Next: draft the brief from the parent ` +
-            `(brief_stage.py draft --article-slug <new> --parent-slug ${parent}, LC-1728), get Stan's approval, ` +
+            `(brief_stage.py draft --article-slug <new> --parent-slug ${parent}, LC-1728), get the operator's approval, ` +
             `and only then write or pick products.`,
         ),
       ],

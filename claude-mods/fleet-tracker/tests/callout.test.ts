@@ -37,7 +37,7 @@ test('track, flag and untrack each carry the prefix and a toast', async ($, on) 
   expect(toasts.join(' ')).toContain('merge approval')
 })
 
-test('a routine note is prefixed for the model but stays silent for Stan', async ($, on) => {
+test('a routine note is prefixed for the model but stays silent for the operator', async ($, on) => {
   const toasts = setup(on)
   await $.tool.call({ tool: 'mcp__fleet-tracker__track', session_id: 'session_y', ticket: 'LC-2', label: 'demo' } as any)
   const before = toasts.length

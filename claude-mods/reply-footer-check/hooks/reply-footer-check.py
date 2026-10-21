@@ -8,9 +8,9 @@ blocks the stop ONCE (the model gets one more pass) when:
     `Noted separately: Nothing` / `Nothing`, or
   * a key in that line was never touched by an Atlassian tool call this session
     (not created, read, commented or transitioned) — a footer naming a ticket
-    nobody filed is worse than no footer, because Stan trusts it.
+    nobody filed is worse than no footer, because the operator trusts it.
 
-WHY. Stan's preference: adjacent findings go to Jira silently, and the last line of
+WHY. The operator's preference: adjacent findings go to Jira silently, and the last line of
 every reply says which. As a preference it was followed when remembered. The second
 check is the reason this is a hook and not a regex in a skill: only the transcript
 knows whether the ticket exists.
@@ -72,7 +72,7 @@ def evaluate(payload: dict) -> str | None:
     keys = footer_keys(reply)
     if keys is None:
         return ("[mod:reply-footer-check] The reply's last line must be `Noted separately: "
-                "<KEY, KEY>` or `Noted separately: Nothing` (Stan's preference: adjacent findings "
+                "<KEY, KEY>` or `Noted separately: Nothing` (operator preference: adjacent findings "
                 "go to Jira silently, the footer says which). Re-send the reply with that line.")
     missing = [k for k in keys if k not in touched_keys(rows)]
     if missing:

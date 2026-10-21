@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 import type { HookOut } from './py'
 import { blockReason, contextOf, decisionOf, parseOut, resultText, runArgs, toastText, toolPayload } from './py'
 
-// Why (LCH-528, Stan's preference "name chats by ticket"): a hook cannot read the title, so it puts
+// Why (LCH-528, operator preference: name chats by ticket): a hook cannot read the title, so it puts
 // the rule in front of the model at the two moments it matters: the start, and the moment a ticket
 // key first exists. Text and tests: ./session-title-nudge.py.
 // --- $ helpers. They live in this file because the plugin validator follows $ only into functions
@@ -21,7 +21,7 @@ function toast($: any, text: string): void {
   try { $.ui.toast(toastText(text)) } catch { /* a toast never changes a verdict */ }
 }
 
-// Deny and ask are toasted for Stan; a warning is not.
+// Deny and ask are toasted for the operator; a warning is not.
 function preToolUse($: any, v: HookOut | undefined) {
   const d = decisionOf(v)
   if (d && 'deny' in d) toast($, d.deny)

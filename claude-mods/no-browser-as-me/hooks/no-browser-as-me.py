@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""PreToolUse guard — no driving Stan's own browser or desktop (LCH-528).
+"""PreToolUse guard — no driving the operator's own browser or desktop (LCH-528).
 
 WHAT IT DOES. DENIES the Skill tool for the browser/desktop-control skills
 (chrome-browser, computer-use, built-in-browser) and any MCP tool from a
 Chrome-extension or computer-use server.
 
-WHY. Stan's hard rail: "No browser-as-me. Prefer MCP/API -> WebSearch/WebFetch ->
-agent research." A session acting inside his logged-in browser acts with every
-account he has open, and nothing in our audit trail records what it clicked.
+WHY. Operator hard rail: no browser-as-me; prefer MCP/API, then WebSearch/WebFetch,
+then agent research. A session acting inside the operator's logged-in browser acts with
+every account open in it, and nothing in our audit trail records what it clicked.
 
-NOT GATED. Headless Playwright from Bash (the container's own Chromium, no Stan
+NOT GATED. Headless Playwright from Bash (the container's own Chromium, no operator
 session), WebFetch, WebSearch: those are the sanctioned alternatives.
 
 Self-test: python3 no-browser-as-me.py --selftest
@@ -26,9 +26,9 @@ BLOCKED_SKILLS = re.compile(r"(?:^|:)(?:chrome-browser|computer-use|built-in-bro
 _SERVER = re.compile(r"^mcp__(.+?)__")
 _BLOCKED_SERVER = re.compile(r"chrome|computer[-_ ]?use", re.IGNORECASE)
 
-REASON = ("[mod:no-browser-as-me] REFUSED: {what} drives Stan's own browser/desktop. Hard rail: "
+REASON = ("[mod:no-browser-as-me] REFUSED: {what} drives the operator's own browser/desktop. Hard rail: "
           "no browser-as-me. Use, in order: an MCP/API tool, WebSearch/WebFetch, a research "
-          "subagent, or headless Playwright in this container (it has no Stan session).")
+          "subagent, or headless Playwright in this container (it has no operator session).")
 
 
 def evaluate(tool_name: str, tool_input: dict) -> tuple[str, str] | None:

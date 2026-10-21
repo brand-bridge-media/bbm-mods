@@ -15,7 +15,7 @@ test('reads and reversible cleanup do not ask', () => {
     'mcp__Supabase__execute_sql', 'mcp__Stripeish__x', 'Bash', '']) expect(askFor(t)).toBeUndefined()
 })
 
-test('an asking tool is toasted for Stan; a plain one passes untouched', async ($: any, on: any) => {
+test('an asking tool is toasted for the operator; a plain one passes untouched', async ($: any, on: any) => {
   const toasts: string[] = []
   const reached: string[] = []
   on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })

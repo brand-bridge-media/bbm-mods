@@ -3,7 +3,7 @@
 # WHY. Every BBM cloud session installs the mods from this repo, so whatever lands
 # on main runs inside every session. Only the bbm-infrastructure sync (a deploy key,
 # pushing directly) should ever write here. A PR from anyone else is closed at once,
-# so it can never be merged by mistake, and the @mention sends Stan a GitHub
+# so it can never be merged by mistake, and the @mention sends the operator a GitHub
 # notification (email + mobile).
 #
 # SAFE WITH pull_request_target: nothing from the PR is checked out or executed;

@@ -59,7 +59,7 @@ export function world(on: any, w: World = {}) {
       return { value: envelope(r ? [r] : []) } as any
     }
     const b = w.brief === undefined
-      ? { version: 1, approved_at: '2026-09-01T00:00:00Z', approved_by: 'Stan' }
+      ? { version: 1, approved_at: '2026-09-01T00:00:00Z', approved_by: 'The operator' }
       : w.brief
     return { value: envelope(b ? [{ id: 'b1', article_slug: 'best-sofas', ...b }] : []) } as any
   })

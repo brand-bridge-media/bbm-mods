@@ -3,8 +3,8 @@ import type { Register } from 'claude-code'
 import type { HookOut } from './py'
 import { blockReason, contextOf, decisionOf, parseOut, resultText, runArgs, toastText, toolPayload } from './py'
 
-// Why (LCH-528, Stan's hard rail "no browser-as-me"): a session acting in Stan's logged-in browser
-// acts with every account he has open and leaves no audit trail. The matcher is a cheap superset;
+// Why (LCH-528, operator hard rail: no browser-as-me): a session acting in the operator's logged-in
+// browser acts with every account open in it and leaves no audit trail. The matcher is a cheap superset;
 // ./no-browser-as-me.py decides (server segment, any casing).
 // --- $ helpers. They live in this file because the plugin validator follows $ only into functions
 // declared in the hook's own file (claude-code 2.1.292); ./py.ts stays pure.
@@ -21,7 +21,7 @@ function toast($: any, text: string): void {
   try { $.ui.toast(toastText(text)) } catch { /* a toast never changes a verdict */ }
 }
 
-// Deny and ask are toasted for Stan; a warning is not.
+// Deny and ask are toasted for the operator; a warning is not.
 function preToolUse($: any, v: HookOut | undefined) {
   const d = decisionOf(v)
   if (d && 'deny' in d) toast($, d.deny)

@@ -78,7 +78,7 @@ test('a stalled session is nudged once with priority next, without waking the or
 // `track` queues, and it runs as soon as anything pumps the engine (the first status
 // call or clock.advance). Later polls come only from the status tool, which runs them
 // inside a tool call where prompt.submit is refused. So multi-step cases assert the
-// escalation through the status text and the toast (both reach Stan); the wake text
+// escalation through the status text and the toast (both reach the operator); the wake text
 // itself is asserted on the single clock poll in the failed-nudge case, which shares
 // the escalation's wake path.
 async function nudged($: any, on: any, world: World) {
@@ -123,7 +123,7 @@ test('activity after the nudge clears the stall; no escalation', async ($, on) =
   expect(st).not.toContain('STALLED')
 })
 
-test('a nudged session that goes BLOCKED clears the stall and flags Stan', async ($, on) => {
+test('a nudged session that goes BLOCKED clears the stall and flags the operator', async ($, on) => {
   const world: World = { bucket: 'WORKING', updatedAt: T0 - 20 * 60_000, events: [{ created_at: iso(T0 - 20 * 60_000) }] }
   const w = await nudged($, on, world)
   world.bucket = 'BLOCKED'
