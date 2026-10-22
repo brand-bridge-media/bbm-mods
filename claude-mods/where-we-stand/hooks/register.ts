@@ -12,7 +12,7 @@ import { parseOut, runArgs, toolPayload } from './py'
 //     read in knowledge_memories / knowledge_articles;
 //   * every source is its own step: one failing becomes NOT CHECKED on the card, never a failed lookup;
 //   * three more ways in, none of them capped by the three-card limit: the session's OWN ticket (read from its
-//     branch name) at session start, the `lookup` tool (on demand), and the gate in ./gate.ts, which sends a
+//     branch name) on the first tool call, the `lookup` tool (on demand), and the gate in ./gate.ts, which sends a
 //     reply that states a status without a card back to this tool;
 //   * the whole lookup is read-only: SELECTs, the pg_net GETs wws builds (Jira), list_edge_functions and
 //     pull_request_read. The Jira credential is built inside the database and never leaves it;
@@ -20,6 +20,8 @@ import { parseOut, runArgs, toolPayload } from './py'
 const SCRIPT = 'where-we-stand.py'
 const STORE_KEY = 'where-we-stand.session'
 const MAX_CARDS = 3
+const NUDGE = (why: string) =>
+  `[mod:where-we-stand] The lookup could not read the database from the hook (${why}); no card. Treat every status as NOT CHECKED, or read the source yourself: the Jira issue's newest comment, refresh_runs / articles, pull_request_read.`
 const MAX_PRS = 5
 const MAX_TRIES = 2 // a lookup that produced no card is retried once more, not forever
 const JIRA_WAIT_TRIES = 3
@@ -27,7 +29,8 @@ const REPO = { owner: 'brand-bridge-media', repo: 'bbm-infrastructure' }
 
 type Opts = { supabaseServer?: string; projectId?: string; githubServer?: string }
 type Entry = { topic: string; tickets: string[]; terms: string[]; prs: number[] }
-type Session = { done: string[]; seen: string[]; cards: number; ledger: Entry[]; tries: Record<string, number> }
+type Session = { done: string[]; seen: string[]; cards: number; ledger: Entry[]; tries: Record<string, number>; broken?: boolean; nudged?: boolean }
+type Made = { text: string; broken: boolean }
 type Topic = { kind: string; topic: string; tickets: string[]; terms: string[] }
 
 // A lookup runs its own MCP calls; this stops them re-triggering the mod that made them.
@@ -73,23 +76,69 @@ function rowsOf(content: readonly unknown[]): unknown[] {
   return rows
 }
 
+// Which MCP server answers. LC-1893 first live use (2026-10-22): a cloud session names its Supabase server by a
+// UUID (`mcp__e7e41b6a-...__execute_sql`), not "Supabase", so `$.mcp.call('Supabase', ...)` found no such server and
+// every source went NOT CHECKED. The name is therefore taken from a tool the session really has; the configured
+// name only wins when that server exists, and is the fallback when the tool list cannot be read.
+const SERVER_TOOL = { supabase: 'execute_sql', github: 'pull_request_read' } as const
+type Kind = keyof typeof SERVER_TOOL
+// Per register() call (its options object), not per module: a long-lived process that loads the mod for a second session
+// must not keep the first session's server names.
+const resolvedBy = new WeakMap<object, Partial<Record<Kind, string>>>()
+function cacheOf(o: Opts): Partial<Record<Kind, string>> {
+  let c = resolvedBy.get(o)
+  if (!c) resolvedBy.set(o, (c = {}))
+  return c
+}
+
+async function serverFor($: any, o: Opts, kind: Kind, configured: string): Promise<string> {
+  const resolved = cacheOf(o)
+  if (resolved[kind]) return resolved[kind] as string
+  try {
+    const all: string[] = ((await $.tool.list()) ?? []).map((t: { name: unknown }) => String(t.name))
+    const suffix = `__${SERVER_TOOL[kind]}`
+    const names = all.filter(n => n.startsWith('mcp__') && n.endsWith(suffix)).map(n => n.slice(5, n.length - suffix.length))
+    // Supabase also has to serve list_edge_functions: prefer a server that offers both.
+    const both = kind === 'supabase' ? names.filter(n => all.includes(`mcp__${n}__list_edge_functions`)) : names
+    const pool = both.length ? both : names
+    const pick = pool.includes(configured) ? configured : pool[0]
+    if (pick) {
+      resolved[kind] = pick
+      return pick
+    }
+  } catch { /* fall back to the configured name */ }
+  return configured
+}
+
+// One MCP call, with the server found as above; a "no such server" failure forgets the cache and looks once more.
+async function mcpCall($: any, o: Opts, kind: Kind, configured: string, tool: string, args: Record<string, unknown>): Promise<any> {
+  try {
+    return await $.mcp.call(await serverFor($, o, kind, configured), tool, args)
+  } catch (e) {
+    const resolved = cacheOf(o)
+    if (!resolved[kind]) throw e
+    delete resolved[kind]
+    return await $.mcp.call(await serverFor($, o, kind, configured), tool, args)
+  }
+}
+
 // {rows} on success, {error} otherwise: the .py parsers turn either into a receipt-ready slice.
 async function sql($: any, o: Opts, query: string): Promise<{ rows?: any[]; error?: string }> {
   try {
-    const res = await $.mcp.call(o.supabaseServer || 'Supabase', 'execute_sql', {
+    const res = await mcpCall($, o, 'supabase', o.supabaseServer || 'Supabase', 'execute_sql', {
       project_id: o.projectId || 'tlcbwwgfqnasmiipgmmd',
       query,
     })
     if (res.isError) return { error: 'execute_sql returned an error' }
     return { rows: rowsOf(res.content) as any[] }
   } catch (e) {
-    return { error: String((e as Error)?.message ?? e).slice(0, 120) }
+    return { error: String((e as Error)?.message ?? e).slice(0, 160) }
   }
 }
 
 async function edgeFunctions($: any, o: Opts): Promise<any[]> {
   try {
-    const res = await $.mcp.call(o.supabaseServer || 'Supabase', 'list_edge_functions', { project_id: o.projectId || 'tlcbwwgfqnasmiipgmmd' })
+    const res = await mcpCall($, o, 'supabase', o.supabaseServer || 'Supabase', 'list_edge_functions', { project_id: o.projectId || 'tlcbwwgfqnasmiipgmmd' })
     if (res.isError) return []
     return (rowsOf(res.content) as any[]).map(f => ({ slug: f.slug, version: f.version, updated_at: f.updated_at }))
   } catch {
@@ -121,7 +170,7 @@ async function githubSlice($: any, o: Opts, prs: number[]): Promise<unknown> {
   const items: { number: number; text?: string; error?: string }[] = []
   for (const n of prs.slice(0, MAX_PRS)) {
     try {
-      const res = await $.mcp.call(o.githubServer || 'github', 'pull_request_read', { method: 'get', ...REPO, pullNumber: n })
+      const res = await mcpCall($, o, 'github', o.githubServer || 'github', 'pull_request_read', { method: 'get', ...REPO, pullNumber: n })
       items.push(res.isError ? { number: n, error: 'pull_request_read returned an error' } : { number: n, text: textOf(res.content) })
     } catch (e) {
       items.push({ number: n, error: String((e as Error)?.message ?? e).slice(0, 80) })
@@ -131,13 +180,16 @@ async function githubSlice($: any, o: Opts, prs: number[]): Promise<unknown> {
 }
 
 // The whole lookup. Each source is read and parsed on its own; nothing here decides a verdict.
-async function lookup($: any, o: Opts, t: Topic): Promise<{ card: string; entry: Entry } | undefined> {
+async function lookup($: any, o: Opts, t: Topic): Promise<{ card: string; entry?: Entry; broken?: boolean } | undefined> {
   const k = await py($, { cmd: 'sql_knowledge', terms: t.terms, tickets: t.tickets })
   const kr = k?.sql ? await sql($, o, k.sql) : { error: 'knowledge query not built' }
   const knowledge = (await py($, { cmd: 'parse_knowledge', ...kr, terms: t.terms, tickets: t.tickets }))?.evidence
 
   const p = await py($, { cmd: 'sql_production', terms: t.terms, tickets: t.tickets, kind: t.kind })
   const pr = p?.sql ? await sql($, o, p.sql) : { error: 'production query not built' }
+  // Knowledge AND production both unreadable: the database is unreachable from this hook, and a card of four NOT CHECKED
+  // receipts says nothing. Say so in one line and stop spending calls (Jira and the function list go through it too).
+  if (kr.error && pr.error) return { card: NUDGE(kr.error), broken: true }
   const fns = t.terms.length ? await edgeFunctions($, o) : []
   const production = (await py($, { cmd: 'parse_production', ...pr, asked: p?.asked ?? {}, terms: t.terms, functions_raw: fns }))?.evidence
 
@@ -172,16 +224,30 @@ async function mark($: any, key: string, gotCard: boolean): Promise<void> {
   await save($, s)
 }
 
-// Run a lookup and record it: the ledger is what the gate (./gate.ts) checks a reply against.
-async function produce($: any, o: Opts, t: Topic, counted: boolean): Promise<string | undefined> {
+// Run a lookup and record it: the ledger is what the gate (./gate.ts) checks a reply against. A broken lookup covers
+// nothing, is not a card (it never counts toward the cap), and switches the gate off until a lookup works again.
+async function produce($: any, o: Opts, t: Topic, counted: boolean): Promise<Made | undefined> {
   const r = await lookup($, o, t)
   if (!r) return undefined
   const s = await load($)
-  s.ledger = [...s.ledger, r.entry].slice(-20)
-  if (counted) s.cards += 1
+  s.broken = !!r.broken
+  if (!r.broken && r.entry) {
+    s.ledger = [...s.ledger, r.entry].slice(-20)
+    if (counted) s.cards += 1
+  }
   await save($, s)
-  toast($, `[mod:where-we-stand] card for ${t.topic}: ${(/VERDICT: ([A-Z ]+)/.exec(r.card)?.[1] ?? '?').toLowerCase()}`)
-  return r.card
+  toast($, r.broken ? '[mod:where-we-stand] lookup unavailable: database not reachable from the hook' : `[mod:where-we-stand] card for ${t.topic}: ${(/VERDICT: ([A-Z ]+)/.exec(r.card)?.[1] ?? '?').toLowerCase()}`)
+  return { text: r.card, broken: !!r.broken }
+}
+
+// The nudge goes into the model's context once per session; after that a broken lookup stays quiet.
+async function nudgeOnce($: any, m: Made): Promise<string | undefined> {
+  if (!m.broken) return m.text
+  const s = await load($)
+  if (s.nudged) return undefined
+  s.nudged = true
+  await save($, s)
+  return m.text
 }
 
 // The ticket the session's own branch names (lc1893-... -> LC-1893), or undefined.
@@ -203,19 +269,24 @@ async function save($: any, s: Session): Promise<void> {
 export const register: Register = (on, options) => {
   const o = (options ?? {}) as Opts
 
-  // Once at session start, for the session's own ticket.
-  on('classic.SessionStart', async ($, e, next) => {
+  // The session's own ticket gets its card on the FIRST tool call, not at session start: $.mcp.call is not available in
+  // classic.SessionStart ("no session is bound in this process", the REPL has not mounted yet), so a start-time lookup
+  // always came back empty (LC-1893, second live finding, 2026-10-22). One try per load of the mod.
+  let ownTried = false
+  on('tool.call', async ($, e: any, next) => {
     const ran = await next(e)
-    if (busy) return ran
+    if (ownTried || busy || e.tool === 'mcp__where-we-stand__lookup' || ran.deny !== undefined || ran.isError) return ran
+    ownTried = true
     busy = true
     try {
       const key = await ownTicket($)
       if (!key) return ran
       const s = await load($)
       if (s.done.includes(key) || (s.tries[key] ?? 0) >= MAX_TRIES) return ran
-      const card = await produce($, o, { kind: 'ticket-status', topic: key, tickets: [key], terms: [] }, true)
-      await mark($, key, !!card)
-      return card ? { ...ran, additionalContext: [...(ran.additionalContext ?? []), card] } : ran
+      const made = await produce($, o, { kind: 'ticket-status', topic: key, tickets: [key], terms: [] }, true)
+      await mark($, key, !!made && !made.broken)
+      const card = made ? await nudgeOnce($, made) : undefined
+      return card ? { ...ran, context: [...(ran.context ?? []), card] } : ran
     } catch {
       return ran
     } finally {
@@ -249,8 +320,8 @@ export const register: Register = (on, options) => {
     if (!t?.topic) return { result: '[mod:where-we-stand] Give at least one valid Jira key (tickets) or slug / job name (terms).' }
     busy = true
     try {
-      const card = await produce($, o, t, false)
-      return { result: card ?? '[mod:where-we-stand] The lookup could not run; treat every status as NOT CHECKED.' }
+      const made = await produce($, o, t, false)
+      return { result: made?.text ?? '[mod:where-we-stand] The lookup could not run; treat every status as NOT CHECKED.' }
     } finally {
       busy = false
     }
@@ -271,8 +342,9 @@ export const register: Register = (on, options) => {
       const names: string[] = [...t.tickets, ...t.terms]
       const key = [...names].sort().join('|')
       if (s.cards >= MAX_CARDS || s.done.includes(key) || (s.tries[key] ?? 0) >= MAX_TRIES || names.every(n => s.seen.includes(n))) return ran
-      const card = await produce($, o, t, true)
-      await mark($, key, !!card)
+      const made = await produce($, o, t, true)
+      await mark($, key, !!made && !made.broken)
+      const card = made ? await nudgeOnce($, made) : undefined
       if (!card) return ran
       return { ...ran, context: [...(ran.context ?? []), card] }
     } catch {
@@ -289,6 +361,8 @@ export const register: Register = (on, options) => {
   // cards it checks against are in this plugin's store, and a plugin's store is private to it.
   on('classic.Stop', async ($, e, next) => {
     const s = await load($)
+    // While the lookup is broken it cannot produce the card the gate would demand: sending a reply back for it is noise.
+    if (s.broken) return next(e)
     const v = await py($, { cmd: 'gate', ...(e as any), cards: s.ledger })
     if (typeof v?.block === 'string' && v.block) {
       toast($, v.block)

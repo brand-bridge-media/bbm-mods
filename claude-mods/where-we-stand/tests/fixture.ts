@@ -14,6 +14,8 @@ export type World = {
   branch?: string // what `git rev-parse --abbrev-ref HEAD` prints
   ownTicket?: string // what branch_ticket finds
   gate?: Record<string, unknown> // what `gate` answers
+  tools?: string[] // what `tool.list` answers (names, as the model sees them)
+  servers?: string[] // the only MCP server names that exist: any other `mcp.call` throws, as the engine does
 }
 
 const env = (rows: unknown[]) => ({ isError: false, content: [{ type: 'text', text: 'Below...\n<untrusted-data-x>\n' + JSON.stringify(rows) + '\n</untrusted-data-x>' }] })
@@ -22,7 +24,7 @@ export function world(on: any, w: World = {}) {
   mock.store(on)
   const toasts: string[] = []
   const cmds: any[] = []
-  const mcp: { tool: string; args: any }[] = []
+  const mcp: { server: string; tool: string; args: any }[] = []
   const reached: any[] = []
   const fail = { noCardOnce: false }
   on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
@@ -49,8 +51,10 @@ export function world(on: any, w: World = {}) {
     }
     return { value: { exitCode: 0, stdout: JSON.stringify(out[p.cmd] ?? {}), stderr: '' } } as any
   })
+  if (w.tools) on('tool.list', () => ({ value: w.tools!.map(name => ({ name, description: '', mcp: name.startsWith('mcp__') })) }) as any)
   on('mcp.call', (_$: any, e: any) => {
-    mcp.push({ tool: e.tool, args: e.args })
+    mcp.push({ server: e.server, tool: e.tool, args: e.args })
+    if (w.servers && !w.servers.includes(e.server)) throw new Error(`$.mcp.call: no connected MCP tool "${e.tool}" on a server named "${e.server}"`)
     const q = String(e.args?.query ?? '')
     if (e.tool === 'execute_sql' && w.failSql && q.includes(w.failSql)) return { value: { isError: true, content: [{ type: 'text', text: 'boom' }] } } as any
     if (e.tool === 'pull_request_read') return { value: { isError: false, content: [{ type: 'text', text: '{"state":"closed","merged":true}' }] } } as any

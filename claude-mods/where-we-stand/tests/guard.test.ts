@@ -99,34 +99,58 @@ test('no card from the renderer means no context and no toast', async ($: any, o
 test('the mod ignores tools it does not hook', async ($: any, on: any) => {
   const w = world(on, { trigger: DIAG_TRIGGER })
   await $.tool.call({ tool: 'Bash', command: 'ls' } as any)
-  expect(w.cmds).toHaveLength(0)
+  // The only thing it does on any tool call is look at the branch once (for the session's own ticket).
+  expect(w.cmds.map(c => c.cmd)).toEqual(['branch_ticket'])
 })
 
-test('the session\'s own ticket (from its branch) gets a card at session start', async ($: any, on: any) => {
+const BASH = { tool: 'Bash', command: 'ls' } as any
+
+// $.mcp.call does not exist yet in classic.SessionStart ("no session is bound in this process"), so the session's
+// own ticket is carded on the first tool call instead (LC-1893, second live finding, 2026-10-22).
+test('the session\'s own ticket (from its branch) gets a card on the first tool call, once', async ($: any, on: any) => {
+  const w = world(on, { branch: 'lc1893-where-we-stand', ownTicket: 'LC-1893' })
+  const first: any = await $.tool.call(BASH)
+  expect(first.context).toHaveLength(1)
+  expect(first.context[0]).toMatch(/^\[mod:where-we-stand\] WHERE WE STAND/)
+  expect(w.cmds.find(c => c.cmd === 'branch_ticket').branch).toBe('lc1893-where-we-stand')
+  expect(w.cmds.find(c => c.cmd === 'sql_knowledge').tickets).toEqual(['LC-1893'])
+  const second: any = await $.tool.call(BASH)
+  expect(second.context).toBeUndefined()
+  expect(w.cmds.filter(c => c.cmd === 'render')).toHaveLength(1)
+})
+
+test('session start itself reads nothing: the MCP is not mounted yet', async ($: any, on: any) => {
   const w = world(on, { branch: 'lc1893-where-we-stand', ownTicket: 'LC-1893' })
   on('classic.SessionStart', () => ({}))
   const r: any = await $.classic.SessionStart({})
-  expect(r.additionalContext).toHaveLength(1)
-  expect(r.additionalContext[0]).toMatch(/^\[mod:where-we-stand\] WHERE WE STAND/)
-  expect(w.cmds.find(c => c.cmd === 'branch_ticket').branch).toBe('lc1893-where-we-stand')
-  expect(w.cmds.find(c => c.cmd === 'sql_knowledge').tickets).toEqual(['LC-1893'])
+  expect(r.additionalContext).toBeUndefined()
+  expect(w.mcp).toHaveLength(0)
+  expect(w.cmds).toHaveLength(0)
 })
 
 test('a branch that names no ticket gets no card and no reads', async ($: any, on: any) => {
   const w = world(on, { branch: 'main' })
-  on('classic.SessionStart', () => ({}))
-  const r: any = await $.classic.SessionStart({})
-  expect(r.additionalContext).toBeUndefined()
+  const r: any = await $.tool.call(BASH)
+  expect(r.context).toBeUndefined()
   expect(w.mcp).toHaveLength(0)
 })
 
 test('the session ticket is not carded a second time by a later Jira read of it', async ($: any, on: any) => {
   const w = world(on, { ownTicket: 'LC-1345', trigger: TICKET_TRIGGER })
-  on('classic.SessionStart', () => ({}))
-  await $.classic.SessionStart({})
+  await $.tool.call(BASH)
   const r: any = await $.tool.call(JIRA)
   expect(r.context).toBeUndefined()
   expect(w.cmds.filter(c => c.cmd === 'render')).toHaveLength(1)
+})
+
+test('the own-ticket card is tried once per load, so a broken lookup does not retry on every tool call', async ($: any, on: any) => {
+  const w = world(on, { ownTicket: 'LC-1345', tools: ['Bash'], servers: [] })
+  const a: any = await $.tool.call(BASH)
+  const b: any = await $.tool.call(BASH)
+  expect(a.context).toHaveLength(1)
+  expect(a.context[0]).toMatch(/could not read the database/)
+  expect(b.context).toBeUndefined()
+  expect(w.mcp.filter(m => m.tool === 'execute_sql')).toHaveLength(2)
 })
 
 test('the lookup tool answers on demand, and is not held to the three-card limit', async ($: any, on: any) => {
@@ -195,4 +219,65 @@ test('a topic whose first lookup failed gets its card on the retry', async ($: a
   const second: any = await $.tool.call(DIAG)
   expect(first.context).toBeUndefined()
   expect(second.context).toHaveLength(1)
+})
+
+// LC-1893, first live use (2026-10-22): the cloud session's Supabase server is named by a UUID, not "Supabase".
+const UUID = 'e7e41b6a-ef56-40bb-bd5c-aaf60ce61677'
+const CLOUD_TOOLS = [
+  `mcp__${UUID}__execute_sql`, `mcp__${UUID}__list_edge_functions`,
+  'mcp__github__pull_request_read', 'mcp__c9c1c9aa-de9c-4160-bd11-77995d6091c0__pull_request_read',
+  'mcp__where-we-stand__lookup', 'Bash',
+]
+
+test('the Supabase and GitHub servers are found from the session\'s own tools, not assumed by name', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1345'], prs: [694], tools: CLOUD_TOOLS, servers: [UUID, 'github', 'c9c1c9aa-de9c-4160-bd11-77995d6091c0'] })
+  const r: any = await $.tool.call(JIRA)
+  expect(r.context).toHaveLength(1)
+  expect(r.context[0]).not.toMatch(/could not read the database/)
+  expect(w.mcp.filter(m => m.tool === 'execute_sql').every(m => m.server === UUID)).toBe(true)
+  expect(w.mcp.filter(m => m.tool === 'pull_request_read').every(m => m.server === 'github')).toBe(true)
+})
+
+test('a configured server name that exists wins over another that also offers the tool', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1345'], prs: [694], tools: CLOUD_TOOLS, servers: [UUID, 'github', 'c9c1c9aa-de9c-4160-bd11-77995d6091c0'] })
+  const r: any = await $.tool.call(JIRA)
+  expect(r.context).toHaveLength(1)
+  expect(w.mcp.some(m => m.tool === 'pull_request_read' && m.server === 'c9c1c9aa-de9c-4160-bd11-77995d6091c0')).toBe(false)
+})
+
+test('a database that cannot be reached gives ONE line, no card, no ledger entry, and the gate stands down', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1345'], prs: [694], tools: ['Bash'], servers: [], gate: { block: '[mod:where-we-stand] blocked' } })
+  on('classic.Stop', () => ({ ok: true }) as any)
+  const first: any = await $.tool.call(JIRA)
+  expect(first.context).toHaveLength(1)
+  expect(first.context[0]).toMatch(/^\[mod:where-we-stand\] The lookup could not read the database from the hook \(.+\); no card\./)
+  expect(first.context[0]).not.toMatch(/WHERE WE STAND|RECEIPTS/)
+  expect(w.cmds.some(c => c.cmd === 'render')).toBe(false)
+  // knowledge and production were tried, then nothing more: no Jira, no GitHub, no function list.
+  expect(w.mcp.map(m => m.tool)).toEqual(['execute_sql', 'execute_sql'])
+  const stop: any = await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' })
+  expect(stop.block).toBeUndefined()
+  expect(w.cmds.some(c => c.cmd === 'gate')).toBe(false)
+})
+
+test('a broken lookup nudges once per session, then stays quiet', async ($: any, on: any) => {
+  world(on, { triggers: [TICKET_TRIGGER, DIAG_TRIGGER], tools: ['Bash'], servers: [] })
+  const a: any = await $.tool.call(JIRA)
+  const b: any = await $.tool.call(DIAG)
+  expect(a.context).toHaveLength(1)
+  expect(b.context).toBeUndefined()
+})
+
+test('the lookup tool says the same one line when the database is out of reach', async ($: any, on: any) => {
+  world(on, { tools: ['Bash'], servers: [] })
+  const r: any = await $.tool.call({ tool: 'mcp__where-we-stand__lookup', tickets: ['LC-1345'] } as any)
+  expect(r.result).toMatch(/^\[mod:where-we-stand\] The lookup could not read the database/)
+})
+
+test('an explicit lookup that finds the database unreachable also stands the gate down', async ($: any, on: any) => {
+  const w = world(on, { tools: ['Bash'], servers: [], gate: { block: '[mod:where-we-stand] blocked' } })
+  on('classic.Stop', () => ({ ok: true }) as any)
+  await $.tool.call({ tool: 'mcp__where-we-stand__lookup', tickets: ['LC-1345'] } as any)
+  expect((await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' }) as any).block).toBeUndefined()
+  expect(w.cmds.some(c => c.cmd === 'gate')).toBe(false)
 })
