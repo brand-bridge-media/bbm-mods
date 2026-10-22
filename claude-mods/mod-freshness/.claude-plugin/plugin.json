@@ -1,0 +1,9 @@
+{
+  "name": "mod-freshness",
+  "version": "0.1.0",
+  "description": "Fingerprints the bbm mods a session loaded at start and checks the bbm-mods mirror hourly; when a loaded mod has changed upstream, wakes the session once to tell the operator to start a fresh one.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

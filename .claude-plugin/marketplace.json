@@ -103,6 +103,11 @@
       "name": "image-weight-guard",
       "source": "./claude-mods/image-weight-guard",
       "description": "Blocks Webflow CMS item writes and asset uploads that load an image over 400 KB or not WebP/AVIF/SVG (HEAD check before the image is loaded); asks when size or type cannot be determined. Fix: route through generated-image-intake (LC-1883)."
+    },
+    {
+      "name": "mod-freshness",
+      "source": "./claude-mods/mod-freshness",
+      "description": "Warns a long-lived session, once per mod, when a mod it loaded at start has since changed in the bbm-mods mirror, so the operator knows to start a fresh session."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."
