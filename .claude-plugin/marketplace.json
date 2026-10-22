@@ -98,6 +98,11 @@
       "name": "supabase-guard",
       "source": "./claude-mods/supabase-guard",
       "description": "Supabase exposure rules before SQL runs or a migration is written (execute_sql, apply_migration, migration-file Write/Edit): blocks a table without RLS, a view without security_invoker, an unrevoked or search_path-less SECURITY DEFINER, and an unmarked GRANT to anon/authenticated; warns on a function without search_path. Same rules as the lint-supabase-rules PR gate."
+    },
+    {
+      "name": "image-weight-guard",
+      "source": "./claude-mods/image-weight-guard",
+      "description": "Blocks Webflow CMS item writes and asset uploads that load an image over 400 KB or not WebP/AVIF/SVG (HEAD check before the image is loaded); asks when size or type cannot be determined. Fix: route through generated-image-intake (LC-1883)."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."

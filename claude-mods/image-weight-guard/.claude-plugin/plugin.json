@@ -1,0 +1,8 @@
+{
+  "name": "image-weight-guard",
+  "version": "0.1.0",
+  "description": "Blocks Webflow CMS item writes (data_cms_tool create/update_collection_items) and asset uploads (asset_tool upload_image_by_url) that carry an image over 400 KB or not WebP/AVIF/SVG, checked by HEAD before the image is loaded; asks when size or type cannot be determined. Fix: route through generated-image-intake (LC-1883).",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
