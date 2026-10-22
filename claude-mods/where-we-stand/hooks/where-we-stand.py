@@ -105,7 +105,7 @@ def sql_knowledge(terms: list, tickets: list) -> str:
         "select cum.s - length(right(pp.a[k], 170)) as p, right(pp.a[k], 170) || substr(pp.c, cum.s, length(t.t)) || left(pp.a[k + 1], 170) as w "
         "from t, lateral (select left(ka.content, 60000) as c, regexp_split_to_array(left(ka.content, 60000), regexp_replace(t.t, '\\.', '\\\\.', 'g'), 'i') as a) pp, "
         "lateral generate_series(1, coalesce(array_length(pp.a, 1), 1) - 1) k, "
-        "lateral (select coalesce(sum(length(x)), 0) + (k - 1) * length(t.t) + 1 as s from unnest(pp.a[1:k]) x) cum "
+        "lateral (select (coalesce(sum(length(x)), 0) + (k - 1) * length(t.t) + 1)::int as s from unnest(pp.a[1:k]) x) cum "
         "order by (right(pp.a[k], 170) || left(pp.a[k + 1], 170) ~ '#[0-9]{3,5}') desc, cum.s limit 24) o) as wins "
         "from (select a2.slug, a2.title, a2.summary, a2.confidence, a2.last_verified_at, a2.content, "
         "(select count(*) from t where lower(t.t) = any(select lower(x) from unnest(a2.topics) x) or a2.slug ilike '%'||t.t||'%' "
