@@ -317,7 +317,7 @@ function unmet(l: Ledger): Unmet[] {
       out.push({
         id: 'cannib',
         text: 'Refresh reached publish: +2/+4-week cannibalization re-check not scheduled (accepted: send_later / create_trigger / CronCreate with a time, or a Jira next-due/duedate write, whose text names cannibalization or +2/+4 weeks)',
-        rule: 'listicle-refresh SKILL.md:511 (Jira or scheduled task, never chat); campaign-plan SKILL.md:138',
+        rule: 'listicle-refresh SKILL.md:511 (Jira or scheduled task, never chat)',
       })
     }
     if (!l.gscScheduled) {
