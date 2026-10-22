@@ -1,0 +1,403 @@
+{
+ "case": "case-c",
+ "captured": "the lookup, run against production on 2026-10-22; evidence exactly as handed to render",
+ "topic": "most-comfortable-couches publish state",
+ "today": "2026-10-22",
+ "terms": [
+  "most-comfortable-couches",
+  "896655cd"
+ ],
+ "tickets": [
+  "LC-1860",
+  "LC-1654",
+  "LC-1275",
+  "LC-1659"
+ ],
+ "evidence": {
+  "knowledge": {
+   "ok": true,
+   "memories": [
+    {
+     "id": "6da15533-0ef2-4e6b-a0ef-dc1f47806a72",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "LC-1860",
+     "created": "2026-10-20",
+     "content": "LC-1860, 2026-10-20: REFRESH RUNS NOW CLOSE THEIR OWN JIRA TICKETS. Cause found: the operator decided 2026-08-19 (memory 9351d948) that the run close-out comments + Dones the tickets the run served, but it was never built (agent v2_s11c4 declared CLOSE_RUN_STATE_NOT_DONE / jira_closed_out False) and the 1g debt-intake that carried the ticket list was pruned 2026-09-24. Result: LC-1654 and LCC-2352 sat To Do for 12 days after publish and a session told the operator most-comfortable-couches was unpublished (it was live since 10-08). FIX (bbm-infrastructure #1860 rule, #1869 build): (1) CLAUDE.md §1 rule — published/open state is read from Webflow lastPublished + refresh_runs.status, never Jira, a census, or a session task list; (2) refresh_runs.jira_keys text[] (DDL approved by the operator), set when a run is opened (refresh_start.py requires --jira-keys or --no-jira-keys; portal route accepts jira_keys); (3) webflow/bulk-operations/run-jira-closeout/ closes ONLY a run's own keys (comment then Done by statusCategory; Epics never touched; empty keys = NOT_CHECKED; receipt section v2_s11_jira_closeout), triggered by an hourly bounded sweep (run-jira-closeout.yml, 7-day window) or manual dispatch with run_id. NEVER select tickets by Webflow item id: cloud-couch-dupes had 37 open tickets on its item id, 30 of them per-anchor Recovery tickets. Live proof 2026-10-20: runs 896655cd/e3272452 backfilled, close-out PASS transitioned=1 each, LC-1654 and LCC-2352 Done. Also found: velvet-sofa published 2026-09-22 outside any completed run (v1 run 4c0d4e4c abandoned per the operator); sofa-in-a-box-brands has no run at",
+     "score": 3
+    },
+    {
+     "id": "f7e35411-d78b-4b5c-9f85-32e7607ea9d7",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "LC-1773",
+     "created": "2026-10-19",
+     "content": "LC-1773, 2026-10-19: stage-9 strict checks c2 (cover-or-cede), c4 (field map), c5 (cannibalization baseline) PROMOTED to blocking alongside c6 (Pass A). Pattern that worked: (1) register each as a shadow-only runner in webflow/bulk-operations/check-run/check_run.py (PRs #1830/#1840/#1843), (2) shadow-run on two live articles (896655cd couch, e3272452 cloud-couch-dupes) and require PASS with real examined counts, (3) promote = agent files the strict CheckReceipt verdict (bbm-refresh-agent #238: PASS->done only with examined>0 and not_checked==[], BLOCK->fail, NOT_CHECKED/any error->pending) + migration widening refresh_stage_receipt_passes skip-is-not-a-pass to (9,c2/c4/c5/c6) (bbm-infrastructure #1846, migration 20261019211745). LESSONS: (a) re-pointing a conductor job string at check_run.py broke gate_contract.py (no adapter) — every gate needs a fail-closed contract adapter, check_run.py now has a per-gate driver; (b) retiring a legacy tool wrapper silently dropped data nobody reads YET: the v2_s9c5 per-term publish-time baseline (needed by the +2/+4wk re-check, LC-1850) — it is now carried as an `artifacts` block in check_run --output and stored at findings.cannibalization_baseline; missing artifact -> pending; (c) the agent's unpaged heading_research_rows read truncated at 1000 rows (LC-1848, fixed in #236) — the strict check pages. Verified live: skipped c2/c4/c5/c6 at stage 9 = not a pass; c1/c3/c7 unchanged; v_refresh_publish_wait 0 rows; six blocking-mode read-only runs all PASS.",
+     "score": 1
+    },
+    {
+     "id": "a11dee0f-5c3d-42ef-92a5-d532a7788bbc",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "LC-1841",
+     "created": "2026-10-19",
+     "content": "DECISION + SHIPPED (2026-10-19, LC-1841, bbm-infrastructure#1836): the article Analytics tab Revenue tile and Monetization card count affiliate commission INCLUDING pending and EXCLUDING reversed, with pending shown separately. Reason measured that day: 96% of the trailing 28 days of commission was still pending (networks confirm 30-90 days later), so a confirmed-only figure reads as a revenue collapse every month. Same rule as page_conversion() and the /conversion tab (LC-1103). SQL: article_revenue(p_slug) [28d ending yesterday vs prior 28d, pending, RPM inputs over the latest four GA4 weeks for page AND site so they compare like for like] and article_revenue_by_program(p_slug, p_days). Awin affiliate_actions rows carry only advertiser_id (54/54 had no name) -> name falls back to affiliate_programs.program_name matched on the same platform via platform_program_id. Revenue per 1K sessions over 12 GA4 weeks to 2026-10-11: site $404; modular-sofas $1,018, best-sectional-sofas $1,039, most-comfortable-couches $188 (pre-refresh; refreshed live 2026-10-08, 30-day check LC-1852 due 2026-11-07).",
+     "score": 1
+    },
+    {
+     "id": "ac6a05cf-aaf3-4331-9c1f-c916a8c5e9cc",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1103",
+     "created": "2026-10-17",
+     "content": "SUB-ID PARITY IS WORKING IN PRACTICE — PER-PAGE CONVERSION RATE IS COMPUTABLE TODAY FROM LIVE NETWORK CALLS (measured 2026-10-17, window 2026-09-15..10-14, LC-1103). This contradicts the premise in ad5eb7b9 / e47d8c5f / LC-219 that per-article revenue is \"blocked on sub-ID parity (LC-703/704)\". Measured: Impact partner_performance_by_subid returns per (pubsubid1_, Campaign) Clicks (deduped), raw_clicks, Actions, sale_amount, Earnings — 48 actions, 100% on lowercase page-slug sub-IDs, 0 on empty sub-ID. Awin 12/12 transactions carry clickRefs = page slug. CJ 8/8 sid = slug. Pepperjam 3/3 sid = slug. Skimlinks get_skimlinks_report(report_by='page') gives per-URL clicks/sales/conversion_rate natively (default limit 100 rows; go.livingcozy.com/* rows are noise with 0 sales).\nEXCLUDE from CR: sub-IDs lc-health-probe-*, lc-health-probe-write-time-*, catalog-verify (551 Impact rows, 0 actions) — and catalog-verify also appears as a source_page in link_clicks (1,867 \"human\" clicks in the window). Use Impact Clicks (deduped), not raw_clicks (~2.7x).\nSample result (Impact only, 30d): best-sectional-sofas 2,709 clicks / 18 actions = 0.66% CR, EPC $1.21; modular-sofas 3,345 / 15 = 0.45%, EPC $1.18; most-comfortable-couches 832 / 1 = 0.12%; site total 9,931 / 48 = 0.48%. Volume is ~70 sales/month across networks, so per-page CR needs a 90-day+ window to mean anything below the top ~3 pages.\nWHAT IS STILL MISSING: nothing persists per-action rows; affiliate_platform_daily is per-platform only. LC-703/704 may still matter for older links, but measured sale-bearing traffic already carries ",
+     "score": 1
+    },
+    {
+     "id": "ff62cc8a-c34e-464b-99c8-62622b55abbe",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "LC-1830",
+     "created": "2026-10-15",
+     "content": "LC-1830 SHIPPED (2026-10-15, PR #1802, merge 020e995; extends memory b26339d8 / LC-1826 go-link lane): public.v_blog_go_anchors (item_id, page_slug, go_slug) is a service_role-only security_invoker view over wf.blog that lists every go.livingcozy.com/<slug> in PUBLISHED (not draft, not archived, last_published not null) blog bodies. Fields scanned: post_content, intro, post_content_two, conclusion, how_we_chose, how_we_test, shop_this_article (jsonb::text), top_recomendation, recent_updates (listicle_table is a boolean, not a body, so it is NOT scanned). Slug boundary is EXACT: longest run of [a-z0-9._~%/-] after the host, lower-cased, trailing ./ trimmed; left guard excludes [a-z0-9._-] so ago./x-go./_go. are not go links; foo never matches foo-2. Prod check 2026-10-15: 242 published pages, 1,583 anchors on 160 pages, 1,582 match link_redirects.slug. link-health-lcc-filer (go_lane.py: fetch_body_proof, drop_stale, fetch_body_only; main.py: apply_body_proof) uses it to (a) drop stale 'replaced' blog_posts rows whose anchor left the body (3 on 2026-10-15: modular-sofas wayfair/latitude-run-luca..., most-comfortable-couches allmodern/geo-84... and quince/xmbxna-2) and (b) file in-body broken go links with no registry row (lane go-body-only; 1 found, gorilla-grip/non-slip-cover, no brand so skipped_no_brand). FAIL CLOSED: unreadable/empty/malformed view = receipt body_proof/body_only_step say NOT CHECKED, nothing dropped or filed on that basis. Live proof: pre-merge dry-run with the view absent showed NOT CHECKED; post-deploy dry-run showed CHECKED (1583 anchors on 160 pages),",
+     "score": 1
+    },
+    {
+     "id": "13254418-c0b0-4b19-8a72-1d8bdd8e7f5d",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1773",
+     "created": "2026-10-15",
+     "content": "PASS A (v2_s9c6) NEVER READS WEBFLOW IN PRODUCTION (found 2026-10-15, LC-1773). The refresh agent runs article_audit.py as `--slug <slug> --pass a` with no `--live` (bbm-refresh-agent gates/audit_tool.py ~55-62), and check_run.py argv_audit (~:333) does the same. On the --slug path, build_snapshot_live fills Supabase tables only: cms_blog_post, cms_products, cms_brands, cms_bpd and schema_live stay empty. So 13 rules always come back NOT CHECKED: 0.cms-agreement, 1.item, 4.products, C.enumeration (Rule C field register), DEF products full-description and subtitle, and alt text on 7 image fields. Pass A still counts as PASS. Only the manual run-article-audit.yml passes --live, with WEBFLOW_API_TOKEN from Vault. Lesson: a NOT CHECKED that appears on every run is wiring, not data. Verify the CALLEE argv (see memory ab47a398, LC-1122). Verified live on run 896655cd, workflow run 38785076716.",
+     "score": 1
+    },
+    {
+     "id": "88282523-c5cf-4d75-93ca-ae19d0de8f75",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "context",
+     "source_id": null,
+     "created": "2026-10-14",
+     "content": "FIRST V2 PRODUCTION READ (2026-10-14): /blog/most-comfortable-couches went V2 (Key Details + Review) on 2026-09-30 (run 896655cd). Extends ddf6dcae (which said V2 had zero production data). Windows PRE 2026-09-02..09-29 (28d), POST 10-01..10-12 GA4 / 10-01..10-11 GSC. Comparators best-sectional-sofas + modular-sofas (V1). SESSIONS-WITH-CLICK (proportion, per f117a9bc): comfort 19.0% -> 30.8% (mobile 18.4 -> 30.4, desktop 20.9 -> 31.9), all p<0.001; clicks/session 30.2% -> 60.6%. Over the SAME windows the V1 pages FELL: sectional 43.6 -> 37.4, modular 39.5 -> 32.5 (mobile drove both drops; desktop flat, n.s.). So the V1-vs-comfort gap shrank from ~-22pp to ~-4pp and the comfort gain runs against a site-wide decline. Engagement did not improve: comfort engagement rate 75.0 -> 70.2%, engaged time/user 51s -> 39s (desktop 68 -> 42s); V1 pages flat/up. Reading: V2 moves readers to the shop click faster. SEARCH CTR GOT WORSE: comfort GSC CTR 2.46% -> 1.67%, clicks/day 64 -> 44 (-32%), impressions flat (~2,620/day), avg position flat 7.1, break exactly on 2026-09-30. Cause is QUERY MIX, not snippet: head terms collapsed — \"most comfortable couch\" pos 5.6 -> 9.3 (66 clicks/28d -> 1/11d), \"comfortable couches\" 6.7 -> 8.2, \"comfy couches\" 5.6 -> 7.3 — while generic \"best sofa(s)/best couches\" now rank pos 2-3 at low CTR. Google re-read the page as a generic best-sofas page after the refresh. Confounds: 12-day post window, refresh changed copy+layout+products together, so V2 layout and copy rewrite cannot be separated. Title/H1 not verified (live page behind Cloudflare challenge from ",
+     "score": 2
+    },
+    {
+     "id": "f187a600-c11c-4704-99f0-ba667e806911",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1718",
+     "created": "2026-10-08",
+     "content": "LC-1718 post-publish closure chain was never exercised live end to end; on its first real use (2026-10-08, runs 896655cd most-comfortable-couches and e3272452 cloud-couch-dupes) every link failed in sequence and closing took ~4h after the operator's publish: (1) publish wake never fired — webflow-article-sync 400'd id-less collection_item_published before the wake block, site_publish was unhandled, sweep_publish_waits had a 7-day window from apply (fixed LCH-499 / PR #1610; site_publish webhook 6ac7be15ff4e80325b7e3332 registered); (2) close gate v2_s11c4 required its own receipt so no v2 run could ever close (LCH-497 / refresh-agent #203); (3) Pass B never fetched the rendered page, recorded vacuous PASS, and conductor treated any PASS-string provenance as done (LCH-498 / #1611; shared predicate _shared/audit_provenance.py::gate_satisfied; close audit reads provenance via refresh-agent #205); (4) Pass B rendered rules had never run live: card rule regex only matched id=\"Roundup-table\" (always 1) and img-alt counted intentional alt=\"\" template icons (fixed #1622, cards = div.roundup-list-item-2 with <a id=\"N\">); (5) run status never reaches 'done' after a passing close — dispatched-close cycle writes in_progress, the following 'complete' outcome writes nothing (hand-fixed both rows; code fix pending). Lesson: offline-green gates must be run once live end to end before a process is declared done.",
+     "score": 2
+    },
+    {
+     "id": "45a44fdf-6306-47da-b405-9b3d1b689ea1",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1654",
+     "created": "2026-09-30",
+     "content": "REFRESH-CYCLE RETRO: most-comfortable-couches, run 896655cd (published 2026-09-30). Pipeline gaps each found only by running. Read before the next V2 card refresh.\n(1) FIXED: the refresh agent planned v2_s8 without --run-id, so findings.product_copy never reached the plan (bbm-refresh-agent #155).\n(2) OPEN: Draft (v2_s6) never authors findings.product_copy[PRID] (full_description, subtitle). An empty Products full-description/subtitle blocks Pass A (DEF rules). Today the copy was hand-authored by an Opus agent from the approved card copy, specs and VOS. The contract must require it (task: title/H1 + product_copy capture, LC-1654 comment 99760).\n(3) OPEN: no stage writes name (search title, 50-60 chars, CTR) or on-page-title-h1 (short and plain); they come out identical. the operator's rule is in LC-1654 comment 99760.\n(4) FIXED: v2_s8 overwrote real brand alt text with the brand name on UPDATE (#1447).\n(5) FIXED: recent-updates bullet duplicated on re-apply (#1443). One reader-facing bullet per refresh is R-052 (#1442; agent #154).\n(6) The V2 card Overall Ranking bound only to the linked review, so the 7 untested picks rendered blank although BPD research-ranking was set. the operator fixed the template binding in the Designer on 2026-09-30.\n(7) KNOWN: after a v2_s6 re-draft, stale stage-7/8 receipts stay DONE (LC-1646, memory 78ac0468). Workaround: append superseding fail receipts for stage 8.0 and 8.6/apply guarded on jsonb_array_length(stages), then re-dispatch refresh-run.yml.\n(8) v2_s6_vos findings were null; that run's VOS lives in exemplar_approved_20260929.findings.vos (LC-1650 PR-",
+     "score": 2
+    },
+    {
+     "id": "356304ea-255b-4247-a12f-9b4b10b9c1f0",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "LC-1659",
+     "created": "2026-09-30",
+     "content": "THE SHORT ANSWER (top-recomendation) NAMES ONE PRODUCT — HOW TO CHANGE IT ON A CARD ARTICLE WITHOUT THE PIPELINE UNDOING IT (decision + process, 2026-09-30, LC-1659).\n\nRULING (the operator, 2026-09-28, first applied on most-comfortable-couches run 896655cd): top-recomendation recommends the top pick ONLY. Shape = verdict (\"If you're buying one X from this list, make it the Y\"), tested evidence, why it stays right. Plain <p>, ~80-100 words; the template renders the \"Our Top Pick: <product>\" heading above the field, so no heading inside it. This SUPERSEDES the \"3-5 picks in bold\" / \"overall pick + one clause per segment axis\" shape in memory e5cfd5cf Rule 1 and memory e869a282's field map (Rule 1's link rule still governs products named in intro/buying guide/conclusion).\n\nWHERE THE RECORD LIVES FOR A CARD (template=dynamic) ARTICLE. bbm-content markdown is NOT a write path (LC-1607: publish-drafts skips dynamic articles); the pipeline's v2_s6 findings.article_content is, but only inside a run. For a one-field edit outside a run: (1) guarded-body-write --offline with current_body_html pulled from Webflow (no WEBFLOW_API_TOKEN in cloud sessions) as the guard receipt; (2) stage the single field via Webflow MCP update_collection_items (Blog Posts collection 65fa33419d90d967c68a0964), never slug, never publish; (3) mirror into bbm-content so the snapshot is honest; (4) the drafter prompt (bbm-refresh-agent stages/v2_s6_draft.md) must carry the rule or the next run regenerates the old block — as of 2026-09-30 it did not; fixed in bbm-refresh-agent PR #156. The listicle-refresh skill carrie",
+     "score": 2
+    },
+    {
+     "id": "c1f5bd61-ba17-431d-a10c-018c2ef47593",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1275",
+     "created": "2026-09-26",
+     "content": "v2_s7 QUALITY GATE — FIRST LIVE RUNS, WHAT BROKE, AND THE CONVERGENCE RULE (2026-09-26, run 896655cd most-comfortable-couches, LC-1275). Builds on decision 9b9a4884.\n\nSHIPPED: bbm-infrastructure #1399 (quality-gate/card_quality_gate.py, conductor v2_s7 kind=\"gate\"), #1401 (editor reply cap), #1402 (inline tags), bbm-refresh-agent #148 (dispatch as deterministic gate), #149 (receipt keeps editor error). Layer 1 = deterministic (phrase register, fragmented prose, readability, cross-card sameness, LC-878 floor 67/card and 66/article calibrated on 51 published cards, passive voice). Layer 2 = ONE Opus read (anthropic/claude-opus-5 via OpenRouter); blocks only on verified, quoted, blocking-category findings.\n\nWHAT BROKE LIVE, IN ORDER:\n1. EDITOR_MAX_TOKENS=6000 was too small for 15 cards. Both attempts were cut off mid-JSON and the re-ask repeated the same size. $0.49 was spent and the receipt said only \"failed\". Real completion was 7945 tokens. The cap is now 16000; a finish_reason=length reply is re-asked for at most 15 findings; the rubric caps findings at 30.\n2. The receipt dropped editor error/attempts/finish_reason in both the wrapper and the dispatcher; the cause could only be inferred from cost arithmetic. Fixed with a shared editor_summary().\n3. html_to_text replaced every tag with a space, so the editor saw \"Kova : it\" and flagged a punctuation defect that does not exist in the HTML. Inline tags now vanish with no gap.\n4. OPEN: gate spend never reaches refresh_run_costs, so budget_gate is blind to it (LC-1637).\n\nWHAT IT CAUGHT THAT NOTHING ELSE DID: scores from a diffe",
+     "score": 2
+    },
+    {
+     "id": "9b9a4884-9c3c-4c3a-8cd8-ed0a6f423275",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "LC-1275",
+     "created": "2026-09-26",
+     "content": "DECISION (the operator, 2026-09-26, LC-1275): v2_s7 QUALITY IS A BLOCKING GATE, NOT AN ADVISORY. the operator, verbatim in substance: \"makes no sense to write the article that's poor quality. yes speed is important, but this is a major quality gate that needs to be fixed. this is a roadblocker\" and \"I'm not really liking that terminology: advisory. I mean, yes, it's an advisory, but it's not optional.\"\n\nWHAT IT CHANGES:\n1. v2_s7 is renamed \"Quality gate\" (conductor kind gate, not advisory). A failing verdict blocks v2_s8 / v2_s8_apply (the Webflow write) like v2_s6_5 does. Remedy = fix the copy and re-run; there is no pass-through.\n2. It must actually read the copy it grades: on a V2 card article, the six roundup_slots card fields (kd_* + full_breakdown) plus the article-level fields in v2_s6 findings.article_content, not markdown and not stale blurbs.\n3. Voice is part of it. This REVERSES the \"voice gate is ADVISORY BY CONSTRUCTION / never blocks a run\" posture recorded in 65e2f11f (2026-09-02), and quoted in bbm-refresh-agent subagents.py `_validate_voice`. The quality verdict gates the write.\n4. Terminology: do not label a required check \"advisory\" in the conductor, portal or docs. Use \"gate\" or \"check\".\n\nWHY IT CAME UP: on run 896655cd (most-comfortable-couches, first clean V2 run) v2_s7 recorded done in 0 s with findings {\"heading_candidates\": []}. The LC-878 scorer (markdown_to_webflow/quality_gate.py) reads markdown only, so on a card article nothing checked writing quality or voice before the run reached the Webflow write. The only check the copy got was the draft gate (evidence led",
+     "score": 2
+    }
+   ],
+   "articles": [
+    {
+     "slug": "v2-card-copy-standard-style-book-and-exemplar",
+     "summary": "The editorial standard for V2 listicle card copy: the the operator rulings of 2026-09-28/29 recorded as R-rules in editorial_standards.md, the first unreservedly approved draft preserved as a machine-readable exemplar, the anti-repetition correction to R-030, and the per-field copy contracts (short answer, award heading, item subtitle, key details, product naming) with the write path for changing one field without the next run undoing it.",
+     "confidence": "provisional",
+     "last_verified": "2026-10-22",
+     "sc": 2,
+     "ctx": [
+      "be a rule because this keeps happening over and over.\" THE SHORT ANSWER (`top-recomendation`) NAMES ONE PRODUCT. the operator ruled this 2026-09-28 (LC-1659), first applied on most-comfortable-couches run 896655cd. Shape: a verdict (\"If you’re buying one X from this list, make it the Y\"), the tested evidence, then why it stays right. Plain paragraph, roughly 80-100 words. The temp",
+      "d 2026-09-30 for the Albany Park Kova, with facts taken from its own `roundup_slots` card only. Seat depth was deliberately omitted, because that card says 30-inch while most-comfortable-couches says 29-inch for the same Kova. That conflict is unreconciled and was left visible rather than guessed at. One more from the same page. An apologetic process line (\"We",
+      "fferent subject and lives in listicle-refresh-pipeline-v2. ## 1. The 2026-09-28 rulings, and the reversal that matters most All six came out of the operator round-2 review of most-comfortable-couches, and all six are recorded in the style book, editorial_standards.md. KEYWORDS ARE NOW A BLOCKING FLOOR. This REVERSES the 2026-09-16 posture of guidance, never a gate,",
+      "a description of one MILESTONE 2026-09-29, LC-1642. \"The 15 Most Comfortable Couches of 2026\" was the FIRST V2 card-article copy the operator approved without reservation. Run 896655cd-59e8-4f99-b127-6a275ab31e18, article 75f6eb99, Webflow Blog Post 65fa33419d90d967c68a117e. the operator: \"this is the first copy that I've read that I'm actually happy with... t",
+      "as text columns, so both the label-only rename and the hidden-fields-still-hold-data hazard describe real columns. The `refresh_runs` rows e3272452 (cloud-couch-dupes), 896655cd and 96a5cfa9 (both most-comfortable-couches) all exist with those article slugs. NOT checkable from this database, and carried from the source memories: every the operator quote and ruling, the R-rule numbers and their g"
+     ]
+    },
+    {
+     "slug": "listicle-refresh-pipeline-v2",
+     "summary": "The v2 listicle-refresh pipeline ratified and shipped 2026-08-19 (LC-1086/1088/1089): a version-keyed stage map, Heading Set Lock at stage 2, non-blocking gates. Extended 2026-09-20 with the the operator 2026-09-05 ruling that v1 is parked and v2 is hands-on-in-chat, the redispatch single-section recovery path, why receipt part letters are historical identity, and the 2026-08-21 test-fixtures-in-production incident. ADDENDUM 2026-10-10 CORRECTS the liveness ladder — v2_s5/s7/s8 carried manual roster-materialize bypass writes, never conductor progress — and adds the governing lesson that a done status is not proof the conductor ran: a barrier retired by ruling but not by PR kept parking a run, roster-materialize pre-marks v2_s8 done at v2_s5_apply time (LC-1634, filed not fixed), the 45-to-38 section prune and BACKLOG disposition (LC-1621/LC-1597), and the Pass A re-bucketing showing most of 75 findings were rule defects rather than data defects. Run 96a5cfa9 was ultimately abandoned.",
+     "confidence": "provisional",
+     "last_verified": "2026-10-15",
+     "sc": 2,
+     "ctx": [
+      "tages-3-11 liveness claim. - **2026-09-20 (this synthesis run, read from `refresh_run_sections`).** **The 2026-09-05 statement is also no longer true.** Run `96a5cfa9` (`most-comfortable-couches`, created 2026-09-11) carries **`done`** receipts for `v2_s3_keep` (2026-09-17), **`v2_s5` (2026-09-18)**, **`v2_s7` (2026-09-18)** and **`v2_s8` (2026-09-18)**. So `v2_",
+      "2026-09-20)\" section above reads `v2_s5`, `v2_s7` and `v2_s8` as evidence that the conductor had driven stages 5–8. **It had not.** A 2026-09-24 audit of run `96a5cfa9` (most-comfortable-couches) found that nothing from `v2_s3` (selection) through `v2_s8_apply` (display-layer apply) carried an organic DAG receipt. What existed instead were **eight bare \"stage 7.",
+      "the prices in 2 minutes.\"* \"Prices are automatic\" means *build the automation* — not *never check by hand when blocked*. ## Retro: the first full V2 card refresh, run `896655cd` (most-comfortable-couches, published 2026-09-30) Every gap below was found only by running the pipeline end to end. Read before the next V2 card refresh. **Fixed in that cycle** - The refresh a"
+     ]
+    },
+    {
+     "slug": "content-quality-gates-two-number-model",
+     "summary": "The LC-878 deterministic floor and the LC-502 voice judge, how to measure each correctly, and what both are structurally blind to. Superseded in part on 2026-09-26, when v2_s7 became a BLOCKING quality gate that reads the card fields and includes voice (LC-1275).",
+     "confidence": "verified",
+     "last_verified": "2026-10-11",
+     "sc": 2,
+     "ctx": [
+      "roduction primarily happens in LCC. First deliverable: the `livingcozy-brand-voice` skill was **rebuilt grounded in real top-performing LC articles** (`modular-sofas`, `most-comfortable-couches`) plus the anti-slop bar, packaged as a `.skill` bundle. Follow-ups opened by this decision: a code-backed (enforced) slop / E-E-A-T linter with a scored gate, a `googl",
+      "write. 4. **Terminology rule.** Do not label a required check \"advisory\" in the conductor, the portal or the docs. Use \"gate\" or \"check\". **Why it came up.** On run `896655cd` (most-comfortable-couches, the first clean V2 run) `v2_s7` recorded `done` in 0 s with findings `{\"heading_candidates\": []}`. The LC-878 scorer (`markdown_to_webflow/quality_gate.py`) reads markd",
+      "ne Opus read:** `anthropic/claude-opus-5` via OpenRouter. It blocks only on verified, quoted, blocking-category findings. Failures, in the order they surfaced on run `896655cd`: 1. **`EDITOR_MAX_TOKENS=6000` was too small for 15 cards.** Both attempts were truncated mid-JSON and the re-ask repeated the same size. USD 0.49 was spent and the"
+     ]
+    }
+   ]
+  },
+  "jira": {
+   "ok": true,
+   "tickets": [
+    {
+     "key": "LC-1860",
+     "total": 5,
+     "comment": {
+      "created": "2026-10-20T07:51:52.440-0500",
+      "author": "BBM",
+      "body": "*State 2026-10-20 12:52Z.* Already Done, no change. bbm-refresh-agent #245 (ad50036) corrected the agent's close text so it points at this ticket's run-jira-closeout. Follow-ups are tracked on LC-1870."
+     },
+     "status": "Done",
+     "summary": "[Tech] Refresh run close — close the article's Jira tickets; published state read only from Webflow/run status",
+     "updated": "2026-10-20T07:51:52.440-0500"
+    },
+    {
+     "key": "LC-1654",
+     "total": 13,
+     "comment": {
+      "created": "2026-10-20T05:52:06.330-0500",
+      "author": "BBM",
+      "body": "Refresh run 896655cd closed 2026-10-08T17:50:36.076535+00:00: published most-comfortable-couches. Closed by the run close-out, LC-1860."
+     },
+     "status": "Done",
+     "summary": "[Tech] most-comfortable-couches — clear pre-publish audit blockers in one batch",
+     "updated": "2026-10-20T05:52:06.780-0500"
+    },
+    {
+     "key": "LC-1275",
+     "total": 22,
+     "comment": {
+      "created": "2026-09-26T18:40:29.673-0500",
+      "author": "BBM",
+      "body": "*2026-09-26: gate false positive, a heading is joined to the next paragraph in the editor input*\n\nRun 896655cd: the editor flagged {{how_we_chose}} as a nit: \"How We Chose Comfort is personal… the heading has run into the first sentence.\" The live HTML is {{<h2>How We Chose</h2><p>Comfort is personal…}}, and the copy is fine. {{card_quality_gate.html_to_text}} turns every block tag into a single space, so the editor sees the heading and the first sentence as one line.\n\nThe nit severity kept it non-blocking this time. The same flattening could produce a fix-level or blocking false positive on any field that opens with a heading.\n\n*Fix:* feed the editor the output of {{blocks()}}, with a newline between blocks and headings marked (for example {{## }}), instead of the flattened {{html_to_text}} of the whole field. This change is small and belongs in {{card_quality_gate.py}}. Not fixed yet; the refresh run takes priority.\n\nSame run: the gate blocked the rebuilt conclusion (\"Return and delivery terms were updated across the list…\" is maintenance talk aimed at readers). The conclusion was rewritten and the gate is re-running.\n\n----\n\n_Generated by_ [_Claude Code_|https://claude.ai/code]"
+     },
+     "status": "In Progress",
+     "summary": "[Design] refresh-agent · nine late-stage gates are prose with no data source and the voice gate has no implementation — decide tool / data hook / delete per check",
+     "updated": "2026-09-26T18:40:29.673-0500"
+    },
+    {
+     "key": "LC-1659",
+     "total": 5,
+     "comment": {
+      "created": "2026-10-01T09:58:06.426-0500",
+      "author": "BBM",
+      "body": "*Final (2026-10-01):* {{listicle-refresh}} updated on both sides. Done.\n\n* *Live library:* the operator replaced the skill through the Skills UI. I checked the live mirror against the branch: {{SKILL.md}} sha256 {{6e1353c5a2}} = branch, {{references/article-shape.md}} {{0ddf63a2ab}} = branch, and the new section is present.\n* *Versioned record:* claude-skills #75 was merged after the live check ({{6b6016b}}), so the nightly live→repo backup has nothing to revert.\n* *Not done here:* refreshing the {{scripts/skills-sync}} watermark ({{sync-state.json}}). Emitting it re-watermarks the whole library, which would record agreement for other skills that may have pending drift. Leave that to the next sync run, where the planner should now read {{listicle-refresh}} as {{in_sync}}.\n\n----\n\n_Generated by_ [_Claude Code_|https://claude.ai/code]"
+     },
+     "status": "Done",
+     "summary": "modular-sofas — one-product top pick rewrite + encode the rule in Draft (v2_s6)",
+     "updated": "2026-10-01T09:58:06.426-0500"
+    }
+   ]
+  },
+  "github": {
+   "ok": true,
+   "asked": [
+    1869,
+    1860,
+    1622,
+    1611,
+    1610
+   ],
+   "prs": [
+    {
+     "number": 1869,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-10-20T10:49:24Z",
+     "updated_at": "2026-10-20T10:49:26Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "a1d7358f1ba053f6eef0291dc558efe528d8cc7a",
+     "title": "LC-1860 Run close-out: close the Jira tickets a closed refresh run served",
+     "keys": [
+      "LC-1654",
+      "LC-1860",
+      "LCC-2352"
+     ]
+    },
+    {
+     "number": 1860,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-10-20T09:53:28Z",
+     "updated_at": "2026-10-20T09:53:30Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "771ba6ba253ac6c7529bd80b37d8fd5864aac4cf",
+     "title": "LC-1860 CLAUDE.md: published/open state is read from production",
+     "keys": [
+      "LC-1860"
+     ]
+    },
+    {
+     "number": 1622,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-10-08T18:46:13Z",
+     "updated_at": "2026-10-08T18:46:16Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "dfac37a0088165a55686b45c4c41a9c4f6f78182",
+     "title": "LCH-498 Pass B reads the DOM: v2 card detection and template-icon alt",
+     "keys": [
+      "LCH-498"
+     ]
+    },
+    {
+     "number": 1611,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-10-08T17:45:35Z",
+     "updated_at": "2026-10-08T17:45:37Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "05703058723e94deb6affec5952ee5d7f8522104",
+     "title": "LCH-498 Pass B fetches the page; vacuous or stale audit is not done",
+     "keys": [
+      "LC-1718",
+      "LCH-498"
+     ]
+    },
+    {
+     "number": 1610,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-10-08T15:57:12Z",
+     "updated_at": "2026-10-08T15:57:15Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "309f7fde0afb02350b06801eb8bcb336647c2bb7",
+     "title": "LCH-499 Publish wake: real publish payloads, site_publish, sweep window",
+     "keys": [
+      "LC-1718",
+      "LCH-499"
+     ]
+    }
+   ]
+  },
+  "production": {
+   "ok": true,
+   "asked": {
+    "slugs": [
+     "most-comfortable-couches"
+    ],
+    "runs": [
+     "896655cd"
+    ],
+    "migrations": [],
+    "functions": []
+   },
+   "articles": [
+    {
+     "slug": "most-comfortable-couches",
+     "status": "published",
+     "webflow_last_published": "2026-10-08T15:01Z"
+    }
+   ],
+   "runs": [
+    {
+     "id": "896655cd-59e8-4f99-b127-6a275ab31e18",
+     "article_slug": "most-comfortable-couches",
+     "status": "done",
+     "current_stage": 11,
+     "jira_keys": [
+      "LC-1654"
+     ],
+     "updated_at": "2026-10-08T18:53Z"
+    },
+    {
+     "id": "c631a463-63e3-4048-b5b3-cce2d57a70b4",
+     "article_slug": "most-comfortable-couches",
+     "status": "abandoned",
+     "current_stage": 7,
+     "jira_keys": [],
+     "updated_at": "2026-09-25T19:40Z"
+    },
+    {
+     "id": "96a5cfa9-6737-4b52-944d-faecb22eef8c",
+     "article_slug": "most-comfortable-couches",
+     "status": "abandoned",
+     "current_stage": 3,
+     "jira_keys": [],
+     "updated_at": "2026-09-24T23:51Z"
+    }
+   ],
+   "migrations": [],
+   "crons": [],
+   "alerts": [],
+   "functions": []
+  }
+ },
+ "expect": {
+  "why": "most-comfortable-couches publish state: live since 2026-10-08, run 896655cd done (LC-1860); stale memories claiming 2026-09-30 are named, not trusted",
+  "verdict": "conflict",
+  "receipts": {
+   "knowledge": "PASS",
+   "jira": "PASS",
+   "github": "PASS",
+   "production": "PASS"
+  },
+  "contains": [
+   "article most-comfortable-couches: webflow_last_published 2026-10-08T15:01, status published",
+   "run 896655cd (most-comfortable-couches): done, updated 2026-10-08T18:53",
+   "LC-1654 [Done]",
+   "Refresh run 896655cd closed 2026-10-08T17:50:36.076535+00:00: published most-comfortable-couches",
+   "LC-1860 [Done]",
+   "it was live since 10-08",
+   "memory 45a44fdf (2026-09-30) says published 2026-09-30; production says most-comfortable-couches webflow_last_published 2026-10-08T15:01",
+   "memory 88282523 (2026-10-14) says published 2026-09-30",
+   "Rule (CLAUDE.md section 6): production wins ties.",
+   "abandoned, updated 2026-09-25T19:40 STALE (27d old)"
+  ],
+  "not_contains": [
+   "memory 6da15533 (2026-10-20) says published",
+   "memory ff62cc8a",
+   "velvet-sofa",
+   "bbm-refresh-agent #155",
+   "sha=unknown"
+  ]
+ }
+}

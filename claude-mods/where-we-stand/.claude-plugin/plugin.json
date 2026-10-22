@@ -1,0 +1,28 @@
+{
+  "name": "where-we-stand",
+  "version": "0.1.0",
+  "description": "When a session starts diagnosing a recurring problem or is about to state a ticket's or article's status, looks the topic up read-only (knowledge, Jira newest comment, GitHub, production) and injects one answer card: know / state / verified | not verified | conflict. Once per topic, three per session.",
+  "author": {
+    "name": "Brand Bridge Media"
+  },
+  "userConfig": {
+    "supabaseServer": {
+      "type": "string",
+      "title": "Supabase MCP server name",
+      "description": "Server name as /mcp lists it; runs the read-only lookup SQL (knowledge, production, Jira through pg_net).",
+      "default": "Supabase"
+    },
+    "projectId": {
+      "type": "string",
+      "title": "Supabase project id",
+      "description": "project_id passed to execute_sql (livingcozy-hub).",
+      "default": "tlcbwwgfqnasmiipgmmd"
+    },
+    "githubServer": {
+      "type": "string",
+      "title": "GitHub MCP server name",
+      "description": "Server name as /mcp lists it; used for read-only pull_request_read on brand-bridge-media/bbm-infrastructure.",
+      "default": "github"
+    }
+  }
+}

@@ -1,0 +1,361 @@
+{
+ "case": "case-b",
+ "captured": "the lookup, run against production on 2026-10-22; evidence exactly as handed to render",
+ "topic": "LC-1345 mutation-check required",
+ "today": "2026-10-22",
+ "terms": [
+  "mutation-check"
+ ],
+ "tickets": [
+  "LC-1345",
+  "LC-1496",
+  "LCH-439",
+  "LCH-440"
+ ],
+ "evidence": {
+  "knowledge": {
+   "ok": true,
+   "memories": [
+    {
+     "id": "cd04a92a-a646-49db-8e2c-3dcf6c4d6555",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "LC-1821",
+     "created": "2026-10-15",
+     "content": "LC-1821 (2026-10-15, the operator chose option 1): post-merge mutation floors no longer run one-per-merge. guardrails-post-merge-mutation.yml sits in concurrency group guardrails-post-merge-mutation-main (cancel-in-progress: false), so GitHub keeps one running floor plus only the newest pending one; older pending runs show as CANCELLED, which is by design, not a fault. A `base` job (scripts/ci/last_green_floor.py) passes the head sha of the newest SUCCESSFUL floor that is an ancestor of the push as base_sha to bbm-guardrails mutation-check.yml (input added in bbm-guardrails#154), so the surviving run sweeps base..HEAD and no merged file goes unswept. Fails closed (exit 1) on: no green ancestor, API/git error, finder output not exactly BASE= or BASE=<40-hex>. Empty base only when a green floor already ran on this exact commit. Cost watch: base is the last GREEN floor, and 20/30 recent floors were red, so a red streak widens each sweep. Merged bbm-infrastructure#1793 (29af94a) and bbm-guardrails#154 (da3a2c2).",
+     "score": 1
+    },
+    {
+     "id": "0297cd9f-507c-4776-bfa8-1fab329f29b1",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1558",
+     "created": "2026-09-20",
+     "content": "A COMPLETE MEMORY WAS STILL MISAPPLIED, BECAUSE ITS HEADLINE ANSWERS THE OPPOSITE QUESTION (2026-09-20, LC-1558).\n\nREAD ee69f8f7 BEFORE THIS ONE. It is correct and complete; this memory is about how it failed anyway.\n\nWHAT HAPPENED. The LC-1558 migration created public.product_name_key_match, wrote \"REVOKE ALL ... FROM PUBLIC\", granted service_role, and deployed. Measured on the live ACL minutes later: anon EXECUTE, authenticated EXECUTE, service_role EXECUTE. The lockdown did nothing.\n\nWHY, MECHANICALLY. pg_default_acl in this project shows role postgres granting EXECUTE on every new function in public DIRECTLY to anon, authenticated and service_role -- not through PUBLIC. So for a function you CREATE, the PUBLIC revoke removes a grant nobody was using. Verify with has_function_privilege('anon', p.oid, 'EXECUTE'), never by reading the migration.\n\nWHY IT IS NOT A KNOWLEDGE GAP. Memory ee69f8f7 already contained the complete correct form:\n  REVOKE EXECUTE ON FUNCTION public.fn(args) FROM PUBLIC;\n  REVOKE EXECUTE ON FUNCTION public.fn(args) FROM anon, authenticated;\n  GRANT  EXECUTE ON FUNCTION public.fn(args) TO service_role;\nAll three lines. Nothing missing. But its HEADLINE is: '\"REVOKE EXECUTE ... FROM anon, authenticated\" DOES NOTHING. YOU MUST REVOKE FROM PUBLIC.' -- written in LC-1224 to correct the OPPOSITE error. The headline was applied; the body was not read to the end. I then told the operator the memory was \"the opposite half of what this project needs\", which was wrong and had to be corrected.\n\nTHE GENERAL RULE, which is the reason this is worth storing at all:\nA HEADIN",
+     "score": 1
+    },
+    {
+     "id": "b2d0a5cd-e979-4e36-a87a-f381d910b265",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "knowledge-synthesis-3b",
+     "created": "2026-09-18",
+     "content": "CORRECTION to memory 16bcab6b-6a71-441c-a110-3df1fc4ceb24 (LC-1344, \"scope the required mutation sweep to changed functions\"): THAT DECISION WAS NEVER BUILT AND HAS SINCE BEEN REJECTED (recorded 2026-09-18 by the knowledge-synthesis-3b worker, LCH-324 phase 3b).\n\nWHAT 16bcab6b RECORDED (2026-09-03, LC-1344/LC-1337/LC-1339/LC-1340). Four measurements in one day showed CI's mutation-check sweeping the WHOLE changed file rather than the PR's hunks, so touching one line of a legacy file inherited its entire survivor backlog: roster_materialize.py killed 353 / survived 184 / import-error 2 (run 33772802497) -> mutate.py exit 3 -> judge FAIL; seam_check.py 109 production survivors; field_map_receipt.py + rotation_scan.py 32 combined; mutation_gate.py 46 in the gate script itself. The memory then recorded a DECISION: scope the REQUIRED sweep to changed functions only, keeping the whole-file number as a reported, non-blocking figure. The memory itself noted it was NOT YET SHIPPED -- no commit in bbm-infrastructure or bbm-guardrails referenced LC-1344.\n\nWHY IT IS NOW WRONG. knowledge_articles slug `lc-1307-settled-approaches`, SETTLED item 1 (LC-1478, measured 2026-09-11 across the last 40 merges / 23 Python file-touches, of which 19 = 83% collapsed to whole-file), establishes the opposite: whole-file scoping is INTENDED and fail-CLOSED because it examines more, never less; the pain was never the scope but that an unfloored file's whole-file sweep inherits its whole survivor backlog; FLOORING dissolved it. The recorded directive is verbatim \"NEVER narrow mutate.py's scoping to quiet",
+     "score": 1
+    },
+    {
+     "id": "f6739931-d396-47f0-bbc8-839cc9de62a6",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1527",
+     "created": "2026-09-17",
+     "content": "THE SELF-REFERENTIAL-CHECK FAMILY HAS A SUB-SHAPE THE MUTATION SWEEP CANNOT SEE, BECAUSE bbm-refresh-agent HAS NO SWEEP. Four instances in one session, 2026-09-17, LC-1527 / LC-1534 (PRs #128, #129, #130, #131, #132, all merged). Extends 677ba933 (degenerate fallback produces the literal), ba25d663 (expected value is an echo) and 08f7c63e (vacuous over an empty collection); this is a different shape of the same failure, not a correction of any of them.\n\nTHE SUB-SHAPE: THE EXPECTED VALUE IS ALSO THE FAILURE VALUE. Not \"my expectation echoes the output\" and not \"the collection is empty\" — the two states the assertion claims to distinguish produce the SAME observable. Two variants, both found today:\n\n  (a) BOTH SIDES READ ONE SOURCE. operator_loop.py wiring check Q asserted the dispatched step equalled `deterministic_dispatch.HEADING_DECISION_STEP_BY_SECTION[section_id]` and the findings key equalled `gates/heading_decision_tool.findings_key(step)` — the same registers the dispatch itself reads. Measured: with the register crossed so v2_s1m ran `packet`, and again with findings_key returning a made-up key, CHECK Q PASSED BOTH TIMES. It asserted only that the code agreed with itself. Fixed by spelling the expectation as a literal at the check (`{\"v2_s1m\": (\"menu\", \"keyword_menu\"), \"v2_s1n\": (\"packet\", \"decision_packet\")}`), the way test_subagents spells SECTION_DATA_SOURCE's four ids out. All three controls then bit.\n\n  (b) THE SUCCESS SENTINEL EQUALS THE ERROR SENTINEL. test_neither_builds_a_client_for_a_section_it_does_not_serve cleared the env and asserted `None` from make_l",
+     "score": 1
+    },
+    {
+     "id": "3f8c4b4a-9460-424e-b75c-44a032715060",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LCH-419",
+     "created": "2026-09-17",
+     "content": "CORRECTION to memory 78bace9e-f9d5-48fd-88be-bf5f62ebab96 (LC-1462, the post-merge floor's STALE VERDICT). Its DIAGNOSIS stands and is still the reference. Its FIX STATUS is stale, and that stale line caused a live misattribution on 2026-09-17. It is NOT superseded wholesale.\n\nWHAT IS NOW WRONG IN IT. 78bace9e ends \"FIX NOT APPLIED -- the operator's call\" and \"bbm-guardrails PR #93 ... does NOT reach callers until v1 is advanced off 01b5a24.\" Both were true when written (2026-09-10) and are false now. The v1 pointer was RETIRED on 2026-09-15 (LCH-417) and every caller reads @main. Verified 2026-09-17 in bbm-guardrails mutation-check.yml at main (a6d5b90): verdicts-${{ github.run_id }}-${{ github.run_attempt }} at lines 537/582/693/896/911 (writer AND reader), and continue-on-error on the download is GONE with a comment explaining why its old justification was wrong. LCH-419 (the LCH home of LC-1462) closed Done 2026-09-17 on this evidence.\n\nTHE COST OF THE STALE LINE, which is the reusable part. LCH-441 was filed 2026-09-17 describing post-merge run 61 as TWO failures: a heading_brief.py shard failure plus \"a reconciliation failure matching LC-1462\", citing this memory. There was ONE failure. The shard genuinely failed (scoped sweep, killed 150 / survived 59, FAIL verdict) and the reconciliation correctly reported it: \"at least one mutation floor SHARD failed.\" A downstream job faithfully reporting an upstream failure was read as an independent defect, because a memory said that symptom had a known separate cause. The orchestrator then repeated it to the operator and into PR #1267's body b",
+     "score": 1
+    },
+    {
+     "id": "b39a89bb-6c04-4fdd-abe2-54e7372fb25f",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "LCH-439",
+     "created": "2026-09-16",
+     "content": "MAIN-BRANCH POLICY, bbm-infrastructure, CURRENT STATE 2026-09-16 (LCH-439; supersedes 9c48a5e3 [2026-07-27, \"bypass list EMPTY, status checks OFF\"] and 6b5d2abe [2026-09-09, \"Admin bypass, accepted for now\"]).\n\nRULESET `main required checks` (id 22663887), the only ruleset on main: deletion + non_fast_forward rules; required_status_checks STRICT with two contexts, both pinned to integration_id 15368 (GitHub Actions): `independent-review / Independent re-review posted on head sha` and `schema-drift-check / Added/renamed columns have a reader and a writer`; NO pull_request/approvals rule. BYPASS LIST: **Deploy keys, mode Always — and nothing else.** Repository admin was REMOVED by the operator 2026-09-16 ~17:38Z. So both required checks now BIND for the operator's account and for every Claude session merging as the operator: an API merge with a pending or red required check is refused. The (c) layer of the required-check rule — no merging actor can waive the outcome — holds.\n\nWHY A DEPLOY KEY IS ON THE LIST. The \"Refresh schema reference\" job in deploy-supabase-migrations.yml commits schema-reference.md + schema.sql to main with [skip ci], so required checks can never run on its commit; it lands only as a bypass actor. Since PR #1254 (main e4e92f5d) the job checks out and pushes over SSH with a dedicated WRITE deploy key `schema-refresh (LCH-439)` whose private half is repo secret SCHEMA_REFRESH_DEPLOY_KEY (env-passed, guard step fails closed on missing / public-half / non-PEM). PROVEN: workflow_dispatch run 35128673686 pushed 257e3d4 (both bypasses present); run 35129528140 pushed cec5af6 at 17:40:",
+     "score": 1
+    },
+    {
+     "id": "ef3a730c-107c-4f0e-9101-cee0bce74da7",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LCH-440",
+     "created": "2026-09-16",
+     "content": "GUARD (LCH-440, merged 2026-09-16 as bbm-infrastructure 2e04e411, PR #1253): A DECISION-SHAPED JIRA WRITE NOW REQUIRES A KNOWLEDGE QUERY IN THE LAST 60 MINUTES. PreToolUse hook `.claude/hooks/jira-proposal-needs-knowledge.py`, registered on two matchers in `.claude/settings.json`: `mcp__Supabase__execute_sql` whose SQL names knowledge_memories or knowledge_articles RECORDS a per-session timestamp (always allowed); `mcp__Atlassian__.*` addCommentToJiraIssue / editJiraIssue / createJiraIssue whose text matches recommend*, propos*, remov*, delet*, retir*, \"root cause\", \"should we\", \"option X\" is DENIED unless such a query is recorded within 3600 s. Deny not ask (recovery = one query + retry, no human); fails OPEN loudly on unparseable stdin or unreadable state, like its sibling jira-write-needs-read.py (LC-1496). State file per session under $TMPDIR/claude-knowledge-query-state/. Live from the next session start in the repo.\n\nTHE INSTANCE IT EXISTS FOR. 2026-09-16, LC-1345: two proposals to change bbm-infrastructure's `main required checks` ruleset (comments 80777 \"bypass_mode -> pull_request\", 81148 \"remove Admin from bypass_actors\") were written without one query for why the Admin bypass existed. It was load-bearing — LC-1417 (2026-09-09) added it so the schema-refresh job, pushing to main with the operator's PAT and [skip ci], could get past required checks; memory 6b5d2abe held the whole analysis. the operator asked \"I remember adding this recently, why?\" and `content ilike '%bypass%'` found it in seconds. Removing the bypass would have re-broken the schema reference and blinded the CI re",
+     "score": 1
+    },
+    {
+     "id": "966c3685-fab2-48f6-b83e-aef727f49b5e",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "decision",
+     "source_id": "session_01F6aZiGa9wNrttmRZ3NDUjB",
+     "created": "2026-09-15",
+     "content": "THE OPERATOR FROZE THE SCOPE OF EPIC LC-1307 ON 2026-09-15 — DONE IS THE TWELVE DoD ITEMS, MACHINERY WORK LIVES IN LCH-417, AND THE EPIC'S OWN ADMISSION RULE WAS WHY IT COULD NOT END.\n\nTHE QUESTION THE OPERATOR ASKED. \"Are we still on track? Why is this taking so long? I wanted functionality and it blew from 30 stories to 100+ with no end in sight.\" Measured answer, not argued: the 2026-09-02 spec was 1 epic + 9 gates (G1–G9) + 11 DoD items (12th added 09-06). Those 12 items never changed. The fresh-session delta audit (LC-1398 comment 2, same morning) found NO improper cancellations and scored 7 MET / 3 PARTIAL / 2 NOT MET. So the scope did not drift; there was simply no exit condition and no date.\n\nWHY 9 GATES BECAME 117 CHILDREN (verified by census 2026-09-15: 117 children, 91 done, 26 open before the freeze). Two structural mechanisms: (1) the 2026-09-03 six-builder fan-out created 26 tickets in one day — that is where the operator's \"30 stories\" memory comes from; (2) DoD item 11 (\"every incident becomes a memory AND a check\") meant every defect the gates found in the gates became a child. 50 of the first 102 children were bug-shaped. The epic grew every time it succeeded. Creation had already slowed to 0–6/day from 09-11 and the open count sat at 15–26 for ten days — treading water, not accelerating.\n\nTHE RULING. (a) Freeze: no new children; done = each of the 12 items MET or explicitly ACCEPTED; target close 2026-09-22. (b) Machinery tickets (runner ops, floor hardening, reviewer chain, promotion, probe fixtures, audits, weekly un-guarded-lessons) move to LCH under umbrella LCH-417 \"[Audit]",
+     "score": 2
+    },
+    {
+     "id": "a62ee4a9-f640-48ad-9890-e3ddeacf268e",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1496",
+     "created": "2026-09-15",
+     "content": "getJiraIssue's default field set excludes comments (only summary/description/status/etc). A ticket's description can be stale while its newest comment says to disregard it -- this has caused 13 confirmed mis-statements over 5 months / 2,136 memories, including on LC-1307 (the epic' own ticket) and LC-1345. Fixed 2026-09-14 with two PreToolUse hooks: jira-write-needs-read.py (LC-1496) denies a Jira write on an issue with no comment-inclusive read this session; a companion hook on Agent (LC-1497) flags a subagent brief that requests Jira ticket data without asking for newest-comment state -- the shape of the original LC-1345 miss, which was a subagent census, not a write.",
+     "score": 1
+    },
+    {
+     "id": "a54a2d3c-5c5f-478a-8565-caa2783f0d55",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-1486",
+     "created": "2026-09-12",
+     "content": "A FLOOR MEASURED UNDER A DIFFERENT ARGV IS MEASURED UNDER A DIFFERENT PROGRAM — THE BACKFILL MUST EMIT THE GATE'S COMMAND, NOT THE REGISTRY'S (2026-09-12, LC-1486, bbm-infrastructure PR #1222, merged 444cd9b).\n\nEXTENDS memory 219bfb6b-415d-42c6-b500-d5e751fd6bd3 (mutate.py's scratch-tree contract). Same tool, same class, one layer up: that one was about WHERE the selftest runs; this is about WHAT COMMAND runs.\n\nTHE CONTRACT. bbm-guardrails' `mutation-check.yml` sweeps every target with a FIXED command:\n\n    python3 <basename> --selftest\n\n`scripts/ci/mutation_backfill.py` (LC-1478) derived its command from `scripts/run_selftests.sh` instead. SEVEN registered tools take a POSITIONAL `selftest` rather than `--selftest`: roster-materialize, legacy-cms-materialize, brand-enrich, product-enrich, product-card-price-sync, registry-article-links, legacy-promote. For those seven a locally-written floor was measured under a different argv than the gate applies it with — `main()`'s dispatch takes a different branch, so mutants in the branch the gate exercises come back KILLED there and SURVIVED locally. The gate then reads \"floor below measurement\" and reds a file nobody touched.\n\nMEASURED, NOT INFERRED. price_sync.py on one machine, one commit:\n    registry command (`python3 price_sync.py selftest`)   -> killed 65 · survived 51\n    gate command    (`python3 price_sync.py --selftest`)  -> killed 68 · survived 48   (= the CI shard exactly)\nroster_materialize.py under the gate command returned killed 429 / survived 165 — also exactly the CI shard. All five missing keys across the two fil",
+     "score": 1
+    },
+    {
+     "id": "9434a776-fcb8-4706-b0c4-b1ffd9a71b84",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "session_01E6uFeKBshh4s1dxEBa98QT",
+     "created": "2026-09-03",
+     "content": "CORRECTION to memory 7e5fa9b3-c17f-4326-b35c-1f87fdafa851 (LC-1333 canaries), claims (b) and OPEN — both changed on 2026-09-03 between 17:00 and 18:10 UTC. The rest of that memory stands; it is NOT superseded wholesale.\n\n(b) IS NOW WRONG. It reads: \"mutation-check IS a required status check on bbm-infrastructure (merge API 405 at 14:19 UTC named it) although #1126's header comment said otherwise the same day: trust the merge API, not the comment.\" That was true when written. the operator REMOVED mutation-check from bbm-infrastructure's required checks later the same day, to unblock an unrelated track that LC-1344 was wedging. As of 2026-09-03 ~18:00 UTC the required set is independent-review + schema-drift-check ONLY.\n\nPROOF, verified directly rather than inferred from settings (no branch-protection read tool is available in a cloud session): PR #1131 has merged_at 2026-09-03T17:14:25Z while its mutation-check run concluded `failure` at completed_at 17:17:48Z — it merged 3m23s BEFORE the check finished, while still running. A required check cannot be merged past while running or red. On the same repo, #1133's independent-review sat `failure` and its mergeable_state was `blocked`, confirming that one IS required. This behavioural probe is the reliable technique when settings are unreadable: find a merged PR whose check was red or unfinished at merge_at.\n\nWHY IT WAS REMOVED, and the condition on restoring it (LC-1344 / LC-1345). The gate demands production 0 at WHOLE-FILE scope, so touching one function in a large legacy file inherits that file's entire survivor backlog (measured 109",
+     "score": 2
+    },
+    {
+     "id": "aa81bc1e-d10e-46a7-a0cd-f6c7d2c939cc",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "constraint",
+     "source_id": "LC-1345",
+     "created": "2026-09-03",
+     "content": "A REQUIRED STATUS CHECK SET TO \"ANY SOURCE\" IS SATISFIABLE BY ANY WRITE-ACCESS ACTOR POSTING A COMMIT STATUS WITH THAT CONTEXT NAME -- NO WORKFLOW RUN REQUIRED (2026-09-03, LC-1345, bbm-infrastructure branch protection, observed via the GitHub settings UI).\n\nTHE OBSERVATION. bbm-infrastructure's main-branch ruleset lists required checks; `independent-review` and `schema-drift-check` are pinned to GitHub Actions as their source, but `mutation-check` was configured as \"Any source\" -- meaning the check is satisfied by ANY actor with write access posting a commit-status API call carrying that context name against the head SHA, with no requirement that an actual GitHub Actions workflow run produced it. This is a GitHub ruleset setting (Require status checks -> per-check Source), not code in this repo.\n\nWHY IT MATTERS. A required check meant to gate on a real mutation sweep having actually run and passed can instead be satisfied by anyone able to push a commit status, bypassing the sweep entirely -- silently, since a spoofed status looks identical to a real one in the PR UI.\n\nTHE BLIND SPOT. This is visible only in the GitHub ruleset settings UI (Settings -> Rules -> Rulesets -> per-check Source). No session-side tooling -- not the GitHub MCP connector's available methods, not anything committed in this repo -- reads or audits branch-protection/ruleset configuration (confirmed: no repo file or commit anywhere references this setting), so a required check silently reverting to \"Any source\", or being created that way, is invisible to any automated review a session can run. A human ",
+     "score": 2
+    }
+   ],
+   "articles": [
+    {
+     "slug": "presence-versus-examination",
+     "summary": "The dominant defect in guardrail code: a check that confirms something is PRESENT without confirming it EXAMINED anything. Seven instances shipped in one afternoon across six parallel PRs, every one briefed explicitly to fail closed. Names the four recurring sub-shapes, the three instruments that actually catch them (a shared fail-closed contract, a mutation sweep with a canary, and the absence-check polarity rule), and the three places the class reappeared one layer up — in branch protection, in the reviewer itself, and in the resolver loop we have not yet built. Also carries the LC-1307 orchestration findings: delegation is two decisions not one, and four cheap \"is this shipped\" proxies all lie. ADDENDUM 2026-09-27: two more shapes — a test that asserts on its own setup instead of the outbound payload (entrance-test the request), and a provenance column as the only cheap proof that a multi-source reader is preferring what you think it prefers. ADDENDUM 2026-09-30: three more ways an assertion stops asserting — the vacuous-collection shape that is True when empty (5 of 7 disputed floor keys), a new fail-closed gate placed FIRST in a decision function silently short-circuiting every existing fixture that lacks its precondition (only a sweep catches this, never a revert-check), and in-code \"equivalent mutant\" comments being wrong 3 times out of 3. Plus the inverted defect class: a promotion gate deadlocked on a drift detector that is red by construction whenever promotion is warranted, latent for ~24h after each merge and re-armable by a mere workflow rename. ADDENDUM 2026-10-20: the copied Supabase Vault fetch in three GitHub workflows is fail-open. It rejects only the empty string and the literal None, so a PostgREST 4xx error body or a 502 page passes both guards and becomes WEBFLOW_API_TOKEN, surfacing hours later as an opaque Webflow 401. Fixed in run-testers-derive.yml (PR #1284) by checking the SHAPE (a bare JSON string) rather than the string value; run-deal-pill-sweep.yml and run-product-image-optimize.yml still carried the original shape.",
+     "confidence": "verified",
+     "last_verified": "2026-10-20",
+     "ctx": [
+      "In branch protection Two findings, both invisible from the repository, both found only because a human looked at a settings page. **A required check on \"Any source\"** (lc-1345) is satisfied by a commit status carrying that context string from *anything able to post one* — every actor with write access, via one `POST /repos/.../statuses/<sha>`.",
+      "introduced by someone doing maintenance correctly.** Also recorded here: the \"Any source\" branch-protection finding in §4.1 above is now formally sourced to its memory (lc-1345), which carries the mechanism — the check is satisfied by one `POST /repos/.../statuses/<sha>` from any actor with write access, with no workflow run required. ## Sub-s"
+     ]
+    },
+    {
+     "slug": "ci-guard-execution-wiring",
+     "summary": "A correct, green guard that nothing executes — or that executes on the wrong file set, never starts, or sits red on evidence it cannot refresh. Six instances: a --selftest no workflow lists, a selftest whose subject file is absent from the paths: filter, a paths: entry naming a Next.js [id] route (dead by glob bracket-semantics), a startup_failure with zero jobs whose third and real cause is the caller job granting fewer GITHUB_TOKEN scopes than the callee declares, a required check that cannot re-fire when its own condition is satisfied, and a check whose Authored-by-session input the automated PR opener never supplies. Carries the LC-681 pairing-check remedy: a tests-pass claim should be a CI-enforced fact, not a procedural promise. ADDENDUM 2026-10-14: two LC-1223 instances. Instance 7 is the class with the opposite sign — a WORKING gate reported as missing, because absence from an enumerated registry was generalised into \"gated by nothing anywhere\" while test-operations-portal-catalog.yml was discovering the file by glob all along (the wrong PR instruction would have created a duplicate workflow). Carries the list of which directories are discovery (operations-portal/lib/catalog, cloudflare-workers/_shared, both with empty-set guards) versus enumerated on purpose (webflow/bulk-operations, scripts/run_selftests.sh), and the rule: never ask \"is it in the registry\", ask \"which selector reaches this path\". Instance 8: a PR open for a month failed a gate added to main after it was written, the defect was real rather than a false positive, and the live ACL had already been fixed — so the PR was repairing migration text against a replay, a different and lower urgency than a live hole.",
+     "confidence": "provisional",
+     "last_verified": "2026-09-25",
+     "ctx": [
+      "7-settled-approaches`' day-one list; cause 3 is new and is the one that actually bit.)* ## Instance 5 — a guard that ran, then sat red on evidence it could not refresh (lc-1345, 2026-09-03) `bbm-guardrails` `review-check.yml` ran and **correctly failed** at 16:05 UTC, because no valid receipt existed yet. A valid `Independent re-review: APPROV",
+      "branch-protection end state are documented. - `lc-1307-settled-approaches` — the guardrails epic; carries a fourth wiring defect of this family (the `bbm-guardrails` mutation-check workflow invoking `python3 <file> --selftest` with no value, which `mutate.py`'s argparse rejects). --- *Verification note (2026-09-17): every claim in this article",
+      "so the article's `last_verified_at` was left unchanged rather than refreshed. Carried on the authority of the four source memories (LC-681 captured 2026-05-26; LC-1312, lc-1345 and LC-1349 captured 2026-09-03). Time-sensitive: Instance 6's `auto-pr.yml` gap may since have been closed — check the current workflow before assuming a PR body needs"
+     ]
+    },
+    {
+     "slug": "lc-1307-settled-approaches",
+     "summary": "Settled approaches and known landmines for epic LC-1307 (orchestrated-build guardrails) — the mutation gate, the floor, and the sweep harness. Query this BEFORE re-deriving anything in that area. ADDENDUM 2026-09-30: the 2026-09-15 close-out. the operator froze the epic (12 DoD items unchanged all along; the scope never drifted — there was no exit condition, and DoD item 11 made every defect a new child, so the epic grew every time it succeeded), moved 18 machinery tickets to LCH-417, DROPPED G7 track-status and RETIRED G8 brief-check as accepted built-not-wired, and retired the moving v1 pointer so every bbm-guardrails ref is @main and merged IS deployed. Carries the callee-first sequencing rule (with the caller-first exception for permission widenings), the reviewer's new pull-requests:write grant, and the rule that a decision reversal must be superseded in knowledge_memories BEFORE the implementing diff is pushed. ADDENDUM 2026-10-01: the post-close regime — guardrails work is filed in LCH under LCH-417 and never in LC; two PreToolUse hooks now gate Jira (a write needs a comment-inclusive read, a decision-shaped write needs a knowledge query inside 60 minutes); and the main-branch bypass list is reduced to exactly one schema-refresh deploy key, with Repository admin removed, so both required checks bind for every session merging as the operator. That addendum is repo/GitHub state and is NOT verifiable from Supabase — it is recorded at source-memory confidence.",
+     "confidence": "verified",
+     "last_verified": "2026-09-17",
+     "ctx": [
+      "branch-protection read tool exists in a cloud session): find a merged PR whose check was red or unfinished at `merged_at`. PR #1131 has `merged_at 17:14:25Z` while its `mutation-check` run concluded `failure` at `17:17:48Z` — it merged 3m23s *before* the check finished. A required check cannot be merged past while running. On the same repo #1133's `in",
+      "ale while its newest comment says to disregard it. That shape produced 13 confirmed mis-statements across 5 months and 2,136 memories, including on LC-1307 itself and on lc-1345. The hook denies a Jira write on an issue that has had no comment-inclusive read this session. A companion hook on the `Agent` tool (LC-1497) flags a subagent brief that asks for Jira ticket data without asking for newest-comment state — which was the exact shape of the lc-1345 miss, a subagent census rather than a write. **15.2 `jira-proposal-needs-knowledge.py` (LCH-440, merged 2026-09-16 as 2e04e411, PR #1253) — a",
+      "DENIED unless such a timestamp exists within 3600 s. State file per session under `$TMPDIR/claude-knowledge-query-state/`. Selftest: 77 checks, including the opening of lc-1345 comment 80777 as a fixture — denied with no query, allowed two minutes after one. Independent review on #1253: grok-4.5 APPROVED, also LC-1512's first live verdict. **The instance it exists for.** On 2026-09-16, two proposals to change the `main required checks` ruleset (lc-1345 comments 80777 \"bypass_mode -> pull_request\" and 81148 \"remove Admin from bypass_actors\") were written without one query for why the Admin by",
+      "\"scope the required sweep to changed functions\" decision was never built, and is now won't-fix On 2026-09-03 four measurements in one day all had the same shape — CI's `mutation-check` sweeps the WHOLE changed file, so touching one line of a legacy file inherits that file's entire survivor backlog: | File | Repo / ticket | Whole-file result | |---|--",
+      "onours `check` and injects a failure at one call index at a time. ## 6. The required set churned twice in one day, and the header comment was wrong in both directions `mutation-check` **was** required on bbm-infrastructure (the merge API returned 405 naming it at 14:19 UTC on 2026-09-03). the operator **removed** it later the same day to unblock a track LC-1",
+      "th halves; a guard `::error` means the secret is missing or is the wrong half. Fix the secret or the ruleset. NEVER re-add Repository admin to get past it — that reopens lc-1345. To emergency-merge a PR whose required check is itself broken, the operator edits the ruleset (a settings permission, not a bypass), merges, then restores it. `bypass_mode pull",
+      "ruling) LC-1307 admits no new children. Done = each of the twelve DoD items MET or explicitly ACCEPTED; target close 2026-09-22. Six children remain: LC-1314, LC-1315, lc-1345, LC-1494, LC-1512, LC-1509. All guardrails MACHINERY work (runner ops, floor hardening, reviewer chain, promotion/release freshness, probe fixtures, audits, weekly un-g",
+      "ot be a bypass actor on a user-owned repo (memory 43910d66). Removing it re-breaks the schema reference and blinds the CI reviewer (LC-1429). the operator's decision 2026-09-16 (lc-1345, option B): it stays until **LCH-439** gives the refresh its own deploy-key identity; only then remove Admin, in the order add-DeployKey → prove a refresh lands → remove"
+     ]
+    }
+   ]
+  },
+  "jira": {
+   "ok": true,
+   "tickets": [
+    {
+     "key": "LC-1345",
+     "total": 8,
+     "comment": {
+      "created": "2026-09-16T11:03:32.614-0500",
+      "author": "BBM",
+      "body": "STATE (2026-09-16 16:20Z): CLOSED Done. the operator decided *B* (2026-09-16, chat): give the schema refresh its own deploy-key identity, then remove the Admin bypass. The build is machinery under the freeze and lives in *LCH-439* (Blocks LCH-417; Relates here and LC-1417). Nothing was clicked today; the Admin bypass stays in place until LCH-439 step 3, in the order add-DeployKey → prove one refresh lands → remove Admin.\n\nh2. Done-when, final\n\n||Criterion||Status||\n|{{mutation-check}} re-added with the GitHub Actions source|MOOT — designed out by LC-1399 (post-merge-only sweeps); re-adding would recreate LC-1435|\n|Other two entries confirmed pinned|DONE 2026-09-14 ({{integration_id 15368}}, current export)|\n|bbm-guardrails audited the same way|DONE 2026-09-09 — found LC-1435|\n|Source-pinning written down where the setup steps live|DONE — bbm-guardrails PR #75|\n|Decide on {{bypass_actors}} Admin {{always}}|*DECIDED* — keep until LCH-439 replaces it with a DeployKey bypass; then remove. Recorded above (81149) with why it exists (LC-1417)|\n\nh2. What this ticket established, for the epic's rule\n\nA required check is real only if (a) nothing but the intended check can satisfy it, (b) it actually reports on a {{pull_request}}, and (c) no actor that merges can waive the outcome. (a) and (b) hold on bbm-infrastructure today. (c) is open by a deliberate, load-bearing exception (LC-1417) and closes when LCH-439 lands. Epic row 2 stays MET AS DESIGNED; this ticket's contribution is the (c) layer"
+     },
+     "status": "Done",
+     "summary": "[Tech] branch protection · admin bypass_actors is \"always\", so every required check is waivable by the only actor that ever merges",
+     "updated": "2026-09-16T11:03:35.760-0500"
+    },
+    {
+     "key": "LC-1496",
+     "total": 3,
+     "comment": {
+      "created": "2026-09-14T14:37:27.786-0500",
+      "author": "BBM",
+      "body": "*VERIFIED LIVE 2026-09-14 19:3xZ — the guard fired, in this session. Closing.*\n\nThe remaining item was \"confirm a real deny in a fresh session\". It did not need a fresh session, and *my claim that it did was wrong* — stated twice, in PR #1230's body and in this ticket's previous comment: _\"_{{.claude/settings.json}} is read at session start, so the registration cannot take effect in the session that wrote it.\" It took effect in this one.\n\n*The transcript, unedited.* Attempting {{transitionJiraIssue}} on LC-1501:\n\n{noformat}REFUSED: this session has not read LC-1501's comments, so it does not know the\nticket's state — only its title, description and status field. ...\nFix it in one call, then retry this one:\n  getJiraIssue(issueIdOrKey=\"LC-1501\", fields=[\"summary\", \"status\", \"comment\"])\n...\nIssues whose comments this session HAS read: LC-1329, LC-1345, ... (LC-1496){noformat}\n\nThen {{getJiraIssue}} with {{fields: [\"summary\",\"status\",\"comment\"]}} → the same transition → *allowed*, status To Do → Done.\n\nDeny → one read → retry → allowed. Exactly the designed recovery, one call, no human.\n\n*What it caught is the point.* I had _created_ LC-1501 myself half an hour earlier, so I \"knew\" its state and never read it back. That rationalisation — _I already know this ticket_ — is the precise failure this guard exists to refuse, and it refused me on my own ticket within an hour of merging.\n\nAlso confirmed live, incidentally: the refusal names the ticket, spells out the exact unblocking ca"
+     },
+     "status": "Done",
+     "summary": "PreToolUse hook: refuse a Jira write to an issue whose comments were never read this session",
+     "updated": "2026-09-14T14:37:30.993-0500"
+    },
+    {
+     "key": "LCH-439",
+     "total": 3,
+     "comment": {
+      "created": "2026-09-16T12:42:44.196-0500",
+      "author": "BBM",
+      "body": "STATE (2026-09-16 17:50Z): DONE. Repository admin is off the {{main required checks}} bypass list (the operator, ~17:38Z); the only bypass actor is Deploy keys. Both required checks now bind for the operator's account and for every session merging as the operator. LC-1345's (c) layer is closed.\n\nh2. Proof, in order\n\n||Step||Evidence||\n|1–3 the operator's clicks|deploy key {{schema-refresh (LCH-439)}} (write) · secret {{SCHEMA_REFRESH_DEPLOY_KEY}} · Deploy keys / Always on the bypass list|\n|2 workflow PR|#1254 → {{main e4e92f5d}}; reviewer APPROVED on the third head (comment 5701690007) after two real findings fixed ({{env:}} not inline; anchored PEM check)|\n|4 refresh lands, both bypasses present|run 35128673686 → commit {{257e3d4}} 17:32:01Z, 2 files|\n|5 Admin removed|the operator's click ~17:38Z|\n|4 again, Admin absent|run 35129528140 → commit {{cec5af6}} 17:40:22Z, {{schema.sql}} 1+/1−; push log {{Bypassed rule violations for refs/heads/main: 2 of 2 required status checks are expected}} — the *DeployKey actor alone* carried it. A deploy-key push is evaluated as DeployKey, not as the key's creator. Read from {{git log origin/main}}, not the badge|\n|6 memory|{{b39a89bb-6c04-4fdd-abe2-54e7372fb25f}} (main-branch policy, current state) supersedes {{9c48a5e3}} (2026-07-27 empty-bypass state) and {{6b5d2abe}} (2026-09-09 Admin bypass \"accepted for now\"); both marked inactive with {{superseded_by}}. {{lc-1307-settled-approaches}} article updated: the landmine is retired|\n\nh2. The one item not manufactured\n\n\"Proven bind"
+     },
+     "status": "Done",
+     "summary": "[Health] guardrails · schema-refresh pushes with its own deploy key so the Admin bypass on main can go",
+     "updated": "2026-09-16T12:43:21.092-0500"
+    },
+    {
+     "key": "LCH-440",
+     "total": 2,
+     "comment": {
+      "created": "2026-09-16T11:45:38.125-0500",
+      "author": "BBM",
+      "body": "STATE (2026-09-16 16:52Z): MERGED — Done. bbm-infrastructure #1253 squash-merged to {{main}} as {{2e04e411}}. CI on the head: {{.claude/hooks selftests}} green (77/77 for the new hook, all six hooks pass), {{schema-drift-check}} green, {{independent-review}} green with the reviewer's verdict posted as PR comment 5701104782 (grok-4.5 primary, APPROVED, \"no blocking defect found\"; residual accepted by design: the knowledge touch is a table-name substring in the SQL text, so a literal could unlock — same honesty bar as LC-1496).\n\nLive from the next session start in this repo: {{.claude/settings.json}} is read at session start, so the session that merged it is not yet gated; every new one is.\n\nDone-when, final:\n\n||Criterion||Status||\n|Script with {{--selftest}} covering record / deny / fresh / stale / non-decision / create / edit / fail-open / non-matching|DONE — 77 checks, real-CLI round trips|\n|settings.json entries: {{mcp__Supabase__execute_sql}} (record) + {{mcp__Atlassian__.*}} (gate)|DONE|\n|LC-1345 comment 80777 payload denied without a query, allowed after one|DONE — fixture in the selftest|\n|PR merged via the normal path; doubles as LC-1512's live proof|DONE — #1253 / {{2e04e411}}; LC-1512 closed on it|\n|Memory recording the guard and the 2026-09-16 instance|written at close (see below)|\n\nRefs: #1253, LC-1345 (81149), LC-1512 (81152), LC-1496, LCH-417\n\n----\n\n_Generated by_ [_Claude Code_|https://claude.ai/code]"
+     },
+     "status": "Done",
+     "summary": "[Health] guardrails · a decision-shaped Jira write requires a fresh knowledge query — PreToolUse hook",
+     "updated": "2026-09-16T11:46:04.031-0500"
+    }
+   ]
+  },
+  "github": {
+   "ok": true,
+   "asked": [
+    1253,
+    1133,
+    1131,
+    1254,
+    1126
+   ],
+   "prs": [
+    {
+     "number": 1253,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-09-16T16:45:15Z",
+     "updated_at": "2026-09-16T16:45:15Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "8c910fdc0f723a2f265866cbc0770c53b93237cb",
+     "title": "LCH-440 Hook: a decision-shaped Jira write needs a fresh knowledge query",
+     "keys": [
+      "LCH-440"
+     ]
+    },
+    {
+     "number": 1133,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-09-03T18:06:10Z",
+     "updated_at": "2026-09-03T18:06:10Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "4fb32a5760e0ea974d7b33de7122b21a7721ff6a",
+     "title": "LC-1345/LC-1307: correct the required-checks header + ignore subagent worktrees",
+     "keys": [
+      "LC-1307",
+      "LC-1344",
+      "LC-1345"
+     ]
+    },
+    {
+     "number": 1131,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-09-03T17:14:25Z",
+     "updated_at": "2026-09-03T17:14:26Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "bc5b677b923497d7ac0002c72b36649d193d9e4a",
+     "title": "LC-1346 Plan preview: cleared sale-price and empty-live BPD alt are not gaps",
+     "keys": [
+      "LC-1341",
+      "LC-1346"
+     ]
+    },
+    {
+     "number": 1254,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-09-16T17:30:35Z",
+     "updated_at": "2026-09-16T18:29:36Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "79f6e54079e09409571abf15b45e57d137b5a4e3",
+     "title": "LCH-439 Schema refresh pushes with its own deploy key, not the operator's PAT",
+     "keys": [
+      "LCH-439"
+     ]
+    },
+    {
+     "number": 1126,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-09-03T12:54:04Z",
+     "updated_at": "2026-09-03T12:54:04Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "ed963ba7ee99fb2644d08116c6c5c6aa579e7eb3",
+     "title": "LC-1307: record the subtask-vs-session container rule in CLAUDE.md §2",
+     "keys": [
+      "LC-1307"
+     ]
+    }
+   ]
+  },
+  "production": {
+   "ok": true,
+   "asked": {
+    "slugs": [],
+    "runs": [],
+    "migrations": [],
+    "functions": []
+   },
+   "articles": [],
+   "runs": [],
+   "migrations": [],
+   "crons": [],
+   "alerts": [],
+   "functions": []
+  }
+ },
+ "expect": {
+  "why": "LC-1345 \"mutation-check required\": the title says so, the newest comment says it is moot and the memories say it was removed from the required list",
+  "verdict": "verified",
+  "receipts": {
+   "knowledge": "PASS",
+   "jira": "PASS",
+   "github": "PASS",
+   "production": "NOT CHECKED"
+  },
+  "contains": [
+   "LC-1345 [Done]",
+   "updated 2026-09-16T11:03 STALE (36d old)",
+   "{{mutation-check}} re-added with the GitHub Actions source|MOOT — designed out by LC-1399",
+   "[memory 9434a776 · 2026-09-03 STALE (49d old)",
+   "REMOVED mutation-check from bbm-infrastructure's required checks",
+   "memory 9434a776 is a correction of memory 7e5fa9b3",
+   "production NOT CHECKED: nothing production-checkable named",
+   "PR #1133: merged=true"
+  ],
+  "not_contains": [
+   "bbm-refresh-agent",
+   "PR #93:",
+   "PR #128:",
+   "LC-1478",
+   "LC-1558"
+  ]
+ }
+}

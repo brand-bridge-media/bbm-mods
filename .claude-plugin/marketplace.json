@@ -113,6 +113,11 @@
       "name": "mod-freshness",
       "source": "./claude-mods/mod-freshness",
       "description": "Warns a long-lived session, once per mod, when a mod it loaded at start has since changed in the bbm-mods mirror, so the operator knows to start a fresh session."
+    },
+    {
+      "name": "where-we-stand",
+      "source": "./claude-mods/where-we-stand",
+      "description": "When a session starts diagnosing a recurring problem or is about to state a ticket's or article's status, looks the topic up read-only (knowledge, Jira newest comment, GitHub, production) and injects one card: know / state / verified | not verified | conflict. Once per topic, three per session."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."

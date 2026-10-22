@@ -1,0 +1,399 @@
+{
+ "case": "case-a",
+ "captured": "the lookup, run against production on 2026-10-22; evidence exactly as handed to render",
+ "topic": "catalog-ingest 546 WORKER_RESOURCE_LIMIT",
+ "today": "2026-10-22",
+ "terms": [
+  "catalog-ingest",
+  "worker_resource_limit",
+  "546"
+ ],
+ "tickets": [
+  "LCH-224",
+  "LCH-321",
+  "LC-910"
+ ],
+ "evidence": {
+  "knowledge": {
+   "ok": true,
+   "memories": [
+    {
+     "id": "5c8d044d-9ab5-4c4c-8d67-72d8c37c474e",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LC-910 fleet seating-filter audit 2026-10-06",
+     "created": "2026-10-06",
+     "content": "LC-910 FLEET SEATING-FILTER AUDIT (2026-10-06, PRs #1546 #1549 #1551 #1555 #1558, receipts #1559): the catalog-ingest seating gate (classify.mjs SEAT/NON_SEAT/isAccessoryName) is audited with `catalog-ingest?brand_id=<id>&dry_run=1&category_audit=1` (read-only, per-category keep/drop + the rule that dropped each; Impact resumable profiles with seating_categories cannot be audited). FINDINGS THAT WILL RECUR: (1) CJ `ProductType` can be a ~90-tag merchandising dump (Herman Miller: \"Find Self-Care in Organization\", \"Sale>...\") so NON_SEAT:care/throw/tables matched tags and dropped 1,064+ real chairs; ProductType over 160 chars is now treated as absent (PRODUCT_TYPE_MAX_LEN). (2) A seat term added to SEAT also fires on Impact Bullets/Labels and on marketing words in names: `sleepers?` matched \"for Side & Back Sleepers\" and staged 60 Puredown comforters/pillows; sleeper is now NAME_SEAT (singular, name only). Re-audit after EVERY SEAT change. (3) LC-907's `pit` matched \"Ball Pit\" (all 45 Moon Pod keeps pre-fix were ball pits/play mats) and fire pits; now a lookbehind veto. (4) Shopify \"dropped\" in an audit must separate seating gates from stock: collapseShopify also skips sold-out/$0 products (audit forces variants available; `unavailable` counted separately). (5) Option labels like \"/ No Mattress Protector\" tripped the strong `protector` accessory rule and dropped every Urban Natural sleeper sofa. (6) Audit/dry-run numbers drift run to run on the same filter (DWR 789 vs 767; Urban Natural 500-1161 items): compare filters only with item counts alongside. (7) mutate.py is Python-",
+     "score": 2
+    },
+    {
+     "id": "5e783d8b-c180-40e5-9d67-1a6344d63ced",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "session_01USa8PyorDobqZJXAiGRbT5",
+     "created": "2026-09-26",
+     "content": "STOREFRONT PDP ADAPTERS MUST CAP PAGES PER CALL — PARSING IS CPU-BOUND (LC-1537, 2026-09-25, PR #1381/#1385). First real Quince run fetched all 80 PDPs inside the 600 s manual deadline, then parsed every __NEXT_DATA__ blob at once and died 546 \"CPU Time exceeded\" BEFORE saving ingest_cursor, so every retry restarted at 0. Fix: 20 PDPs per call (QUINCE_MAX_PDPS_PER_CALL, SITEMAP_JSONLD_MAX_PDPS_PER_CALL), cursor saved every call. Caveats: (1) sitemap_jsonld DRY RUN is still uncapped one-shot, so do not dry-run a 400+ URL brand; preview with one real capped call instead (rows stay promotion_status=ingesting until the run completes). (2) The daily-catalog-ingest sweep budget (~40 s) fits ONE in-progress 20-PDP profile per pass and resume-first ordering starves other profiles meanwhile; drive long first runs manually or with a temporary cron (lc1537 used job 87, skip :00/:22/:44 to avoid cursor races).",
+     "score": 2
+    },
+    {
+     "id": "a2dbd713-d5db-426f-9aab-d7b28b922997",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "catalog-ingestion-audit-2026-08-26",
+     "created": "2026-08-26",
+     "content": "SILENT-8 FULL DECOMPOSITION (2026-08-26, targeted re-stage evidence): the 8 silent catalog profiles decompose into three distinct classes. (1) SWEEP-STARVATION VICTIMS, healthy when run alone — Annie Selke (73 configs), Edloe Finch (2 configs), Urban Natural (50 configs; its Awin feed DOES contain seating — 137 seating_host_valid — settling the triage's open question); fixed by the 546 sweep fix (budget 90s->40s + per-profile remaining-budget deadline + cron 0,22,44). (2) SHRINK-GUARD SILENT LOOPS — Frontgate: CJ pull returns only 3 items vs a 40-config pending baseline so shrink_guard aborts every run (truncated CJ pull, per-brand follow-up); Zinus: pulls all 1164 items but 0 valid configs (probable expected_brand_host/classify mismatch) vs baseline 1, guard aborts (per-brand follow-up). Neither abort writes any health-log row — the catalog_staging_silence check is what surfaces them. (3) FEEDS GONE — Oroa US, HULALA HOME (both Awin, clean no-feed responses, need dashboard Create-a-Feed), Silk & Snow (Impact 404 catalog does not exist). Lesson: \"brand stages nothing\" has at least 3 distinct root causes with identical symptoms; a targeted single-brand invocation (catalog-source-management §5) is the discriminating test and costs seconds.",
+     "score": 2
+    },
+    {
+     "id": "0c49138b-3bf3-4e88-957c-c3b62c040185",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "catalog-ingestion-audit-2026-08-26",
+     "created": "2026-08-26",
+     "content": "ROOT CAUSE CORRECTED (2026-08-26, follow-up to catalog-ingestion audit): the \"Annie Selke pepperjam adapter category bug\" does NOT exist — classify.mjs already falls back to _raw.category_program (classify.mjs:131), and a targeted catalog-ingest invocation for Annie Selke succeeded completely (8071 items pulled, 115 seating_host_valid, 73 configs staged, run e86b93b0-23e2-45b9-88e0-0ff2ec84e651, 6.3s). The REAL cause of the silent-brand class: the hourly daily-catalog-ingest sweep STILL dies with 546 WORKER_RESOURCE_LIMIT on most runs (verified in net._http_response: 5 of today's hourly runs 10:00-15:00 UTC all 546) — the LCH-211 expectation that sync_exempt would cure the 546s did NOT hold. Mechanism: claim-first stamps last_ingested_at before processing, so when the worker is resource-killed mid-run, claimed-but-unprocessed profiles stage nothing and stay invisible (no error recorded anywhere), starving roughly the same victim cohort repeatedly (Annie Selke, Zinus, Edloe Finch, Frontgate + the genuinely-feed-gone Oroa US, HULALA HOME, Silk & Snow). Fix directions: reduce sweep memory footprint / smaller batch / free per-profile allocations, tracked under the LCH-224 lineage. The catalog_staging_silence check (PR #920) names the victims; a targeted per-brand re-stage (catalog-source-management §5) un-silences any one brand immediately.",
+     "score": 3
+    },
+    {
+     "id": "27eb4b38-81bd-438f-9b16-f225f22f9efa",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "knowledge-synthesis-3b-2026-08-24",
+     "created": "2026-08-24",
+     "content": "CORRECTION (verified 2026-08-24 against the live embed-knowledge-batch source and cron.job): two 2026-08-10 memories about embed-knowledge-batch were overtaken by the fix that shipped later the same day and must not be acted on at face value.\n\n(1) SUPERSEDED: \"throughput is capped by arithmetic not compute; raising limit from 3/run to 5/run carries no 546 risk.\" FALSE. The live function body records that limit=4 and limit=5 BOTH return 546 WORKER_RESOURCE_LIMIT, while limit=1 and limit=2 return 200. The worker is compute-capped, and RUN_CEILING=2 now clamps the request with Math.min(requested, RUN_CEILING). Acting on the old recommendation would re-break the pipeline. The ceil(limit/2) fixed split the memory complained about was real and is gone, replaced by queue-depth allocation (articles get at most floor(limit/2) and never more than they need; memories take the remainder).\n\n(2) SUPERSEDED: \"none of LCH-321's three fix items shipped, the function is still at v14, and the 546s were purely environmental per LCH-223.\" FALSE on all three counts. embed-knowledge-batch is version 16, deployed 2026-08-10 under LCH-321/LCH-322, and its header documents exactly three shipped changes: RUN_CEILING, queue-depth budget allocation, and a public.cron_runs row per invocation (LC-637). The 546 is reproducible as a function of limit, so it is at least partly a property of the function rather than only of project compute pressure. The reasoning error was concluding \"environmental\" from \"no deploy has happened\", when the deploy simply had not happened yet.\n\nSTILL TRUE and worth keeping from",
+     "score": 2
+    },
+    {
+     "id": "93b6fb28-d8dd-4a02-8cdd-a7554c7bcb3c",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "context",
+     "source_id": "LCH-321",
+     "created": "2026-08-10",
+     "content": "CONTEXT (2026-08-10T15:20Z): pg_cron job 16 nightly-embed-knowledge was changed from \"17,47 * * * *\" to \"* * * * *\" (60 runs/hour, a 30x increase) at approximately 13:21 UTC on 2026-08-10, by an actor not recorded in the LC-341 thread or its handoff. Evidence: hourly run counts went 2/hr through 12:00 UTC, 39 in the 13:00 hour, 60 in the 14:00 hour. Effect is currently healthy — unembedded memories drained 724 -> 535 in ~2.4h (~79/hour), 0 failed runs in 24h, so no WORKER_RESOURCE_LIMIT/546 regression at this rate. BUT: (a) it contradicts the knowledge-system skill text (\"scheduled nightly at 11pm\"), the last handoff, and the job's own name, which was already flagged as misleading in LCH-328; (b) once the backlog clears it becomes ~1,440 no-op invocations/day and should be reverted to a sane cadence; (c) NOTHING SURFACED THE CHANGE — it was found only because a session happened to look at cron.job while investigating something else. That silence is the argument for LCH-323/phase-3a reporting observed cadence against expected cadence. Revert recipe: SELECT cron.alter_job(16, schedule := '17,47 * * * *');",
+     "score": 2
+    },
+    {
+     "id": "ba2dca45-8561-4b3a-8f6e-c567d648ea03",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "session_01PUHK2nvaJ7Fyg2XFCKN2Tz",
+     "created": "2026-08-10",
+     "content": "LESSON (2026-08-10, meta/process): I re-derived the cron_http_failure root cause from scratch — querying pipeline_health_log, pg_net responses and cron.job to conclude \"catalog-ingest hits 546 WORKER_RESOURCE_LIMIT hourly at :00\" — when memory 30d884a3-464f-4fa6-b2be-2b868541ab54 (2026-07-04, LCH-224) already recorded exactly that, along with its partial fix (PR #694 staggered dispatcher to :05 and attribution to :07/:37; catalog-ingest kept :00). This is precisely the failure the knowledge-system skill warns about: QUERY prior art BEFORE constructing a diagnosis. WHAT IS GENUINELY NEW: (1) the LCH-224 stagger fixed the CONTENTION victims but not catalog-ingest itself — it still 546s at :00 in ~8% of runs (4 of 48 in the 48h to 2026-08-10), so its own compute ceiling was never addressed; (2) the likely_cause string inside check_cron_http_health() still hard-codes the ORIGINAL LCH-128 verify_jwt/401 diagnosis, so every new row re-asserts an obsolete cause and points the reader at supabase/config.toml — the ticket-outlives-its-root-cause trap from LCH-224, now baked into the emitting function rather than just the ticket description. GENERAL RULE: a hard-coded \"likely_cause\" hint ages into misinformation; derive the hint from the observed status codes, or omit it.",
+     "score": 3
+    },
+    {
+     "id": "3ffabb7e-5ce9-43e9-aeb4-180cc05fb62c",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "knowledge-system-lint-2026-08-10",
+     "created": "2026-08-10",
+     "content": "CORRECTION — supersedes memory 360bf192-c676-47d6-ad68-9d893511b1c6, which claimed the knowledge-memories embedding pipeline was \"silently dead for 63 days.\" THAT CLAIM WAS WRONG. The pipeline was draining the whole time.\n\nTHE MISREADING: I ran SELECT max(created_at) FILTER (WHERE embedding IS NOT NULL) and got 2026-06-08, then read it as \"the date embedding stopped.\" It is not a failure date — embed-knowledge-batch processes OLDEST-FIRST (ORDER BY created_at), so that value is the QUEUE FRONTIER: how far the backlog has been worked, not when it broke. Memories created after 2026-06-08 have no embedding because the queue has not reached them yet. LCH-328 documents this exact trap independently and I walked into it anyway.\n\nTHE DISPROOF (the query I should have run first): knowledge_memories.updated_at is bumped by the update_knowledge_memories_updated_at trigger, and writing an embedding IS an UPDATE — so recent embedding activity is directly measurable. SELECT count(*) FILTER (WHERE embedding IS NOT NULL AND updated_at > now() - interval '24 hours') returned 180, and 555 over 7 days. A dead pipeline cannot produce 180 writes a day. This matches LCH-328's independent measurement of ~138/day and a counter ticking 790 -> 787.\n\nWHAT IS ACTUALLY TRUE: (a) the function DOES intermittently return 546 WORKER_RESOURCE_LIMIT — reproduced at limit=4 and limit=5, and a real cron run (pg_net request 11377, 13:17 UTC 2026-08-10) was captured 546-ing; (b) limit=2 and limit=1 return 200 cleanly; (c) enough runs succeed that the backlog drains ~180/day against ~11-20/day inflow, so it self",
+     "score": 2
+    },
+    {
+     "id": "360bf192-c676-47d6-ad68-9d893511b1c6",
+     "is_active": false,
+     "superseded_by": "3ffabb7e-5ce9-43e9-aeb4-180cc05fb62c",
+     "memory_type": "lesson",
+     "source_id": "knowledge-system-lint-2026-08-10",
+     "created": "2026-08-10",
+     "content": "ROOT CAUSE + FIX (2026-08-10): the knowledge-system embedding pipeline for knowledge_memories was silently dead from 2026-06-08 14:45 to 2026-08-10 — 730 memories (54% of the active corpus) had no embedding, so semantic recall ran on roughly half the knowledge base for 63 days.\n\nCAUSE: batch size, not a poison row. embed-knowledge-batch takes ?limit (default 5) and allocates ceil(limit/2) to memories (Phase 1) with the remainder to articles (Phase 2). The pg_cron job nightly-embed-knowledge (jobid 16) called it with NO limit param, so limit=5 -> 3 memory inferences per invocation. Proven by direct invocation 2026-08-10: limit=5 and limit=4 both return HTTP 546 WORKER_RESOURCE_LIMIT (worker killed, nothing commits); limit=2 and limit=1 return 200 with memories.processed=1, errors=0. A real cron run (pg_net request 11377, 13:17 UTC) was captured returning 546.\n\nWHY IT STARTED 2026-06-08: memory CONTENT got longer. Pre-June memories were short; memories written since are 1,000-2,500-char structured writeups (truncated to 2,000 before inference). Three 2,000-char gte-small inferences per worker exceeds the Edge Function resource budget. The \"max 5 safe\" comment in the source was tuned when memories were short — a limit that silently rots as data grows.\n\nWHY IT WAS INVISIBLE (three compounding layers): (1) pg_net is fire-and-forget, so the function's JSON errors[] array is never read by anyone — the diagnostic existed and went to /dev/null; (2) cron.job_run_details showed 245 consecutive \"succeeded\" because pg_net success means the POST was DISPATCHED, not that the function fini",
+     "score": 2
+    },
+    {
+     "id": "06010306-9e4a-4da9-b523-f64d5a212b41",
+     "is_active": false,
+     "superseded_by": "27eb4b38-81bd-438f-9b16-f225f22f9efa",
+     "memory_type": "lesson",
+     "source_id": "LCH-321",
+     "created": "2026-08-10",
+     "content": "LCH-321 root cause was misattributed. The embed-knowledge-batch WORKER_RESOURCE_LIMIT (546) failures observed 2026-08-07 stopped by 2026-08-10 with the function still at v14 and its source header reading \"2026-06-05 redeploy ... No logic change\" — none of the ticket's three fix items shipped. The 546s were environmental (project compute exhaustion, per LCH-223), not a property of the function. Lesson: before filing or closing an Edge Function resource ticket, check whether the project was under a compute event; a function that \"fixed itself\" without a deploy never had a code bug, and closing it as fixed loses the fact that it is still one compute squeeze from the same failure.",
+     "score": 2
+    },
+    {
+     "id": "b68c6b10-bee8-4522-a123-4fc472933f02",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "daily-ritual-shutdown-2026-07-29",
+     "created": "2026-07-29",
+     "content": "LESSON (verified 2026-07-29T19:20Z, shutdown ritual): a 546 WORKER_RESOURCE_LIMIT response from a Supabase Edge Function does NOT mean the function did not run. The hourly pg_cron job `daily-catalog-ingest` (schedule \"0 * * * *\") POSTs to the `catalog-ingest` Edge Function; every top-of-hour response retained in net._http_response over 48h came back 546 (6 of 6, 2026-07-29 14:00Z-19:00Z, zero 200s), and pipeline_health_log has been raising cron_http_failure (severity=critical, jira_issue_key NULL) since 2026-07-28T09:15Z. But catalog_source_profiles.last_ingested_at has a most-recent value of 2026-07-29T19:00:29Z — the SAME MINUTE as the 19:00:00Z 546 — with 128/161 profiles ingested in the last 48h. The function is running, doing real work, and being killed on the compute ceiling before it can return. The 546 is the caller's view of a PARTIAL COMPLETION. This is why \"the cron is failing\" is the wrong diagnosis and \"the function exceeds its compute budget and dies mid-sweep\" is the right one. Partial completion is the dangerous shape: a run that ingests some profiles and dies cannot report which it missed, so catalog freshness degrades unevenly and silently — same surface as LCH-211. Diagnosis commented on LCH-290 rather than filed as a 7th duplicate of the \"[Health] Cron HTTP failures — gateway 401/5xx\" class (LCH-269/283/285/286/289/290), which LC-719 already flags for retirement as noise. Health check: `select count(*) filter (where last_ingested_at >= now() - interval '2 hours') from catalog_source_profiles;` should move every hour.",
+     "score": 3
+    },
+    {
+     "id": "30d884a3-464f-4fa6-b2be-2b868541ab54",
+     "is_active": true,
+     "superseded_by": null,
+     "memory_type": "lesson",
+     "source_id": "LCH-224",
+     "created": "2026-07-04",
+     "content": "LESSON (2026-07-04, LCH-224): the \"Cron HTTP failures\" condition EVOLVED under its ticket — the original verify_jwt 401 class (LCH-128) was fixed, but the alert kept firing because three crons (catalog-ingest, pipeline-health-dispatcher, link-attribution-monitor) all fired at :00 each hour: catalog-ingest killed at 546 WORKER_RESOURCE_LIMIT (~62s), the other two 500ing on 5s Supabase timeouts under DB contention. Fix PR #694: staggered schedules (dispatcher :05, attribution :07/:37, catalog-ingest keeps :00) + local 20s timeouts in both functions (fleet-wide _shared TIMEOUT_MS.SUPABASE untouched to avoid fan-out). General lessons: (1) long-lived rolling alert tickets can outlive their original root cause — re-diagnose from live evidence before assuming the ticket description is current; (2) avoid scheduling multiple heavy crons at the same minute; stagger by default. Soak check scheduled 2026-07-08.",
+     "score": 3
+    }
+   ],
+   "articles": [
+    {
+     "slug": "supabase-platform-landmines",
+     "summary": "Platform-level Supabase traps: pg_net's 5s default timeout means its response never proves an Edge Function failed; redeploying a function missing from config.toml silently resets verify_jwt to true; Edge Functions live only in supabase/functions/; the direct DB host is IPv6-only so CI must use the Management API SQL endpoint; DROP INDEX fails on constraint-backed indexes; and service_role bypasses RLS so RLS alone is not a perimeter. Also: config.toml is the additive in-repo source of truth for per-function verify_jwt, the deploy workflow ignores config.toml-only changes (use workflow_dispatch or touch index.ts), and the shape of a 401 tells you whether the gateway or the function rejected. ADDENDUM 2026-09-27: an Edge deploy bundles only the entrypoint's transitive import graph, not the function directory — and version/ezbr_sha256 both change on a redeploy that ships no new code, so neither is evidence your file reached production.",
+     "confidence": "verified",
+     "last_verified": "2026-10-20",
+     "sc": 3,
+     "ctx": [
+      "The constraint was verified against live production by the source session on 2026-09-10 (bbm-infrastructure PR #1180, merge `be371ce`). **This run re-verified only that `catalog-ingest` is still ACTIVE** — now at **v85**, up from the 62→63 described below, so the specific version numbers here are historical. The bundling behaviour itself is platform be",
+      "Functions invoked by a `pg_cron` job in project `tlcbwwgfqnasmiipgmmd` carry `verify_jwt=false`, confirming the doctrine holds across the fleet: `catalog-availability`, `catalog-ingest`, `chunk-enrich`, `cloudflare-observability-pull`, `content-extract`, `embed-knowledge-batch`, `embed-pending-batch`, `embed-topics`, `gsc-performance`, `lcc-post-refres",
+      "determined from the database**; it needs a look at `supabase/config.toml` in `bbm-infrastructure` and at any trigger that posts to it. Recorded, not adjudicated. ## A 546 from an Edge Function does NOT mean the function did not run (2026-07-29) The single most misleading response shape in this stack. Verified end to end: The hourly `daily-catalog-ingest` pg_cron job POSTs to the `catalog-ingest` Edge Function. Every top-of-hour response retained in `net._http_response` over 48h came back **546 WORKER_RESOURCE_LIMIT — 6 of 6, zero 200s** — and `pipeline_health_log` had been raising `cron_h",
+      "g ANY file under a function directory triggers a deploy of that function.** But what gets **BUNDLED** is only what the entrypoint **transitively imports**. Verified on `catalog-ingest`: `index.ts` imports `../_shared/reliability.ts`, `./classify.mjs`, `./shopify.mjs` and `./woo.mjs`, and the deployed file list **before and after the merge was byte-for"
+     ]
+    },
+    {
+     "slug": "alert-calibration",
+     "summary": "The complement to observability discipline: alerts that fire reliably and carry no information. Seven shapes — self-latching watchdogs, backlogs posing as invariants, raw counts without rate of change, hard-coded diagnoses that age into misinformation, alerts that cannot fire, conditions that never close, and monitors that silently sample. Governing rule: silence is only information if the checker actually ran, and covered the thing.",
+     "confidence": "verified",
+     "last_verified": "2026-10-16",
+     "sc": 3,
+     "ctx": [
+      "h earlier. **Query prior art before constructing a diagnosis.** What was genuinely new was narrower: the LCH-224 stagger fixed the contention victims but never addressed catalog-ingest's own compute ceiling. **Correction (2026-08-13).** An earlier version of this paragraph claimed catalog-ingest \"still fails ~8% of hourly runs\". **That figure was wrong and is retracted** (see PR #770). It was computed by counting failures in `net._http_response` over a nominal 4",
+      "n it carries becomes a confident lie. `cron_http_failure` was opened for a `verify_jwt` 401 class (LCH-128). That was fixed. By LCH-224 (2026-07-04) the real cause was `catalog-ingest` hitting 546 `WORKER_RESOURCE_LIMIT`. Yet `check_cron_http_health()` still hard-codes a `likely_cause` string naming the 401/`verify_jwt` cause, so every row emitted in 2026-08 pointed the reader at `supab",
+      "recorded here because a verified prediction is worth as much as a recorded incident. --- ## Pipelines that self-report their own suspect output (LC-830, 2026-06-10) `catalog-ingest` self-reports collapse suspects. After each **completed** ingest, either **≥1,000 configs** (the operator's bar) **OR ≥100 configs with ≥30% duplicate names** inserts a `critica"
+     ]
+    },
+    {
+     "slug": "products-2.0-ingestion-edge-cases",
+     "summary": "Edge cases and failure modes of the Products 2.0 catalog-ingest pipeline: partial-pull and shrink-guard behaviour, the Shopify-only completeness gate, the three distinct root causes behind a brand staging nothing, the claim-first sweep starvation behind the 546 WORKER_RESOURCE_LIMIT kills, and how to read pipeline_health_log without drawing a false all-clear.",
+     "confidence": "verified",
+     "last_verified": "2026-09-10",
+     "sc": 3,
+     "ctx": [
+      "othing, record no error anywhere, and still look freshly swept. The sweep then starves roughly the same victim cohort on every run. This is why per-brand silence and the 546s are one problem, not two. What shipped on 2026-08-26 (PR #922): sweep budget cut 90s → 40s, a per-profile remaining-budget deadline, and the cron staggered from hourly to `0,22,44 * * * *` — all three confirmed live (`cron.job` shows `daily-catalog-ingest` at `0,22,44 * * * *`). It reduced the 546 rate; it did not end it. ## \"This brand stages nothing\" has at least three root causes with identical symptoms The 2026-08-",
+      "the week of 2026-08-03 and **1** in the week of 2026-08-10, with none since. Cutting the work, not tuning the worker, was the fix. --- ## Correction (2026-09-10): the 546 sweep kill was never cured, and this article said it was The section above closes by reporting `WORKER_RESOURCE_LIMIT` rows falling to **0 in the week of 2026-08-03 and 1 in the week of 2026-08-10, with none since**, and concludes \"cutting the work, not tuning the worker, was the fix.\" **That conclusion was wrong, and the way it was reached is the more important lesson.** On 2026-08-26 a targeted audit measured the hourl",
+      "egister (LC-786 / LC-791 / LC-258) Originally a front-loaded, pre-build edge-case register (2026-06-08). Updated 2026-08 after the engine shipped and ran in production (catalog-ingest v1 -> v3.5, June 2026): the engine-side and promotion-side BUILD items are now HANDLED, and production surfaced a second generation of edge cases — collapse-key grammar,",
+      ", and cron-rotation failure modes. Statuses: HANDLED (shipped + verified) / MONITOR (known, watch) / OPEN (tracked, not built). ## Pipeline shape — who writes what - **catalog-ingest (Edge Function) writes STAGING ONLY** (`products_catalog_staging`), never `products`. Pull via affiliate-router `/mcp get_catalog_items`; seating filter; collapse to fun",
+      "those 57 profiles removed ~45% of the hourly ingest pull work, and the memory recording the decision asked for confirmation by 2026-08-10 that this resolved the LCH-211 `worker_resource_limit` kills. Confirmed on 2026-08-18 from `pipeline_health_log`: resource-limit rows ran **30 / 47 / 55 / 54 / 37 per week** through the weeks of 2026-06-29 → 2026-07-27, the",
+      "**`last_seen_at` is the field that answers \"is this still happening\"**. (The key has since been narrowed to per-function — `cron_http_worker_limit:<function-url>` — so catalog-ingest and embed-knowledge-batch no longer share a row.) - **Per-run or per-profile `condition_key`** — a new row every time. `catalog_collapse_suspect` holds 299 rows of w",
+      "), Edloe Finch (2), Urban Natural (50). Urban Natural''s Awin feed does contain seating — 137 `seating_host_valid` — settling an open triage question. Cured by the 546 fix, not by anything per-brand. Note the suspected \"Annie Selke pepperjam adapter category bug\" **does not exist**: `classify.mjs` already falls back to `_raw.cate",
+      "isms audit confirmed the mature subsystems (registry-resolver decodeTracker param map, router pagination, link-health probes) already encoded per-platform lessons — only catalog-ingest was Impact-first. Stock vocab normalized (Impact 'InStock' vs CJ/Awin 'Available' -> in_stock/out_of_stock). Residual cosmetic: `product_line_name` heuristic (`name.spli"
+     ]
+    }
+   ]
+  },
+  "jira": {
+   "ok": true,
+   "tickets": [
+    {
+     "key": "LCH-224",
+     "total": 4,
+     "comment": {
+      "created": "2026-08-03T10:27:55.066-0500",
+      "author": "BBM",
+      "body": "Bulk audit 2026-08-03: duplicate of a recurring auto-filed symptom (Edge Function gateway 401/5xx). Keeping newest instance LCH-290 as the single open tracker."
+     },
+     "status": "Done",
+     "summary": "[Health] Cron HTTP failures — Edge Function gateway 401/5xx (2 in 6h)",
+     "updated": "2026-08-03T10:27:55.822-0500"
+    },
+    {
+     "key": "LCH-321",
+     "total": 3,
+     "comment": {
+      "created": "2026-08-13T10:01:27.162-0500",
+      "author": "BBM",
+      "body": "Resolved and verified (2026-08-13): active {{knowledge_memories}} with {{embedding IS NULL}} = *0* (down from 1,070 at filing; drained via the {{limit=2}} + every-minute burst, then settled onto {{2-59/5 * * * *}} by migration {{20260812185743}} / PR #786). The remaining cosmetic item — renaming the misleading {{nightly-embed-knowledge}} job — rides with the LCH-320 umbrella. Closing."
+     },
+     "status": "Done",
+     "summary": "[Health] embed-knowledge-batch — returns WORKER_RESOURCE_LIMIT on every invocation; 1,070 memories unembedded",
+     "updated": "2026-08-13T10:02:01.264-0500"
+    },
+    {
+     "key": "LC-910",
+     "total": 3,
+     "comment": {
+      "created": "2026-10-07T10:59:07.237-0500",
+      "author": "BBM",
+      "body": "*LC-910 Cozey cleanup (2026-10-07): shipped, verified live. PR #1588 merged as d2ae880.*\n\n*What changed.* Config-first: three opt-in profile traits read by {{collapseShopify}} (absent for every other profile, so nothing else changes), set on the one Cozey profile row by a data-changes package:\n\n* {{drop_forms}} [rug, table, coffee-table, side-table]\n* {{fold_title_words}} [backrest, legs]: the \"Rounded/Regular Backrest\" and \"Tall Legs\" sofas stop being vetoed as components and fold into the parent's model x form x config groups (cheapest price per config, LC-990)\n* {{veto_title_words}} [sleeper]: the Atmosphere Sleeper stays out. Reason: the fold would otherwise stage 12 sleeper rows pointing at {{/seating/atmosphere-sleeper-sofa-sectional}}, which is a live 404, and Cozey is {{auto_approve=true}}, so they would have promoted with a dead link. (Also a separate product: $605+, own handle.)\n\n*Numbers (live shop.cozey.com feed, 1,012 products).* Collapse 215 -> 189 configs: -26 rugs, -13 tables (matches your LC-910 numbers exactly), +13 Luna. The ~130 variants are 128 products (Atmosphere 64 incl. 38 sleepers, Luna 40, Ciello 12, Ciello XL 12); the 90 non-sleeper ones now fold in. They were never staged, so there were NO existing variant product rows to merge or repoint.\n\n*Live verification (behaviour probe,* {{dry_run=1&category_audit=1}} on Cozey, after deploy):\n\n|| ||before (10-06 receipt)||now||\n|Rugs kept|28|0|\n|Tables kept|13|0|\n|Luna kept|0|40 (36 of them unavailable/out "
+     },
+     "status": "To Do",
+     "summary": "[Tech] catalog-ingest — audit seating-filter categories vs live catalogs (fleet-wide)",
+     "updated": "2026-10-07T10:59:07.237-0500"
+    }
+   ]
+  },
+  "github": {
+   "ok": true,
+   "asked": [
+    694,
+    1180,
+    922,
+    920,
+    770
+   ],
+   "prs": [
+    {
+     "number": 694,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-07-04T17:05:28Z",
+     "updated_at": "2026-07-04T17:05:30Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "109991056081915b1b0674e17a5e42cdbe556841",
+     "title": "LCH-224: de-contend :00 cron stampede; 20s Supabase timeouts",
+     "keys": [
+      "LCH-224",
+      "LCH-255"
+     ]
+    },
+    {
+     "number": 1180,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-09-10T15:28:17Z",
+     "updated_at": "2026-09-10T15:31:12Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "165eeb321e04debd2d2ed745cad42fb4dc0c16f0",
+     "title": "LC-1382 slots-bootstrap: pace plan mode and surface the real refusal reason",
+     "keys": [
+      "LC-1382",
+      "LC-1411"
+     ]
+    },
+    {
+     "number": 922,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-08-26T16:45:12Z",
+     "updated_at": "2026-08-26T16:45:12Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "d7a8e83d3fe2295f0da17374aa2f0f687e4641f6",
+     "title": "LC-258 Impact classify: ItemGroupId falls back to ParentSku",
+     "keys": [
+      "LC-258"
+     ]
+    },
+    {
+     "number": 920,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-08-26T15:50:53Z",
+     "updated_at": "2026-08-26T15:50:53Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "9b499bf633d54078ed286f0e5fd5f6183120fdd2",
+     "title": "LC-258 Add catalog_staging_silence health check (silent-profile detector)",
+     "keys": [
+      "LC-258"
+     ]
+    },
+    {
+     "number": 770,
+     "state": "closed",
+     "merged": true,
+     "merged_at": "2026-08-10T15:43:35Z",
+     "updated_at": "2026-08-10T15:43:38Z",
+     "base": "main",
+     "sha": null,
+     "head_sha": "fb9f0b56b6a5c59c200719a8665f29d4ce7e7ce7",
+     "title": "LCH-224: classify cron HTTP failures by observed class, not one predicate",
+     "keys": [
+      "LC-880",
+      "LCH-128",
+      "LCH-224",
+      "LCH-255"
+     ]
+    }
+   ]
+  },
+  "production": {
+   "ok": true,
+   "asked": {
+    "slugs": [],
+    "runs": [],
+    "migrations": [],
+    "functions": [
+     "catalog-ingest"
+    ]
+   },
+   "articles": [],
+   "runs": [],
+   "migrations": [],
+   "crons": [
+    {
+     "jobname": "daily-catalog-ingest",
+     "schedule": "0,22,44 * * * *",
+     "active": true
+    }
+   ],
+   "alerts": [
+    {
+     "check_type": "cron_http_timeout",
+     "severity": "critical",
+     "recurrence_count": 3,
+     "last_seen": "2026-10-22T15:15Z",
+     "open": true
+    },
+    {
+     "check_type": "catalog_name_disagreement",
+     "severity": "critical",
+     "recurrence_count": 23,
+     "last_seen": "2026-10-22T09:48Z",
+     "open": true
+    },
+    {
+     "check_type": "catalog_presence_silence",
+     "severity": "warning",
+     "recurrence_count": 14,
+     "last_seen": "2026-10-22T06:10Z",
+     "open": true
+    }
+   ],
+   "functions": [
+    {
+     "slug": "catalog-ingest",
+     "version": 111,
+     "updated_at": "2026-10-21"
+    }
+   ]
+  }
+ },
+ "expect": {
+  "why": "catalog-ingest 546 WORKER_RESOURCE_LIMIT: memory 30d884a3 + PR #694, PR #770 (alert-calibration), the 40s sweep budget (PR #922) and the live cron, the later fix",
+  "verdict": "verified",
+  "receipts": {
+   "knowledge": "PASS",
+   "jira": "PASS",
+   "github": "PASS",
+   "production": "PASS"
+  },
+  "contains": [
+   "[memory 30d884a3 · 2026-07-04 STALE (110d old)",
+   "PR #694 staggered dispatcher",
+   "PR #694: merged=true head_sha=",
+   "[article alert-calibration",
+   "(see PR #770)",
+   "PR #770: merged=true head_sha=",
+   "[article products-2.0-ingestion-edge-cases",
+   "(PR #922): sweep budget cut 90s",
+   "0,22,44 * * * *",
+   "PR #922: merged=true head_sha=",
+   "cron daily-catalog-ingest: 0,22,44 * * * * (active), read 2026-10-22",
+   "function catalog-ingest: deployed v111",
+   "alert cron_http_timeout [critical]",
+   "still open on this topic",
+   "a fix recorded in a memory is not proof the condition stopped"
+  ],
+  "not_contains": [
+   "bbm-refresh-agent",
+   "sha=unknown",
+   "cozey-catalog-config-deeplink",
+   "#155"
+  ]
+ }
+}
