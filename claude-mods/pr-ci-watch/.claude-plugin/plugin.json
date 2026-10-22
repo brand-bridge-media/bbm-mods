@@ -1,0 +1,9 @@
+{
+  "name": "pr-ci-watch",
+  "version": "0.1.0",
+  "description": "After a git push or create_pull_request, checks the branch's PR every 2 minutes and wakes the session once its CI has finished (naming failures), when no checks register, when CI runs past an hour, or when the PR merges or closes.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
