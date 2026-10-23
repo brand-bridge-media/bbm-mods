@@ -48,11 +48,72 @@ OPEN = re.compile(
     r"|\b(?:ruling|decision)\s+(?:on|needed|required|pending)\b"
     r"|\bawaiting\s+(?:the\s+)?(?:operator|stan|ruling|decision|approval|go-ahead)"
     r"|\bneeds?\s+(?:the\s+)?(?:operator|stan|you)\b"
-    r"|\bwaiting\s+(?:on|for)\s+(?:the\s+)?(?:operator|stan)\b",
+    r"|\bwaiting\s+(?:on|for)\s+(?:the\s+)?(?:operator|stan)\b"
+    r"|\bpending\s+(?:the\s+)?(?:operator|stan)\b",
     re.IGNORECASE,
 )
-# ... and does not also say it is over.
-SETTLED = re.compile(r"\b(?:moot|ruled|decided|settled|resolved|answered|withdrawn|superseded)\b", re.IGNORECASE)
+# ... and does not also say it is over. Judged PER CLAUSE: a sentence that settles one thing and leaves another waiting ("we no
+# longer need the old path; this still needs the operator's click") is still waiting. Three review rounds on the same shape
+# (a bare "already", a dated "awaiting operator decision (2026-10-22)", a negation that swallowed the rest of the sentence) are why.
+SETTLED_WORD = re.compile(
+    r"\b(?:moot|ruled|decided|settled|resolved|answered|withdrawn|superseded)\b"
+    r"|\balready\s+(?:happened|done|decided|shipped|merged|published|live|closed|resolved|ruled)\b",
+    re.IGNORECASE,
+)
+# A decision RECORDED with its date ("operator decision (2026-10-22): ..."), "by ruling", "rulings below" ...
+RECORDED = re.compile(r"\b(?:ruling|decision)s?\W{0,3}\(?\d{4}-\d{2}-\d{2}|\bby (?:a )?ruling\b|\brulings?\s+below\b", re.IGNORECASE)
+# ... unless the clause is framed as waiting for it ("awaiting operator decision (2026-10-22) on the colour").
+AWAITING = re.compile(r"\b(?:awaiting|pending|waiting\s+(?:on|for)|needs?|needed|open)\b[^.;]{0,40}\b(?:ruling|decision)s?\b", re.IGNORECASE)
+# A negation bound to the need ("does not need", "I do not think this needs"); anchored to the verb, so "NOT merged, needs ..." is not caught.
+NEGATED = re.compile(
+    r"\b(?:do(?:es)?\s+not|don'?t|doesn'?t|no\s+longer)\s+(?:\w+\s+){0,4}?(?:need|needs|require|requires)\b"
+    r"|\bnever\s+(?:need|needs|require|requires)\b"
+    r"|\bnot\s+(?:needed|required)\b",
+    re.IGNORECASE,
+)
+NEED_CUE = re.compile(r"\b(?:needs?|awaiting|waiting|pending)\b", re.IGNORECASE)
+# A decision named AFTER a settled word is still open when the clause says it is outstanding ("the old path is resolved and a
+# decision on the colour remains"); "the decision on X was made / is closed" says nothing of the kind.
+OUTSTANDING = re.compile(r"\b(?:remains?|remaining|still|outstanding|unresolved|undecided|unanswered|open|pending)\b", re.IGNORECASE)
+CLAUSES = re.compile(r";|\s[\u2014\u2013]\s|\sbut\s", re.IGNORECASE)
+
+
+def clauses(sentence) -> list:
+    return [c for c in CLAUSES.split(str(sentence or "")) if c.strip()]
+
+
+def clause_settled(c: str) -> bool:
+    """The clause carries a settled marker (a settled word, a negated need, a recorded decision not framed as awaited)."""
+    return bool(SETTLED_WORD.search(c) or NEGATED.search(c) or (RECORDED.search(c) and not AWAITING.search(c)))
+
+
+def clause_open(c: str) -> bool:
+    """The clause still asks for something. A settled word ("moot", "decided") ends it. Otherwise it is open when some open cue is
+    NOT covered by a recorded or negated phrase: the cue is explained away only if it overlaps that phrase's own text, so
+    "Operator decision (2026-10-22) was premature and this still needs <name>'s click" keeps its second cue and stays open."""
+    words = list(SETTLED_WORD.finditer(c))
+    covers = [m.span() for m in NEGATED.finditer(c)]
+    if not AWAITING.search(c):
+        covers += [m.span() for m in RECORDED.finditer(c)]
+    end = words[-1].end() if words else -1
+    for m in OPEN.finditer(c):
+        if any(m.start() < e and s < m.end() for s, e in covers):
+            continue
+        # A settled word ends the clause, but never hides a need cue (needs, awaiting, waiting, pending) wherever it sits
+        # ("this needs <name> and the old path is resolved"); a decision named AFTER the word is open only when marked outstanding.
+        if not words or NEED_CUE.search(m.group(0)) or (m.start() >= end and OUTSTANDING.search(c[m.end():])):
+            return True
+    return False
+
+
+def names_pending(sentence) -> bool:
+    """A sentence that puts something to the operator, read as a whole (the NEEDS YOU banner): some clause is open and not settled,
+    or the sentence says nothing settled at all ("LC-9 - approve the DDL"). It is NOT pending when its only settled-ness is
+    all there is ("LC-1755 - the ruling is moot, dropped"). A settled clause never hides an open one beside it."""
+    cs = clauses(sentence)
+    return any(clause_open(c) for c in cs) or not any(clause_settled(c) for c in cs)
+
+
 QUOTED = re.compile(r"[\"“]([^\"“”\n]{4,60})[\"”]")
 RUN_ID = re.compile(r"(?<![0-9a-zA-Z])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8}(?![0-9a-zA-Z])")
 SLUG = re.compile(r"(?<![A-Za-z0-9-])[a-z0-9]+(?:-[a-z0-9]+){2,}(?![A-Za-z0-9-])")
@@ -88,7 +149,7 @@ def sentences(body) -> list:
 
 def open_items(body) -> list:
     """Sentences of one comment that put a decision to someone and do not say it is settled."""
-    return [s for s in sentences(body) if OPEN.search(s) and not SETTLED.search(s)]
+    return [s for s in sentences(body) if any(clause_open(c) for c in clauses(s))]
 
 
 def phrases(text) -> list:
@@ -399,6 +460,56 @@ def _selftest() -> int:
     bare = {"ok": True, "tickets": [{"key": "LC-5", "status": "To Do", "total": 1, "comment": {"created": "2026-10-01T00:00Z", "id": "5", "body": "Awaiting operator ruling on the colour."}, "comments": [{"id": "5", "created": "2026-10-01T00:00Z", "q": [], "r": [], "s": []}], "comments_complete": True}]}
     ck(check(bare, None)["verdict"] == NOT_CHECKED and check(bare, {"ok": True, "runs": [], "articles": []})["verdict"] == PASS, "check: even a decision that names nothing needs the production read (jira_keys links a run to a ticket)")
     ck(history_ok({"id": "1"}, [{"id": 1}]) is True and history_ok({"id": "1"}, [{"id": "1"}], False) is False and history_ok({"id": "1"}, None) is False and history_ok({"id": "1"}, None) is False, "history_ok: whole, and containing the newest comment")
+    # --- first live run of the generator (2026-10-23): sentences copied from the real comments (the owner's first name lower-cased)
+    not_open = [
+        "This is now an evidence-backed recommendation rather than a judgment call, and I do not think it needs stan's time.",
+        "On the sub-question of whether disposition keeps CEDE/CONTESTED, recommend retiring both, and this one does not need stan.",
+        "On the WAF the evidence is now strong enough that I do not think this needs stan's judgment at all.",
+        "The graduation already happened by ruling on 2026-08-19 and by deletion on 2026-08-20.",
+        "Operator decision (2026-10-22): the template is still chosen at run start, but only V1 and V2 need to work, and work well.",
+        "Declaring standard blocks is deferred: operator decision 2026-10-22, only V1 and V2 for now (LC-1867).",
+        "stan's ruling, 2026-08-25: deterministic = FETCHING the data; the LLM = JUDGING it.",
+        "stan's rulings below.",
+        "This feature is not needed any more.",
+        "stan never needs to look at this.",
+        "The ruling is moot, so it is removed from the open items.",
+        "The sign-off is not required, the operator already ruled.",
+        "The old path is resolved and the decision on the colour was made.",
+        "The ruling is moot, and the decision on the colour is closed.",
+    ]
+    for sent in not_open:
+        ck(open_items(sent) == [], f"recorded or negated, not waiting: {sent[:60]}")
+    still_open = [
+        "Needs stan's pick before the swap.",
+        "Waiting on stan.",
+        "Draft, NOT merged, needs stan's yes.",
+        "The remaining live proof still needs run d23b1954 to progress, which needs stan's lock click.",
+        "Remaining: (2) a decision on removals versus the add-only ruling.",
+        "Needs the operator to pick one.",
+        "This already needs stan's lock click.",
+        "Operator decision (2026-10-22) was premature and this still needs stan's lock click.",
+        "stan's ruling, 2026-08-25, was reversed; still needs the operator to pick.",
+        "I never said this needs stan.",
+        "The old path is resolved and this is still pending the operator.",
+        "The old approach is resolved and we still need stan to confirm.",
+        "The old approach is decided and the rest is waiting on the operator.",
+        "The run is already blocked and needs the operator.",
+        "The old path is resolved and a decision on the colour remains.",
+        "The old path is resolved and the decision on the colour is still open.",
+        "This needs stan and the old path is resolved.",
+        "Awaiting the operator on the colour; the older option was decided.",
+    ]
+    still_open += [
+        "Awaiting operator decision (2026-10-22) on the colour.",
+        "We no longer need the old path; this still needs stan's lock click.",
+        "This is not needed any more, but the run needs the operator to pick one.",
+    ]
+    for sent in still_open:
+        ck(open_items(sent) != [], f"still waiting: {sent[:60]}")
+    ck(open_items("Awaiting operator decision (2026-10-22) on the colour. Operator decision (2026-10-22): the template is V1.") == ["Awaiting operator decision (2026-10-22) on the colour."], "only the sentence that is waiting survives; the recorded one beside it does not")
+    ck(not names_pending("LC-1755 - the ruling is moot, dropped.") and names_pending("LC-9 - approve the DDL.") and names_pending("We no longer need the old path; LC-5 still needs the operator.")
+       and names_pending("LC-5: Awaiting operator decision (2026-10-22) on the colour.") and not names_pending("LC-5: operator decision (2026-10-22): the template is V1.") and not names_pending("LC-1 does not need the operator."),
+       "names_pending: a settled clause never hides an open one beside it; a settled sentence with nothing open is not pending")
     # --- review: "complete" needs a real count, never int(x or 0)
     full = [{"id": str(i)} for i in range(5)]
     for label, tot, pr, want in (("exact", 5, full, True), ("page holds more than total", 3, full, True), ("total 1, one comment", 1, full[:1], True),

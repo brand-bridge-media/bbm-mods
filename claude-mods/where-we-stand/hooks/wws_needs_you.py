@@ -49,8 +49,9 @@ def banner_tickets(reply: str) -> list:
     out: list = []
     for i, ln in enumerate(lines):
         banner = ln is first
-        for sent in wws_moot.sentences(ln):
-            if wws_moot.SETTLED.search(sent):
+        # The banner marker is itself an open cue ("NEEDS YOU"); it must not make the sentence after it look open.
+        for sent in wws_moot.sentences(BANNER.sub("", ln, count=1) if banner else ln):
+            if not wws_moot.names_pending(sent):
                 continue
             if banner or (wws_moot.OPEN.search(sent) and not ln.lstrip().startswith("```")):
                 out += [k for k in wws_card.keys_in(sent) if k not in out]
@@ -130,6 +131,8 @@ def _selftest() -> int:
     ck(banner_tickets("") == [] and banner_tickets(None) == [], "empty reply")
     ck(banner_tickets("> **NEEDS YOU:** LC-1 — approve the DDL.\n\nAlso LC-2 is awaiting operator ruling on colours. LC-3 shipped.") == ["LC-1", "LC-2"], "a decision sentence below the banner counts; a status sentence does not")
     ck(banner_tickets("> **NEEDS YOU:** LC-1755 — the Most Durable ruling is moot, dropped.") == [], "a sentence that says it is moot is not a pending decision")
+    ck(banner_tickets("> **NEEDS YOU:** LC-5 — We no longer need the old path; this still needs stan's lock click.") == ["LC-5"], "a settled clause does not hide the ticket whose clause is still waiting (review blocker)")
+    ck(banner_tickets("> **NEEDS YOU:** LC-6 — the old ruling is moot; LC-7 — still awaiting operator ruling.") == ["LC-6", "LC-7"], "a sentence with one open clause names every ticket in it (over-blocks LC-6 rather than miss LC-7)")
     ck(banner_tickets("\n\n> **NEEDS YOU:** LC-9 — pick.") == ["LC-9"], "leading blank lines are skipped")
     ck(banner_tickets("Intro line\n> **NEEDS YOU:** LC-9 — pick.") == [], "the banner must be the FIRST line")
     ck(banner_tickets("> **NEEDS YOU:** SHA-256 and UTF-8 need you.") == [], "keys of other projects are not tickets")
