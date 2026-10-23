@@ -1,4 +1,5 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './slow'
 
 // Tracking a session puts a row on the dashboard, filled from get_session;
 // a WORKING session never flags the operator.

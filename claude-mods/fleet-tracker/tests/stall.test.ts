@@ -1,4 +1,5 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './slow'
 import { childIdOf, decideStall, newestActivity, NUDGE_MARK, ESCALATE_MS, STALL_MS, ticketOf } from '../hooks/logic'
 
 // LC-1834: a hung child sits in WORKING forever, so the transition wake never fires.

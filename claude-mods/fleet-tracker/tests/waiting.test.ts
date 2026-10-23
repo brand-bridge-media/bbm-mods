@@ -1,4 +1,5 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './slow'
 import {
   decideWaitingReminder, HUMAN_ACTION, humanWrap, needsHuman, WAITING_REMIND_MS, waitingLine,
 } from '../hooks/logic'

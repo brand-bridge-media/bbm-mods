@@ -1,4 +1,5 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './slow'
 import { decideWake, NEEDS_STAN } from '../hooks/logic'
 
 // Transition gate: which bucket changes wake the orchestrator, which flag the operator,

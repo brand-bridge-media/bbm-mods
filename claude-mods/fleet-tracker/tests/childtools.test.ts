@@ -1,4 +1,5 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './slow'
 import { CHILD_NOTE, CHILD_REMOTE_TOOLS, withChildTools } from '../hooks/logic'
 
 // LC-1843: children stalled on unwatched permission prompts for send_message / send_later.

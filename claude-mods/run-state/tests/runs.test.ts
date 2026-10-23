@@ -1,4 +1,5 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './slow'
 
 import { helperOutput, sqlReply } from './fixture'
 import { decide, receiptWritesInBash } from '../hooks/logic'

@@ -1,4 +1,5 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './slow'
 
 // LC-1711 callout convention. fleet-tracker never denies or asks; its refusal path is a note on a
 // session that is not tracked (nothing saved) and its changes are track / note / untrack. Each one

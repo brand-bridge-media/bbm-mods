@@ -1,4 +1,5 @@
-import { test, expect } from 'claude-code/testing'
+import { expect } from 'claude-code/testing'
+import { test } from './slow'
 
 import { receiptWritesInBash } from '../hooks/logic'
 

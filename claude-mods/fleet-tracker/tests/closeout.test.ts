@@ -1,4 +1,5 @@
-import { test, expect, mock } from 'claude-code/testing'
+import { expect, mock } from 'claude-code/testing'
+import { test } from './slow'
 import { childIdOf, closeoutLine, decideCloseout, CLOSEOUT_MS } from '../hooks/logic'
 
 // LC-1835: Claude closes out every child session it spins up (the operator, 2026-10-15).
