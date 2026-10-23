@@ -242,6 +242,10 @@ def conflicts(evidence: dict, receipts: list) -> list:
                 if d != pub and d not in run_days and any(n in near for n in names):
                     out.append(f"memory {str(m['id'])[:8]} ({_day(m.get('created'))}) says published {d}; production says {a.get('slug')} webflow_last_published {_ts(a.get('webflow_last_published'))}")
                     break
+    # LC-1907: an open decision about something production says is over. The sentence comes from wws_moot, so
+    # the card, the generator and the NEEDS YOU guard word it identically.
+    for m in ((by.get("decision_moot") or {}).get("facts") or {}).get("moot") or []:
+        out.append(m["message"])
     return out
 
 

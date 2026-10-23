@@ -12,6 +12,8 @@ fail another.
                     the LC-1345 story)? Title and status alone never PASS.
   check_github      is every cited PR merged into main?
   check_production  does production (published date, run status, schema_migrations) agree?
+  check_decision_moot  is a decision the newest comment still calls open about something production
+                    says has already happened (article published, run closed)? Logic: wws_moot.py (LC-1907)
 
 Verdict vocabulary -- the same one every guard in this repo uses:
   PASS         the source was read and had nothing wrong with it
@@ -27,8 +29,12 @@ Self-test: python3 wws_checks.py --selftest
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import wws_moot  # noqa: E402
 
 PASS, BLOCK, NOT_CHECKED = "PASS", "BLOCK", "NOT CHECKED"
 DONE_WORDS = frozenset({"done", "closed", "resolved", "complete", "completed", "cancelled", "canceled",
@@ -42,9 +48,9 @@ def receipt(source: str, verdict: str, reason: str, facts=None, applicable: bool
 
 
 def _count(v) -> int:
-    """A comment total as an int; anything unreadable is -1 (unknown), which is not zero."""
+    """A comment total as an int; anything unreadable, missing or null is -1 (unknown), which is not zero."""
     try:
-        return int(v or 0)
+        return int(v)  # int(None) raises TypeError: a null total is -1, not 0
     except (TypeError, ValueError):
         return -1
 
@@ -184,6 +190,16 @@ def check_production(ev: dict) -> dict:
     return receipt("production", PASS, f"{len(articles)} article(s), {len(runs)} run(s), {len(migs)} migration(s), {len(fns)} function(s), {len(crons)} cron(s), {len(alerts)} alert(s) read", facts)
 
 
+def check_decision_moot(evidence: dict) -> dict:
+    """The moot-decision receipt (LC-1907). It reads two slices (Jira's newest comments, production's runs and
+    articles), so unlike the four above it is handed the whole evidence object; the test itself is wws_moot.check."""
+    ev = evidence if isinstance(evidence, dict) else {}
+    try:
+        return wws_moot.check(ev.get("jira") or {}, ev.get("moot_production"), ev.get("production"))
+    except Exception as exc:  # noqa: BLE001 -- same containment as run_all: a crash is NOT CHECKED, never a pass
+        return receipt(wws_moot.SOURCE, NOT_CHECKED, f"check crashed: {type(exc).__name__}")
+
+
 CHECKS = (("knowledge", check_knowledge), ("jira", check_jira), ("github", check_github), ("production", check_production))
 
 
@@ -195,6 +211,7 @@ def run_all(evidence: dict) -> list:
             out.append(fn((evidence or {}).get(name) or {}))
         except Exception as exc:  # noqa: BLE001 -- one source failing must not take the card down
             out.append(receipt(name, NOT_CHECKED, f"check crashed: {type(exc).__name__}"))
+    out.append(check_decision_moot(evidence))
     return out
 
 
@@ -246,6 +263,7 @@ def _selftest() -> int:
     ck(check_jira({"ok": True, "tickets": [{**full, "status": ""}]})["verdict"] == NOT_CHECKED, "no status")
     r = check_jira({"ok": True, "tickets": [full, {"key": "LC-2", "error": "404"}]})
     ck(r["verdict"] == NOT_CHECKED and "LC-2: 404" in r["reason"] and len(r["facts"]["tickets"]) == 1, "one unreadable ticket does not hide the other")
+    ck(check_jira({"ok": True, "tickets": [{**full, "total": None, "comment": None}]})["verdict"] == NOT_CHECKED and _count(None) == -1 and _count(0) == 0 and _count("3") == 3, "a null or missing comment total is unknown (-1), never zero")
     ck(check_jira({"ok": True, "tickets": [{**full, "total": "x", "comment": None}]})["verdict"] == NOT_CHECKED,
        "an unreadable comment total is unknown, not zero")
 
@@ -284,7 +302,7 @@ def _selftest() -> int:
     ck(r["facts"]["crons"][0]["jobname"] == "daily-catalog-ingest" and r["facts"]["alerts"][0]["check_type"] == "cron_http_failure" and "1 cron(s), 1 alert(s)" in r["reason"], "crons and alerts are carried")
 
     rs = run_all({"knowledge": {"ok": True, "memories": []}})
-    ck([x["source"] for x in rs] == ["knowledge", "jira", "github", "production"], "run_all covers every source in order")
+    ck([x["source"] for x in rs] == ["knowledge", "jira", "github", "production", "decision_moot"], "run_all covers every source in order")
     ck(rs[1]["verdict"] == NOT_CHECKED and rs[2]["verdict"] == NOT_CHECKED, "missing slices are NOT CHECKED")
     ck(run_all({"jira": "garbage"})[1]["verdict"] == NOT_CHECKED, "garbage evidence is NOT CHECKED, not a crash")
     ck(run_all(None)[0]["verdict"] == NOT_CHECKED, "no evidence at all")
@@ -306,6 +324,12 @@ def _selftest() -> int:
     ck("#5 is not merged, not merged" in check_github({"asked": [5], "ok": True, "prs": [{"number": 5, "merged": False}]})["reason"], "github: an unmerged PR with no state still says so")
     ck(check_production({"asked": {"slugs": ["a"]}, "articles": [art]})["verdict"] == NOT_CHECKED and "boom" in check_production({"asked": {"slugs": ["a"]}, "ok": False, "error": "boom"})["reason"], "production: no ok flag is NOT CHECKED; the error is named")
     ck(run_all({"knowledge": {"ok": True, "memories": []}})[0]["verdict"] == PASS, "run_all hands each check its own evidence")
+    dm = {"ok": True, "tickets": [{"key": "LC-1", "status": "To Do", "total": 1, "comment": {"id": "9", "created": "2026-10-22T00:00Z", "body": "Awaiting operator ruling."}, "comments": [{"id": "9", "created": "2026-10-22T00:00Z", "q": [], "r": [], "s": []}], "comments_complete": True}]}
+    linked = {"ok": True, "articles": [], "runs": [{"id": "abcd1234", "article_slug": "x-y-z", "status": "done", "updated_at": "2026-10-23T00:00Z", "jira_keys": ["LC-1"]}]}
+    ck(check_decision_moot({"jira": dm, "moot_production": linked})["verdict"] == BLOCK, "check_decision_moot: a closed run linked to the ticket BLOCKs")
+    ck(check_decision_moot({"jira": dm, "production": linked})["verdict"] == NOT_CHECKED, "check_decision_moot: the topic's own production slice does not stand in for the moot read")
+    ck(check_decision_moot({"jira": dm, "production": {"ok": True}, "moot_production": {"ok": False, "error": "x"}})["verdict"] == NOT_CHECKED, "check_decision_moot: a failed moot read is NOT CHECKED even when the topic read was fine")
+    ck(check_decision_moot({"jira": dm})["verdict"] == NOT_CHECKED and check_decision_moot(None)["applicable"] is False, "check_decision_moot: no production slice, or no evidence at all, is NOT CHECKED")
     for f in fails:
         print("FAIL:", f)
     print(f"wws_checks selftest: {total[0] - len(fails)}/{total[0]} checks passed")

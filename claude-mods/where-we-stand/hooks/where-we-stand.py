@@ -19,7 +19,8 @@ Protocol: `python3 -I where-we-stand.py` reads ONE JSON object from stdin,
 
   trigger          {tool_name, tool_input}                   -> wws_trigger.classify
   sql_knowledge    {terms, tickets}                          -> {sql}
-  sql_production   {terms, tickets, kind}                    -> {sql, asked}
+  sql_production   {terms, tickets, kind, refs?}             -> {sql, asked}   (refs: the moot read, LC-1907)
+  moot_refs        {jira}                                    -> {needed, tickets, runs, slugs}
   sql_jira_fire    {tickets}                                 -> {sql}      (pg_net GETs, Jira)
   sql_jira_collect {req_ids}                                 -> {sql}
   parse_knowledge  {rows, terms?, tickets?} | {error}        -> {evidence}
@@ -30,7 +31,7 @@ Protocol: `python3 -I where-we-stand.py` reads ONE JSON object from stdin,
   render           {topic, today, evidence, terms?, tickets?} -> {card, verdict, receipts}
   normalize        {tickets?, terms?, kind?}                 -> {kind, topic, tickets, terms}  (on-demand tool)
   branch_ticket    {branch}                                  -> {tickets}  (the session's own ticket)
-  gate             {transcript_path, stop_hook_active, cards} -> {block?}   (wws_gate)
+  gate             {transcript_path, stop_hook_active, cards} -> {block?}   (wws_gate, then wws_needs_you)
 
 Every identifier that reaches SQL is shape-checked first (ticket key, lowercase slug-like term,
 14-digit version, integer id); anything else is dropped, never quoted.
@@ -49,6 +50,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wws_card  # noqa: E402
 import wws_checks  # noqa: E402
 import wws_gate  # noqa: E402
+import wws_moot  # noqa: E402
+import wws_needs_you  # noqa: E402
 import wws_trigger  # noqa: E402
 
 TICKET = wws_trigger.TICKET
@@ -115,10 +118,46 @@ def sql_knowledge(terms: list, tickets: list) -> str:
     )
 
 
-def sql_production(terms: list, tickets: list, kind: str) -> tuple:
+def sql_moot(tickets: list, runs: list, slugs: list) -> str:
+    """The moot read (LC-1907): for the run ids and article slugs a ticket's decision comments name, and every run whose
+    jira_keys holds the ticket, the run's status and the article's publish date. Read-only, bounded."""
+    rid = _arr([v for v in dict.fromkeys(str(x).lower() for x in runs or []) if RUN_ID.match(v)][:wws_moot.MAX_REFS])
+    s = _arr(_terms(slugs)[:wws_moot.MAX_REFS])
+    tk = _arr(_tickets(tickets))
+    run_where = f"jira_keys && {tk} or article_slug = any({s}) or exists (select 1 from unnest({rid}) u where id::text like u||'%')"
+    return (
+        "select json_build_object("
+        "'articles', coalesce((select json_agg(a) from (select slug, status, "
+        "to_char(webflow_last_published at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI\"Z\"') as webflow_last_published "
+        f"from public.articles where slug = any({s}) or slug in (select article_slug from public.refresh_runs where {run_where}) "
+        "order by webflow_last_published desc nulls last limit 12) a), '[]'::json), "
+        "'runs', coalesce((select json_agg(r) from (select id, article_slug, status, current_stage, jira_keys, "
+        "to_char(updated_at at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI\"Z\"') as updated_at "
+        f"from public.refresh_runs where {run_where} order by updated_at desc limit 12) r), '[]'::json)) as j"
+    )
+
+
+def moot_refs(jira: dict) -> dict:
+    """What the moot read must look up, from the Jira slice: tickets whose newest comment still holds an open decision,
+    and the run ids / slugs that comment and the comment that raised it name."""
+    tickets, runs, slugs = [], [], []
+    for t in (jira or {}).get("tickets") or []:
+        if t.get("error") or not (t.get("comment") or {}).get("created"):
+            continue
+        items, _, refs = wws_moot.refs_for(t["comment"], t.get("comments") or [])
+        if items:
+            tickets.append(str(t["key"]))
+            runs += refs["runs"]
+            slugs += refs["slugs"]
+    return {"needed": bool(tickets), "tickets": _tickets(tickets), "runs": list(dict.fromkeys(runs)), "slugs": _terms(slugs)}
+
+
+def sql_production(terms: list, tickets: list, kind: str, refs: dict | None = None) -> tuple:
     """Publish dates, newest runs and applied migrations for what the topic names. Returns (sql, asked);
     `asked` is what the production check must find -- slugs only for an article-status topic, so a
     job name like catalog-ingest is never reported as an article that was not found."""
+    if refs is not None:
+        return sql_moot(tickets, refs.get("runs"), refs.get("slugs")), {"slugs": [], "runs": [], "migrations": [], "functions": []}
     ts = _terms(terms)
     tk = _tickets(tickets)
     versions = [v for v in dict.fromkeys(str(x) for x in terms or []) if VERSION.match(v)]
@@ -162,7 +201,9 @@ def sql_jira_fire(tickets: list) -> str:
     inside the database from the vault secret and is never selected, so it cannot reach the session."""
     rows = []
     for k in _tickets(tickets):
-        rows.append(f"('{k}','c','issue/{k}/comment?orderBy=-created&maxResults=1')")
+        # The newest comment is the state; the page behind it is read only for the quoted subjects, run ids and slugs that
+        # show WHEN a decision was first raised (wws_moot). It never leaves the database as text.
+        rows.append(f"('{k}','c','issue/{k}/comment?orderBy=-created&maxResults={wws_moot.COMMENT_PAGE}')")
         rows.append(f"('{k}','i','issue/{k}?fields=summary,status,updated')")
     if not rows:
         return "select null::text as k, null::text as kind, null::bigint as req where false"
@@ -175,12 +216,29 @@ def sql_jira_fire(tickets: list) -> str:
     )
 
 
+# One small profile per comment: id, date, quoted phrases, 8-hex tokens and hyphenated slug-like tokens, each capped.
+# Postgres has no lookbehind, so the loose patterns are filtered again in wws_moot.profile (an 8-digit date is not a run id).
+def _agg(pattern: str, lower: bool = False) -> str:
+    x = "lower(m[1])" if lower else "m[1]"
+    return ("(select coalesce(jsonb_agg(x), '[]'::jsonb) from (select distinct " + x + " as x from regexp_matches(c->>'body', '"
+            + pattern + "', 'g') m limit 8) t)")
+
+
+_IDX = ("(select coalesce(jsonb_agg(jsonb_build_object('id', c->>'id', 'created', c->>'created', "
+        "'q', " + _agg('"([^"]{4,60})"', True) + ", "
+        "'r', " + _agg(r'\m([0-9a-f]{8})\M') + ", "
+        "'s', " + _agg(r'\m([a-z0-9]+(?:-[a-z0-9]+){2,})\M') + ")), '[]'::jsonb) "
+        "from jsonb_array_elements((content::jsonb)->'comments') c)")
+
+
 def sql_jira_collect(req_ids: list) -> str:
     ids = [str(int(i)) for i in req_ids or [] if str(i).lstrip("-").isdigit()]
     return (
         "select id, status_code, error_msg, case when status_code = 200 and content like '{%' then jsonb_build_object("
         "'total', (content::jsonb)->'total', 'created', (content::jsonb)->'comments'->0->>'created', "
         "'author', (content::jsonb)->'comments'->0->'author'->>'displayName', "
+        "'id', (content::jsonb)->'comments'->0->>'id', "
+        "'idx', " + _IDX + ", "
         "'body', left((content::jsonb)->'comments'->0->>'body', 1500), "
         "'status', (content::jsonb)->'fields'->'status'->>'name', 'summary', (content::jsonb)->'fields'->>'summary', "
         "'updated', (content::jsonb)->'fields'->>'updated') end as j "
@@ -218,6 +276,9 @@ def parse_production(p: dict) -> dict:
     j = _obj((p.get("rows") or [{}])[0].get("j")) if p.get("rows") else None
     if not isinstance(j, dict):
         return {"ok": False, "error": "production query returned no row", "asked": asked}
+    if not isinstance(j.get("articles"), list) or not isinstance(j.get("runs"), list):
+        # Both lists are always in the row the SQL builds; a row without them is a broken read, not an empty one (LC-1907).
+        return {"ok": False, "error": "production query returned an unexpected shape", "asked": asked}
     terms = set(_terms(p.get("terms")))
     fns = [f for f in p.get("functions_raw") or [] if str(f.get("slug") or "") in terms]
     if fns:
@@ -254,9 +315,11 @@ def parse_jira(p: dict) -> dict:
                 break
             j = _obj(r["j"])
             if f.get("kind") == "c":
-                t["total"] = j.get("total") or 0
+                t["total"] = j.get("total")  # None stays None: a missing count is an unknown, not zero
                 if j.get("created"):
-                    t["comment"] = {"created": j["created"], "author": j.get("author"), "body": j.get("body")}
+                    t["comment"] = {"id": j.get("id"), "created": j["created"], "author": j.get("author"), "body": j.get("body")}
+                    t["comments"] = [wws_moot.profile(c) for c in _obj(j.get("idx")) or [] if isinstance(c, dict)]
+                    t["comments_complete"] = wws_moot.history_complete(j.get("total"), t["comments"])
             else:
                 t.update(status=j.get("status"), summary=html.unescape(str(j.get("summary") or "")), updated=j.get("updated"))
         out.append(t)
@@ -300,8 +363,15 @@ def render(p: dict) -> dict:
     receipts = wws_checks.run_all(p.get("evidence") or {})
     found = wws_card.conflicts({}, receipts)
     terms = _terms(p.get("terms")) + _tickets(p.get("tickets"))
+    dm = {r["source"]: r for r in receipts}.get(wws_moot.SOURCE) or {}
+    # What the NEEDS YOU guard keeps from this card: per ticket the card read, the moot sentence (if any), and the receipt.
+    moot = {m["ticket"]: m["message"] for m in (dm.get("facts") or {}).get("moot") or []}
     return {"card": wws_card.render(str(p.get("topic") or "?")[:80], str(p.get("today") or "")[:10], receipts, terms),
-            "verdict": wws_card.verdict(receipts, found), "receipts": [{k: r[k] for k in ("source", "verdict", "reason")} for r in receipts]}
+            "verdict": wws_card.verdict(receipts, found), "receipts": [{k: r[k] for k in ("source", "verdict", "reason")} for r in receipts],
+            "moot": {"verdict": dm.get("verdict"), "reason": dm.get("reason"), "tickets": moot,
+                     "open": [a["ticket"] for a in (dm.get("facts") or {}).get("open") or []],
+                     "clean": list((dm.get("facts") or {}).get("clean") or []),
+                     "unchecked": dict((dm.get("facts") or {}).get("unchecked") or {})}}
 
 
 def handle(p: dict) -> dict:
@@ -311,8 +381,10 @@ def handle(p: dict) -> dict:
     if cmd == "sql_knowledge":
         return {"sql": sql_knowledge(p.get("terms"), p.get("tickets"))}
     if cmd == "sql_production":
-        sql, asked = sql_production(p.get("terms"), p.get("tickets"), str(p.get("kind") or ""))
+        sql, asked = sql_production(p.get("terms"), p.get("tickets"), str(p.get("kind") or ""), p.get("refs"))
         return {"sql": sql, "asked": asked}
+    if cmd == "moot_refs":
+        return moot_refs(p.get("jira") or {})
     if cmd == "sql_jira_fire":
         return {"sql": sql_jira_fire(p.get("tickets"))}
     if cmd == "sql_jira_collect":
@@ -334,7 +406,7 @@ def handle(p: dict) -> dict:
     if cmd == "branch_ticket":
         return branch_ticket(p.get("branch"))
     if cmd == "gate":
-        why = wws_gate.evaluate(p)
+        why = wws_gate.evaluate(p) or wws_needs_you.evaluate(p)
         return {"block": why} if why else {}
     return {"error": f"unknown cmd {cmd!r}"}
 
@@ -378,7 +450,7 @@ def _selftest() -> int:
     ck(sql_production(["bad'x"], [], "article-status")[1]["slugs"] == [], "invalid slug dropped")
 
     f = sql_jira_fire(["LC-1345", "x y"])
-    ck(f.count("net.http_get") == 1 and "('LC-1345','c','issue/LC-1345/comment?orderBy=-created&maxResults=1')" in f, "jira fire: one GET per ticket and kind")
+    ck(f.count("net.http_get") == 1 and "('LC-1345','c','issue/LC-1345/comment?orderBy=-created&maxResults=100')" in f, "jira fire: one GET per ticket and kind")
     ck("('LC-1345','i','issue/LC-1345?fields=summary,status,updated')" in f and "x y" not in f, "jira fire: header GET, invalid key dropped")
     ck("decrypted_secret" in f and f.index("select v.k") < f.index("from s,") and "as a" not in f.split("select v.k")[1], "the credential is built in SQL and never selected")
     ck("where false" in sql_jira_fire([]), "no tickets: empty fire")
@@ -436,7 +508,57 @@ def _selftest() -> int:
     ev = {"knowledge": {"ok": True, "memories": [], "articles": []}}
     out = render({"topic": "t", "today": "2026-10-22T00:00", "evidence": ev})
     ck(out["verdict"] == "not verified" and out["card"].startswith("WHERE WE STAND — t (as of 2026-10-22)"), "render: nothing external means not verified")
-    ck([r["source"] for r in out["receipts"]] == ["knowledge", "jira", "github", "production"], "render: four receipts")
+    ck([r["source"] for r in out["receipts"]] == ["knowledge", "jira", "github", "production", "decision_moot"], "render: five receipts")
+
+    # --- LC-1907: the LC-1755 case end to end through the joint (real comment ids and dates; production read 2026-10-23)
+    idx = [{"id": "121832", "created": "2026-10-09T12:09:51.165-0500", "q": [], "r": [], "s": []},
+           {"id": "122959", "created": "2026-10-09T20:11:20.746-0500", "q": ["most durable"], "r": ["f312eb7b", "20261010"], "s": ["run-heading-research", "2026-10-10-ish"]},
+           {"id": "122964", "created": "2026-10-09T20:13:26.614-0500", "q": ["most durable"], "r": [], "s": []},
+           {"id": "151900", "created": "2026-10-22T17:53:27.834-0500", "q": ["most durable"], "r": [], "s": []}]
+    body = "STATE (2026-10-22): OPEN. Remaining: a live v2_s2b research session end to end on a real run, and the operator's open \"Most Durable\" ruling."
+    pj = parse_jira({"tickets": ["LC-1755"], "fired": [{"k": "LC-1755", "kind": "c", "req": 1}, {"k": "LC-1755", "kind": "i", "req": 2}],
+                     "collected": [{"id": 1, "status_code": 200, "j": {"total": 4, "id": "151900", "created": "2026-10-22T17:53:27.834-0500", "author": "BBM", "body": body, "idx": idx}},
+                                   {"id": 2, "status_code": 200, "j": {"status": "To Do", "summary": "Brand-by-pillar research", "updated": "2026-10-22T19:10:50.962-0500"}}]})
+    t = pj["tickets"][0]
+    ck(t["comment"]["id"] == "151900" and t["comments_complete"] is True and [c["id"] for c in t["comments"]] == ["121832", "122959", "122964", "151900"], "LC-1755: the newest comment's id and the comment profiles are carried")
+    ck(t["comments"][1]["r"] == ["f312eb7b"] and t["comments"][1]["s"] == ["run-heading-research"], "LC-1755: the SQL's loose run-id and slug lists are filtered again (a date is neither)")
+    def hist(tot, idx_n=4, **extra):
+        j = {"created": "2026-10-22T00:00:00.000+0000", "id": "9", "body": "x", "idx": [{"id": str(i), "created": "2026-10-01T00:00:00.000+0000", "q": [], "r": [], "s": []} for i in range(idx_n)], **extra}
+        if tot != "ABSENT":
+            j["total"] = tot
+        return parse_jira({"tickets": ["LC-1"], "fired": [{"k": "LC-1", "kind": "c", "req": 1}], "collected": [{"id": 1, "status_code": 200, "j": j}]})["tickets"][0]
+    for label, tot, n, want in (("exact", 4, 4, True), ("missing", "ABSENT", 4, False), ("null", None, 4, False), ("a string", "4", 4, False), ("larger than the page", 250, 4, False),
+                                  ("zero with a newest comment", 0, 4, False), ("more than the profiles read", 6, 4, False), ("a float", 4.0, 4, False)):
+        ck(hist(tot, n)["comments_complete"] is want, f"parse_jira: comments_complete for a total that is {label} is {want}")
+    ck(hist("ABSENT")["total"] is None and hist(None)["total"] is None and hist(0, 0)["total"] == 0, "parse_jira: a missing or null total stays None; a real zero stays 0")
+    ck(parse_jira({"tickets": ["LC-1"], "fired": [{"k": "LC-1", "kind": "c", "req": 1}], "collected": [{"id": 1, "status_code": 200, "j": {"total": 250, "created": "2026-10-22T00:00:00.000+0000", "id": "9", "body": "x", "idx": "[]"}}]})["tickets"][0]["comments_complete"] is False, "a thread longer than the page read says so")
+    mr = moot_refs(pj)
+    ck(mr == {"needed": True, "tickets": ["LC-1755"], "runs": ["f312eb7b"], "slugs": ["run-heading-research"]}, "moot_refs: the run id comes from the comment that raised the decision")
+    withc = {"key": "LC-3", "comment": {"created": "2026-10-01T00:00Z", "body": "Awaiting operator ruling."}}
+    ck(moot_refs({"tickets": [{**withc, "error": "404"}]})["needed"] is False and moot_refs({"tickets": [{"key": "LC-3", "comment": {"body": "Awaiting operator ruling."}}]})["needed"] is False and moot_refs({"tickets": [withc]})["tickets"] == ["LC-3"], "moot_refs: a ticket that errored, or whose comment has no date, is not looked up; a readable one is")
+    ck(moot_refs({"tickets": [{"key": "LC-9", "comment": {"created": "2026-10-01T00:00Z", "body": "Shipped."}}]})["needed"] is False and moot_refs(None)["needed"] is False, "moot_refs: no open decision, no second read")
+    msql, masked = sql_production([], ["LC-1755"], "ticket-status", mr)
+    ck("jira_keys && array['LC-1755']::text[]" in msql and "like u||'%'" in msql and "array['f312eb7b']::text[]" in msql and "array['run-heading-research']::text[]" in msql, "moot SQL: the ticket's own runs, the named run ids and slugs")
+    ck("webflow_last_published" in msql and "refresh_runs" in msql and not re.search(r"\b(insert|update|delete|drop|alter)\b", msql, re.IGNORECASE) and masked["slugs"] == [], "moot SQL: reads the publish date and run status only, read-only, asks the topic check for nothing")
+    ck("bad'x" not in sql_production([], ["LC-1"], "x", {"runs": ["bad'x", "zzzzzzzz"], "slugs": ["bad'x"]})[0], "moot SQL: only shape-checked ids reach it")
+    ck("array[]::text[]" in sql_production([], [], "x", {"runs": [], "slugs": []})[0], "moot SQL: no refs is still valid SQL")
+    ck("'idx'" in sql_jira_collect([1]) and "regexp_matches(c->>'body'" in sql_jira_collect([1]) and "limit 8" in sql_jira_collect([1]) and "'id', (content::jsonb)->'comments'->0->>'id'" in sql_jira_collect([1]), "collect: id and per-comment profiles are built in the database, capped")
+    ck(parse_production({"rows": [{"j": {}}], "asked": {}})["ok"] is False and parse_production({"rows": [{"j": {"articles": [], "runs": "x"}}], "asked": {}})["ok"] is False and parse_production({"rows": [{"j": {"articles": [], "runs": []}}], "asked": {}})["ok"] is True, "parse_production: a row without both lists is a broken read, not an empty one")
+    prod = parse_production({"rows": [{"j": {"articles": [{"slug": "best-kid-pet-friendly-sofas", "status": "published", "webflow_last_published": "2026-10-21T17:01Z"}],
+                                             "runs": [{"id": "f312eb7b-9b8a-49c0-8c2e-00446c76f199", "article_slug": "best-kid-pet-friendly-sofas", "status": "blocked", "updated_at": "2026-10-22T22:52Z", "jira_keys": []}]}}],
+                             "asked": masked, "terms": []})
+    lc = render({"topic": "LC-1755", "today": "2026-10-23", "tickets": ["LC-1755"], "evidence": {"jira": pj, "production": {"ok": True, "asked": {}}, "moot_production": prod}})
+    ck(lc["moot"]["open"] == [] and lc["moot"]["clean"] == [] and lc["moot"]["unchecked"] == {}, "render: the per-ticket lists ride along with the moot summary")
+    ck(lc["verdict"] == "conflict" and "open decision on LC-1755 may be moot: best-kid-pet-friendly-sofas published 2026-10-21 after it was raised (comment 122959, 2026-10-10)" in lc["card"], "LC-1755: the card shows the CONFLICT and the verdict is conflict")
+    ck("decision_moot BLOCK" in lc["card"] and list(lc["moot"]["tickets"]) == ["LC-1755"] and lc["moot"]["verdict"] == "BLOCK", "LC-1755: the receipt is on the card and the guard gets the moot ticket")
+    neg = render({"topic": "LC-1755", "today": "2026-10-23", "tickets": ["LC-1755"], "evidence": {"jira": pj, "production": {"ok": True, "asked": {}}, "moot_production": {**prod, "articles": [], "runs": []}}})
+    ck("decision_moot PASS" in neg["card"] and neg["moot"]["tickets"] == {} and neg["verdict"] != "conflict", "negative: an open decision with no linked published article or closed run stays OPEN")
+    blind = render({"topic": "LC-1755", "today": "2026-10-23", "tickets": ["LC-1755"], "evidence": {"jira": pj, "production": {"ok": True, "asked": {}}}})
+    ck(blind["moot"]["verdict"] == "NOT CHECKED" and blind["moot"]["tickets"] == {}, "render: with an open decision and no moot read the receipt is NOT CHECKED; the topic's own production read does not stand in for it")
+    ck(handle({"cmd": "moot_refs", "jira": pj})["needed"] is True and "sql" in handle({"cmd": "sql_production", "tickets": ["LC-1755"], "refs": mr}), "cmds moot_refs and sql_production(refs)")
+    rows = [{"type": "user", "message": {"role": "user", "content": "go"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "> **NEEDS YOU:** LC-1755 — ruling needed on the heading."}]}}]
+    g = handle({"cmd": "gate", "transcript_rows": rows, "cards": [{"tickets": ["LC-1755"], "at": None, "moot": {"verdict": "BLOCK", "tickets": {"LC-1755": "open decision on LC-1755 may be moot: x"}}}]})
+    ck("block" in g and "may be moot" in g["block"], "cmd gate: the NEEDS YOU guard runs after the status gate")
 
     ck(handle({"cmd": "trigger", "tool_name": "mcp__a__getJiraIssue", "tool_input": {"issueIdOrKey": "LC-1"}})["kind"] == "ticket-status", "cmd trigger")
     ck("sql" in handle({"cmd": "sql_knowledge", "terms": ["abc"], "tickets": []}), "cmd sql_knowledge")

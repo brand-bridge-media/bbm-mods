@@ -1,0 +1,141 @@
+{
+ "case": "case-d",
+ "captured": "2026-10-23 (comments read through the Jira API, article and run read from production; comment 151900 is the one the live ticket held until comment 152003 resolved it)",
+ "topic": "LC-1755",
+ "today": "2026-10-23",
+ "terms": [],
+ "tickets": [
+  "LC-1755"
+ ],
+ "evidence": {
+  "knowledge": {
+   "ok": true,
+   "memories": [],
+   "articles": []
+  },
+  "jira": {
+   "ok": true,
+   "tickets": [
+    {
+     "key": "LC-1755",
+     "status": "To Do",
+     "summary": "[Tech] Brand-by-pillar research: track what each core brand does for a pillar, and feed it into picks",
+     "updated": "2026-10-22T17:53:27.834-0500",
+     "total": 4,
+     "comments_complete": true,
+     "comment": {
+      "id": "151900",
+      "created": "2026-10-22T17:53:27.834-0500",
+      "author": "BBM",
+      "body": "STATE (2026-10-22): OPEN. The brand-by-pillar research is shipped (#1647, #1655, #1664, agent #217 and #220, skills #99), and 95 findings are seeded. Remaining: a live v2_s2b research session end to end on a real run, drafting-context on a real run, and the operator's open \"Most Durable\" ruling."
+     },
+     "comments": [
+      {
+       "id": "121832",
+       "created": "2026-10-09T12:09:51.165-0500",
+       "q": [],
+       "r": [],
+       "s": []
+      },
+      {
+       "id": "122959",
+       "created": "2026-10-09T20:11:20.746-0500",
+       "q": [
+        "most durable"
+       ],
+       "r": [
+        "f312eb7b"
+       ],
+       "s": [
+        "run-heading-research"
+       ]
+      },
+      {
+       "id": "122964",
+       "created": "2026-10-09T20:13:26.614-0500",
+       "q": [
+        "most durable"
+       ],
+       "r": [],
+       "s": []
+      },
+      {
+       "id": "151900",
+       "created": "2026-10-22T17:53:27.834-0500",
+       "q": [
+        "most durable"
+       ],
+       "r": [],
+       "s": []
+      }
+     ]
+    }
+   ]
+  },
+  "github": {
+   "ok": true,
+   "asked": [],
+   "prs": []
+  },
+  "production": {
+   "ok": true,
+   "asked": {
+    "slugs": [],
+    "runs": [],
+    "migrations": [],
+    "functions": []
+   },
+   "articles": [],
+   "runs": [],
+   "migrations": [],
+   "crons": [],
+   "alerts": [],
+   "functions": []
+  },
+  "moot_production": {
+   "ok": true,
+   "asked": {
+    "slugs": [],
+    "runs": [],
+    "migrations": [],
+    "functions": []
+   },
+   "articles": [
+    {
+     "slug": "best-kid-pet-friendly-sofas",
+     "status": "published",
+     "webflow_last_published": "2026-10-21T17:01Z"
+    }
+   ],
+   "runs": [
+    {
+     "id": "f312eb7b-9b8a-49c0-8c2e-00446c76f199",
+     "article_slug": "best-kid-pet-friendly-sofas",
+     "status": "blocked",
+     "current_stage": 11,
+     "jira_keys": [],
+     "updated_at": "2026-10-22T22:52Z"
+    }
+   ],
+   "migrations": [],
+   "crons": [],
+   "alerts": [],
+   "functions": []
+  }
+ },
+ "expect": {
+  "why": "LC-1755 carried 'stan's ruling on the Most Durable heading' from 2026-10-10 (comment 122959); best-kid-pet-friendly-sofas went live 2026-10-21 without that award; a copied-forward STATE comment (151900) was then put to the operator as open. The card must show the conflict.",
+  "verdict": "conflict",
+  "receipts": {
+   "jira": "PASS",
+   "decision_moot": "BLOCK"
+  },
+  "contains": [
+   "open decision on LC-1755 may be moot: best-kid-pet-friendly-sofas published 2026-10-21 after it was raised (comment 122959, 2026-10-10)",
+   "decision_moot BLOCK"
+  ],
+  "not_contains": [
+   "VERDICT: VERIFIED"
+  ]
+ }
+}

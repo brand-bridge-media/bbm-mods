@@ -28,8 +28,10 @@ const JIRA_WAIT_TRIES = 3
 const REPO = { owner: 'brand-bridge-media', repo: 'bbm-infrastructure' }
 
 type Opts = { supabaseServer?: string; projectId?: string; githubServer?: string }
-type Entry = { topic: string; tickets: string[]; terms: string[]; prs: number[] }
-type Session = { done: string[]; seen: string[]; cards: number; ledger: Entry[]; tries: Record<string, number>; broken?: boolean; nudged?: boolean }
+type Moot = { verdict?: string; reason?: string; tickets?: Record<string, string> }
+// `at` (epoch ms) and `moot` are what the NEEDS YOU guard (wws_needs_you.py) reads: was there a card THIS turn, and did it find the decision moot.
+type Entry = { topic: string; tickets: string[]; terms: string[]; prs: number[]; at?: number; moot?: Moot }
+type Session = { done: string[]; seen: string[]; cards: number; ledger: Entry[]; tries: Record<string, number>; broken?: boolean; nudged?: boolean; mootBlocks?: number }
 type Made = { text: string; broken: boolean }
 type Topic = { kind: string; topic: string; tickets: string[]; terms: string[] }
 
@@ -179,6 +181,28 @@ async function githubSlice($: any, o: Opts, prs: number[]): Promise<unknown> {
   return (await py($, { cmd: 'parse_prs', asked: prs.slice(0, MAX_PRS), items }))?.evidence
 }
 
+// The moot read has ONE success path. Once an open decision exists, anything other than well-formed evidence marked ok:true is
+// a failed read, whatever went wrong (a Python failure, undefined, {}, null, a wrong shape, a throw): it reaches the card as
+// ok:false, which is NOT CHECKED. Three review rounds found a different fail-open branch each time; this is the one rule.
+const FAILED = (error: string) => ({ ok: false, error })
+const wellFormed = (ev: any) => !!ev && typeof ev === 'object' && ev.ok === true && Array.isArray(ev.articles) && Array.isArray(ev.runs)
+
+async function mootSlice($: any, o: Opts, tickets: string[], jira: unknown): Promise<unknown> {
+  try {
+    const refs = await py($, { cmd: 'moot_refs', jira })
+    if (typeof refs?.needed !== 'boolean') return FAILED('moot_refs returned no answer')
+    if (!refs.needed) return undefined // an explicit "no open decision in any newest comment": nothing to compare
+    const q = await py($, { cmd: 'sql_production', tickets: refs.tickets ?? tickets, terms: [], kind: 'ticket-status', refs: { runs: refs.runs ?? [], slugs: refs.slugs ?? [] } })
+    if (!q?.sql) return FAILED('moot query not built')
+    const r = await sql($, o, q.sql)
+    const ev = (await py($, { cmd: 'parse_production', ...r, asked: q.asked ?? {}, terms: [] }))?.evidence
+    if (wellFormed(ev)) return ev
+    return FAILED(String(ev?.error ?? r.error ?? 'moot evidence missing or malformed').slice(0, 200))
+  } catch (e) {
+    return FAILED(`moot read threw: ${String((e as Error)?.message ?? e)}`.slice(0, 200))
+  }
+}
+
 // The whole lookup. Each source is read and parsed on its own; nothing here decides a verdict.
 async function lookup($: any, o: Opts, t: Topic): Promise<{ card: string; entry?: Entry; broken?: boolean } | undefined> {
   const k = await py($, { cmd: 'sql_knowledge', terms: t.terms, tickets: t.tickets })
@@ -198,11 +222,14 @@ async function lookup($: any, o: Opts, t: Topic): Promise<{ card: string; entry?
   // A second look once the tickets are read: PR numbers in their newest comments are cited evidence too.
   const again = (await py($, { cmd: 'discover', tickets: t.tickets, knowledge, production, jira })) ?? found
   const github = await githubSlice($, o, again.prs ?? found.prs ?? [])
+  // LC-1907: a decision the newest comment still calls open is checked against the runs and articles it names (and the runs that
+  // list the ticket), which only a second read of production can answer: the first one ran before any comment was read.
+  const mootProduction = await mootSlice($, o, found.tickets ?? t.tickets, jira)
 
-  const out = await py($, { cmd: 'render', topic: t.topic, terms: t.terms, tickets: found.tickets ?? t.tickets, today: new Date().toISOString().slice(0, 10), evidence: { knowledge, jira, github, production } })
+  const out = await py($, { cmd: 'render', topic: t.topic, terms: t.terms, tickets: found.tickets ?? t.tickets, today: new Date().toISOString().slice(0, 10), evidence: { knowledge, jira, github, production, ...(mootProduction ? { moot_production: mootProduction } : {}) } })
   if (!out?.card) return undefined
   // What this card covers, for the gate: the tickets it read, the terms it searched, the PRs it checked.
-  const entry: Entry = { topic: t.topic, tickets: found.tickets ?? t.tickets, terms: t.terms, prs: (again.prs ?? found.prs ?? []).slice(0, MAX_PRS) }
+  const entry: Entry = { topic: t.topic, tickets: found.tickets ?? t.tickets, terms: t.terms, prs: (again.prs ?? found.prs ?? []).slice(0, MAX_PRS), at: Date.now(), moot: out.moot }
   return { card: `[mod:where-we-stand] ${out.card}`, entry }
 }
 
@@ -357,14 +384,20 @@ export const register: Register = (on, options) => {
 
   // The backstop (LC-1893): a reply that states a status or says something is published / merged / deployed / live,
   // with no card in this session for that subject, is sent back ONCE (Claude Code sets stop_hook_active on the stop
-  // after a block, and wws_gate.py always passes then, so it cannot loop). It lives in this plugin because the
+  // after a block, and wws_gate.py always passes then, so it cannot loop). The NEEDS YOU guard (wws_needs_you.py, LC-1907) runs in
+  // the same stop: a reply that opens with the banner and puts a decision_moot ticket to the operator. It lives in this plugin because the
   // cards it checks against are in this plugin's store, and a plugin's store is private to it.
   on('classic.Stop', async ($, e, next) => {
     const s = await load($)
     // While the lookup is broken it cannot produce the card the gate would demand: sending a reply back for it is noise.
     if (s.broken) return next(e)
-    const v = await py($, { cmd: 'gate', ...(e as any), cards: s.ledger })
+    const v = await py($, { cmd: 'gate', ...(e as any), cards: s.ledger, moot_blocks: s.mootBlocks ?? 0 })
     if (typeof v?.block === 'string' && v.block) {
+      // The NEEDS YOU guard (LC-1907) blocks a moot ask again on the re-send; this count is what stops that after MAX_REPEAT.
+      if (v.block.includes('NEEDS YOU guard')) {
+        s.mootBlocks = (s.mootBlocks ?? 0) + 1
+        await save($, s)
+      }
       toast($, v.block)
       return { block: v.block }
     }

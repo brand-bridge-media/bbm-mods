@@ -14,6 +14,11 @@ export type World = {
   branch?: string // what `git rev-parse --abbrev-ref HEAD` prints
   ownTicket?: string // what branch_ticket finds
   gate?: Record<string, unknown> // what `gate` answers
+  mootEvidence?: unknown // what parse_production answers for the MOOT read (default: a well-formed empty read)
+  throwMootSql?: boolean // the second execute_sql of SQL:production (the moot read) throws
+  mootRefsBroken?: boolean // moot_refs answers nothing usable
+  mootNeeded?: boolean // moot_refs finds an open decision (LC-1907)
+  moot?: Record<string, unknown> // what the card's `moot` receipt summary says
   tools?: string[] // what `tool.list` answers (names, as the model sees them)
   servers?: string[] // the only MCP server names that exist: any other `mcp.call` throws, as the engine does
 }
@@ -27,6 +32,8 @@ export function world(on: any, w: World = {}) {
   const mcp: { server: string; tool: string; args: any }[] = []
   const reached: any[] = []
   const fail = { noCardOnce: false }
+  let prodSql = 0
+  let parses = 0 // parse_production runs once for the topic and, when an open decision exists, once more for the moot read
   on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
   on('process.run', (_$: any, e: any) => {
     if (w.throwProcess) throw new Error('spawn failed')
@@ -40,20 +47,22 @@ export function world(on: any, w: World = {}) {
       sql_jira_fire: { sql: 'SQL:fire' },
       sql_jira_collect: { sql: 'SQL:collect' },
       parse_knowledge: { evidence: { ok: !p.error, from: 'knowledge' } },
-      parse_production: { evidence: { ok: !p.error, from: 'production' } },
+      parse_production: p.cmd === 'parse_production' && ++parses >= 2 && 'mootEvidence' in w ? { evidence: w.mootEvidence } : { evidence: { ok: !p.error, articles: [], runs: [], from: 'production' } },
       discover: { tickets: w.tickets ?? [], prs: w.prs ?? [] },
       parse_jira: { evidence: { ok: !p.error, from: 'jira', error: p.error } },
       parse_prs: { evidence: { ok: !p.error, from: 'github' } },
       normalize: { kind: p.kind ?? 'diagnosis', topic: [...(p.tickets ?? []), ...(p.terms ?? [])].join(' '), tickets: p.tickets ?? [], terms: p.terms ?? [] },
       branch_ticket: { tickets: w.ownTicket ? [w.ownTicket] : [] },
+      moot_refs: w.mootRefsBroken ? {} : { needed: !!w.mootNeeded, tickets: ['LC-1755'], runs: ['f312eb7b'], slugs: ['best-kid-pet-friendly-sofas'] },
       gate: w.gate ?? {},
-      render: w.noCard || (p.cmd === 'render' && fail.noCardOnce && !(fail.noCardOnce = false)) ? {} : { card: 'WHERE WE STAND — x (as of 2026-10-22)\nVERDICT: CONFLICT\nline' },
+      render: w.noCard || (p.cmd === 'render' && fail.noCardOnce && !(fail.noCardOnce = false)) ? {} : { card: 'WHERE WE STAND — x (as of 2026-10-22)\nVERDICT: CONFLICT\nline', ...(w.moot ? { moot: w.moot } : {}) },
     }
     return { value: { exitCode: 0, stdout: JSON.stringify(out[p.cmd] ?? {}), stderr: '' } } as any
   })
   if (w.tools) on('tool.list', () => ({ value: w.tools!.map(name => ({ name, description: '', mcp: name.startsWith('mcp__') })) }) as any)
   on('mcp.call', (_$: any, e: any) => {
     mcp.push({ server: e.server, tool: e.tool, args: e.args })
+    if (w.throwMootSql && e.tool === 'execute_sql' && String(e.args?.query) === 'SQL:production' && ++prodSql === 2) throw new Error('boom')
     if (w.servers && !w.servers.includes(e.server)) throw new Error(`$.mcp.call: no connected MCP tool "${e.tool}" on a server named "${e.server}"`)
     const q = String(e.args?.query ?? '')
     if (e.tool === 'execute_sql' && w.failSql && q.includes(w.failSql)) return { value: { isError: true, content: [{ type: 'text', text: 'boom' }] } } as any

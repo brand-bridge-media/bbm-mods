@@ -114,7 +114,20 @@ credential never leaves the database and a session never holds it. Cost per card
 | `wws_card.py` | tickets and PRs worth a second look; hard CONFLICTS (both sides, with dates); NOTES (soft signals that never change the verdict); the verdict; the text |
 | `wws_gate.py` | the backstop: a reply that states a ticket status, or says something is published / merged / deployed / live, with no card for that subject in the session, is sent back once |
 | `where-we-stand.py` | the joint: builds the read-only SQL, parses MCP replies into evidence, dispatches commands |
+| `wws_moot.py` | is a decision the newest comment still calls open about something production says is over? The ONE function behind the card's `decision_moot` receipt, the status generator's "Waiting on the operator" block and the NEEDS YOU guard (LC-1907) |
+| `wws_needs_you.py` | the NEEDS YOU guard (LC-1907): a reply that opens with `> **NEEDS YOU:**` and puts a ticket to the operator as a pending decision needs a card from this turn; if that card's `decision_moot` BLOCKed the ticket, the reply is blocked with the evidence |
 | `wws_regression.py` | replays the three historical cases from `tests/fixtures/` (real evidence, captured 2026-10-22) and fails if the card stops saying what each case needs |
+
+`decision_moot` (LC-1907). Why: a ruling raised 2026-10-10 on LC-1755 was put to the operator as open on 2026-10-23 although the article had been
+live since 2026-10-21; the card read the newest comment right and nothing compared the decision with the production state it was about. The
+test: an open-decision sentence in the newest comment (`wws_moot.OPEN`, and not also `SETTLED`); RAISED = the oldest comment carrying the same
+quoted subject (a STATE comment that copies the item forward must not reset the clock); the runs and slugs named there or in the opening comment,
+plus every run whose `jira_keys` holds the ticket; MOOT when one of those runs is done / abandoned, or its article was published, after RAISED.
+Cost: one more `execute_sql` per card, and only when some newest comment holds an open decision (the Jira GET now reads a page of 100 comments,
+reduced to a small profile inside the database; a longer thread may hide the opening comment, and then the clock starts at the newest). The
+receipt is PASS (nothing moot; OPEN items listed), BLOCK (the card prints a CONFLICT) or NOT CHECKED (production unread). The NEEDS YOU guard
+lives in this mod, not in a mod of its own, because the card ledger it reads is private to this plugin's store; it blocks a moot ask again on
+the re-send, at most 3 times a session.
 
 Ways in: a recognised trigger (once per topic, three per session, nothing for a topic the session already read in the knowledge tables);
 the session's own ticket from its branch name at session start; the `lookup` tool (`mcp__where-we-stand__lookup`), on demand and not capped;

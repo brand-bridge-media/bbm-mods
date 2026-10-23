@@ -175,7 +175,7 @@ test('every card is recorded for the gate: the tickets it read, the terms it sea
   w.cmds.length = 0
   await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' })
   const gate = w.cmds.find(c => c.cmd === 'gate')
-  expect(gate.cards).toEqual([{ topic: 'LC-1345', tickets: ['LC-1345', 'LC-1307'], terms: [], prs: [694, 770] }])
+  expect(gate.cards).toEqual([{ topic: 'LC-1345', tickets: ['LC-1345', 'LC-1307'], terms: [], prs: [694, 770], at: expect.any(Number) }])
   expect(gate.transcript_path).toBe('/t.jsonl')
 })
 
@@ -280,4 +280,96 @@ test('an explicit lookup that finds the database unreachable also stands the gat
   await $.tool.call({ tool: 'mcp__where-we-stand__lookup', tickets: ['LC-1345'] } as any)
   expect((await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' }) as any).block).toBeUndefined()
   expect(w.cmds.some(c => c.cmd === 'gate')).toBe(false)
+})
+
+// LC-1907: a decision the newest comment still calls open is compared with production (second read), and the card's answer
+// is kept in the ledger so the NEEDS YOU guard can read it.
+const MOOT = { verdict: 'BLOCK', reason: 'x', tickets: { 'LC-1755': 'open decision on LC-1755 may be moot: best-kid-pet-friendly-sofas published 2026-10-21 after it was raised (comment 122959, 2026-10-10)' } }
+
+test('an open decision triggers a second, read-only production read for the runs and slugs it names, passed to the card as moot_production', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1755'], mootNeeded: true })
+  await $.tool.call(JIRA)
+  const q = w.cmds.filter(c => c.cmd === 'sql_production')
+  expect(q).toHaveLength(2)
+  expect(q[1].refs).toEqual({ runs: ['f312eb7b'], slugs: ['best-kid-pet-friendly-sofas'] })
+  expect(w.cmds.find(c => c.cmd === 'moot_refs').jira).toBeDefined()
+  expect(Object.keys(w.cmds.find(c => c.cmd === 'render').evidence).sort()).toEqual(['github', 'jira', 'knowledge', 'moot_production', 'production'])
+  expect(w.mcp.every(m => ['execute_sql', 'list_edge_functions', 'pull_request_read'].includes(m.tool))).toBe(true)
+})
+
+test('moot_refs answering nothing is a failed read (NOT CHECKED on the card), never "no open decision"', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1755'], mootRefsBroken: true })
+  const r: any = await $.tool.call(JIRA)
+  expect(r.context).toHaveLength(1)
+  const ev = w.cmds.find(c => c.cmd === 'render').evidence
+  expect(ev.moot_production).toEqual({ ok: false, error: 'moot_refs returned no answer' })
+  expect(w.cmds.filter(c => c.cmd === 'sql_production')).toHaveLength(1)
+})
+
+// ONE success path: once an open decision exists, every outcome other than well-formed evidence is a failed read (NOT CHECKED).
+for (const [label, ev] of [['null', null], ['an empty object', {}], ['ok without row lists', { ok: true }], ['ok false', { ok: false, error: 'x' }], ['a string', 'garbage'], ['ok as a string', { ok: 'yes', articles: [], runs: [] }]] as const) {
+  test(`parse_production answering ${label} for the moot read reaches the card as a failed read`, async ($: any, on: any) => {
+    const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1755'], mootNeeded: true, mootEvidence: ev })
+    const r: any = await $.tool.call(JIRA)
+    expect(r.context).toHaveLength(1)
+    const sent = w.cmds.find(c => c.cmd === 'render').evidence.moot_production
+    expect(sent.ok).toBe(false)
+    expect(typeof sent.error).toBe('string')
+  })
+}
+
+test('a well-formed moot read is passed through untouched', async ($: any, on: any) => {
+  const good = { ok: true, articles: [{ slug: 'a-b-c' }], runs: [] }
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1755'], mootNeeded: true, mootEvidence: good })
+  await $.tool.call(JIRA)
+  expect(w.cmds.find(c => c.cmd === 'render').evidence.moot_production).toEqual(good)
+})
+
+test('a throw anywhere in the moot read is a failed read, not silence', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1755'], mootNeeded: true, throwMootSql: true })
+  const r: any = await $.tool.call(JIRA)
+  expect(r.context).toHaveLength(1)
+  const sent = w.cmds.find(c => c.cmd === 'render').evidence.moot_production
+  expect(sent.ok).toBe(false)
+  expect(typeof sent.error).toBe('string')
+})
+
+test('no open decision, no second read', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1345'] })
+  await $.tool.call(JIRA)
+  expect(w.cmds.filter(c => c.cmd === 'sql_production')).toHaveLength(1)
+  expect(Object.keys(w.cmds.find(c => c.cmd === 'render').evidence)).not.toContain('moot_production')
+})
+
+test('a failed moot read reaches the card as an error, not as silence', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1755'], mootNeeded: true, failSql: 'SQL:production' })
+  const r: any = await $.tool.call(JIRA)
+  expect(r.context).toHaveLength(1)
+  const parses = w.cmds.filter(c => c.cmd === 'parse_production')
+  expect(parses).toHaveLength(2)
+  expect(parses[1].error).toBe('execute_sql returned an error')
+})
+
+test('the ledger keeps what the NEEDS YOU guard needs: when the card was made and what decision_moot said', async ($: any, on: any) => {
+  const w = world(on, { trigger: TICKET_TRIGGER, tickets: ['LC-1755'], mootNeeded: true, moot: MOOT })
+  on('classic.Stop', () => ({}))
+  await $.tool.call(JIRA)
+  w.cmds.length = 0
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' })
+  const card = w.cmds.find(c => c.cmd === 'gate').cards[0]
+  expect(card.moot).toEqual(MOOT)
+  expect(typeof card.at).toBe('number')
+})
+
+test('a NEEDS YOU reply naming a moot decision is blocked, prefixed and toasted; the moot re-block is counted and handed back to the checker', async ($: any, on: any) => {
+  const BLOCK = '[mod:where-we-stand] NEEDS YOU guard: this reply puts LC-1755 to the operator as an open decision, but the where-we-stand decision_moot check says it may be moot: x.'
+  const w = world(on, { gate: { block: BLOCK } })
+  on('classic.Stop', () => ({}))
+  const r: any = await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' })
+  expect(r.block).toBe(BLOCK)
+  expect(w.toasts).toHaveLength(1)
+  expect(w.toasts[0]).toMatch(/^\[mod:where-we-stand\] NEEDS YOU guard: this reply puts LC-1755/)
+  await $.classic.Stop({ stop_hook_active: true, transcript_path: '/t.jsonl' })
+  const gates = w.cmds.filter(c => c.cmd === 'gate')
+  expect(gates.map(g => g.moot_blocks)).toEqual([0, 1])
 })
