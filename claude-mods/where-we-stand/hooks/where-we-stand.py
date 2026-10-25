@@ -555,6 +555,10 @@ def _selftest() -> int:
     ck("decision_moot PASS" in neg["card"] and neg["moot"]["tickets"] == {} and neg["verdict"] != "conflict", "negative: an open decision with no linked published article or closed run stays OPEN")
     blind = render({"topic": "LC-1755", "today": "2026-10-23", "tickets": ["LC-1755"], "evidence": {"jira": pj, "production": {"ok": True, "asked": {}}}})
     ck(blind["moot"]["verdict"] == "NOT CHECKED" and blind["moot"]["tickets"] == {}, "render: with an open decision and no moot read the receipt is NOT CHECKED; the topic's own production read does not stand in for it")
+    ck(neg["moot"]["open"] == ["LC-1755"] and neg["moot"]["clean"] == [], "render: an open decision with no linked publish is listed under open")
+    ck(list(blind["moot"]["unchecked"]) == ["LC-1755"] and blind["moot"]["open"] == [], "render: an unread decision is listed under unchecked, not open")
+    shipped = render({"topic": "LC-9", "today": "2026-10-23", "tickets": ["LC-9"], "evidence": {"jira": {"ok": True, "tickets": [{"key": "LC-9", "comment": {"created": "2026-10-01T00:00Z", "body": "Shipped."}}]}, "production": {"ok": True, "asked": {}}}})
+    ck(shipped["moot"]["clean"] == ["LC-9"], "render: a ticket with no open decision is listed under clean")
     ck(handle({"cmd": "moot_refs", "jira": pj})["needed"] is True and "sql" in handle({"cmd": "sql_production", "tickets": ["LC-1755"], "refs": mr}), "cmds moot_refs and sql_production(refs)")
     rows = [{"type": "user", "message": {"role": "user", "content": "go"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "> **NEEDS YOU:** LC-1755 — ruling needed on the heading."}]}}]
     g = handle({"cmd": "gate", "transcript_rows": rows, "cards": [{"tickets": ["LC-1755"], "at": None, "moot": {"verdict": "BLOCK", "tickets": {"LC-1755": "open decision on LC-1755 may be moot: x"}}}]})
