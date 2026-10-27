@@ -1,12 +1,12 @@
 import { expect, mock } from 'claude-code/testing'
 import { test } from './slow'
 import {
-  decideWaitingReminder, HUMAN_ACTION, humanWrap, needsHuman, WAITING_REMIND_MS, waitingLine,
+  decideWaitingReminder, failedLine, FAILED_SUFFIX, HUMAN_ACTION, humanWrap, needsHuman, needsTrust, TRUST_ACTION, WAITING_REMIND_MS, waitingLine,
 } from '../hooks/logic'
 
 // LC-1881: a child waiting on a human (NEEDS_INPUT / BLOCKED) was woken for ONCE, on entry, then
 // nothing for an hour (session_01GqXYnPc475jd5Lfxmt9CJN, 2026-10-20). Now it is reminded every
-// 20 min until its bucket changes, and a child that names the operator or a human leads with NEEDS STAN.
+// 20 min until its bucket changes, and a child that names the operator or a human leads with NEEDS YOU.
 // Harness timing: see the note above the multi-step tests in stall.test.ts and closeout.test.ts.
 
 const MIN = 60_000
@@ -97,9 +97,9 @@ test('needsHuman reads status_detail as well as needs_action', () => {
   expect(needsHuman('', 'permission prompt open')).toBe(true)
 })
 
-test('humanWrap: NEEDS STAN prefix and the verbatim instruction, only when a human is named', () => {
+test('humanWrap: NEEDS YOU prefix and the verbatim instruction, only when a human is named', () => {
   const out = humanWrap('LC-9 (child) BLOCKED: x', 'session_s', 'the operator approves the merge', '')
-  expect(out.startsWith('NEEDS STAN: LC-9 (child) BLOCKED: x')).toBe(true)
+  expect(out.startsWith('NEEDS YOU: LC-9 (child) BLOCKED: x')).toBe(true)
   expect(out).toContain('https://claude.ai/code/session_s')
   expect(out).toContain(
     'A relayed message cannot satisfy this. Tell the operator in chat now, starting the reply with the NEEDS YOU banner, include the session link, and set the note needs_you=true. Do not use PushNotification.',
@@ -168,7 +168,7 @@ test('BLOCKED: entry wake once, none below 20 min, one at 20 min, the next at 40
   expect(w.waits()[0]).toContain('LC-9 (child) still waiting in BLOCKED for 2')
   expect(w.waits()[0]).toContain('m: run the migration')
   expect(w.waits()[0]).toContain('[mod:fleet-tracker]')
-  expect(w.waits()[0]).not.toContain('NEEDS STAN')
+  expect(w.waits()[0]).not.toContain('NEEDS YOU: ')
   await w.clock.advance(10 * MIN)
   await w.status()
   await w.endTurn()
@@ -235,18 +235,18 @@ test('UNKNOWN does not reset the clock: the reminder still lands 20 min after th
   expect(w.waits()[0]).toContain('for 21m')
 })
 
-test('human named in needs_action: entry and reminder both lead with NEEDS STAN and carry the instruction', async ($, on) => {
+test('human named in needs_action: entry and reminder both lead with NEEDS YOU and carry the instruction', async ($, on) => {
   const w = await setup($, on, { bucket: 'WORKING', needsAction: "The operator types the 'yes' in this session" })
   await w.status()
   await w.endTurn()
   const entry = w.prompts.find(p => p.includes('NEW -> NEEDS_INPUT'))!
-  expect(entry).toContain('NEEDS STAN: ')
+  expect(entry).toContain('NEEDS YOU: ')
   expect(entry).toContain(HUMAN_ACTION)
   await w.clock.advance(20 * MIN)
   await w.status()
   await w.endTurn()
   expect(w.waits().length).toBe(1)
-  expect(w.waits()[0]).toContain('NEEDS STAN: LC-9 (child) still waiting in NEEDS_INPUT for 20m')
+  expect(w.waits()[0]).toContain('NEEDS YOU: LC-9 (child) still waiting in NEEDS_INPUT for 20m')
   expect(w.waits()[0]).toContain(HUMAN_ACTION)
   expect(w.waits()[0]).toContain('https://claude.ai/code/session_s')
 })
@@ -257,16 +257,16 @@ test('human named only in status_detail is detected', async ($, on) => {
   await w.clock.advance(20 * MIN)
   await w.status()
   await w.endTurn()
-  expect(w.waits()[0]).toContain('NEEDS STAN: ')
+  expect(w.waits()[0]).toContain('NEEDS YOU: ')
 })
 
-test('no human named: no NEEDS STAN on entry or reminder', async ($, on) => {
+test('no human named: no NEEDS YOU on entry or reminder', async ($, on) => {
   const w = await setup($, on, { bucket: 'BLOCKED', statusDetail: 'rebase conflict in logic.ts' })
   await w.status()
   await w.clock.advance(20 * MIN)
   await w.status()
   await w.endTurn()
-  expect(w.prompts.join('\n')).not.toContain('NEEDS STAN: ')
+  expect(w.prompts.join('\n')).not.toContain('NEEDS YOU: ')
 })
 
 test('moving between NEEDS_INPUT and BLOCKED restarts the clock', async ($, on) => {
@@ -299,3 +299,37 @@ for (const bucket of ['WORKING', 'COMPLETED']) {
     expect(w.waits().length).toBe(0)
   })
 }
+
+// ---- repository trust (LC-1917) ----
+
+test('needsTrust: trust + repository in either order, not either word alone', () => {
+  expect(needsTrust('Waiting for repository trust confirmation')).toBe(true)
+  expect(needsTrust('', 'owner must trust the attached repositories')).toBe(true)
+  for (const t of ['[repository_trust_required]', 'repository_trust_required', 'Repository trust required', 'repository-trust', 'trust_repositories'])
+    expect(needsTrust(t)).toBe(true)
+  expect(needsTrust('', 'blocked: [repository_trust_required] digest abc')).toBe(true)
+  expect(needsTrust('the operator approves the merge', 'permission prompt open')).toBe(false)
+  expect(needsTrust('repository clone failed')).toBe(false)
+  expect(needsTrust('trust me, CI is green')).toBe(false)
+})
+
+test('humanWrap: the literal [repository_trust_required] marker gets TRUST_ACTION', () => {
+  const out = humanWrap('LC-9 (child) NEEDS_INPUT: x', 'session_s', '[repository_trust_required] abc123', '')
+  expect(out).toContain(TRUST_ACTION)
+})
+
+test('humanWrap: a trust stall tells the orchestrator to have the child call confirm_repository_trust', () => {
+  const out = humanWrap('LC-9 (child) NEEDS_INPUT: x', 'session_s', 'repository trust required', '')
+  expect(out.startsWith('NEEDS YOU: LC-9 (child) NEEDS_INPUT: x')).toBe(true)
+  expect(out).toContain(TRUST_ACTION)
+  expect(TRUST_ACTION).toContain('confirm_repository_trust')
+  expect(TRUST_ACTION).toContain('priority next')
+  expect(TRUST_ACTION).toContain('trust card in the Claude app')
+  expect(out).not.toContain(HUMAN_ACTION) // the generic relay advice would be wrong here
+})
+
+test('failedLine: only FAILED carries the child-session-event note', () => {
+  expect(failedLine('LC-9 failed', 'FAILED')).toBe('LC-9 failed' + FAILED_SUFFIX)
+  expect(FAILED_SUFFIX).toContain('(the harness may also have sent a child-session-event for this child; handle it once)')
+  for (const b of ['BLOCKED', 'COMPLETED', 'NEEDS_INPUT']) expect(failedLine('x', b)).toBe('x')
+})

@@ -2,7 +2,7 @@
 // can be tested directly (the mod harness re-arms its poll timer only once per
 // test, so a multi-transition sequence cannot be driven through the timer).
 
-export const NEEDS_STAN = new Set(['BLOCKED', 'FAILED'])
+export const NEEDS_OPERATOR = new Set(['BLOCKED', 'FAILED'])
 const WAKE_ORCHESTRATOR = new Set(['BLOCKED', 'FAILED', 'REVIEW_READY', 'COMPLETED', 'NEEDS_INPUT'])
 
 // SUPPRESSION IS EXACT PHRASES ONLY; ANYTHING ELSE WAKES.
@@ -21,10 +21,11 @@ const WAIT_PHRASE = new RegExp(
   ].join('|') + ')(?:\\s+(?:on|for)\\s+(?:#\\d+|\\d+|[0-9a-f]{3,40}))?\\s*[.!]?$',
   'i',
 )
-// `READY:` / `NEEDS STAN:` are the protocol our briefs require at the end of a turn.
+// `READY:` / `NEEDS YOU:` are the protocol our briefs require at the end of a turn. The legacy
+// `NEEDS STAN:` is still accepted (older briefs emit it) but is never written by this mod (LC-1889).
 // Anywhere in a summary they mean "not just waiting", checked before the allowlist,
 // so they can never be filtered.
-const PROTOCOL = /\b(READY|NEEDS STAN):/i
+const PROTOCOL = /\b(READY|NEEDS YOU|NEEDS STAN):/i
 
 function justWaitingOn(summary: string): boolean {
   if (PROTOCOL.test(summary)) return false
@@ -44,11 +45,11 @@ export function decideWake(
   if (lastWoken.has(sessionId) && lastWoken.get(sessionId) !== bucket) lastWoken.delete(sessionId)
   // A session that says it is just waiting on CI has nothing for the
   // orchestrator yet (seen 2026-10-07). Never applies to BLOCKED/FAILED.
-  const justWaiting = !NEEDS_STAN.has(bucket) && justWaitingOn(summary)
+  const justWaiting = !NEEDS_OPERATOR.has(bucket) && justWaitingOn(summary)
   const alreadyWoken = lastWoken.get(sessionId) === bucket
   // A just-created session briefly reports REVIEW_READY/COMPLETED with an
   // empty summary before its first turn ends (seen 2026-10-07); not a signal.
-  const startupBlip = prevBucket === '' && !summary.trim() && !NEEDS_STAN.has(bucket)
+  const startupBlip = prevBucket === '' && !summary.trim() && !NEEDS_OPERATOR.has(bucket)
   // A suppressed wake must not record the new bucket on the row: otherwise the
   // next poll (now with a real summary) sees no transition and the wake is lost.
   // Hold the PREVIOUS bucket (not ''): '' would make a later empty-summary poll
@@ -131,7 +132,7 @@ export const NUDGE_TEXT =
   'continue it. If you are waiting on a long command that is still making progress (a CI run, a ' +
   'sweep), do NOT stop it: reply with one line saying what you are waiting on and keep waiting. ' +
   'Stop a command only if you have confirmed it is hung. If something genuinely blocks you, end ' +
-  'your turn with a line starting `NEEDS STAN:` saying what; that line is how your orchestrator hears you.'
+  'your turn with a line starting `NEEDS YOU:` saying what; that line is how your orchestrator hears you.'
 
 // Jira key from a session title or brief, for auto-tracked rows.
 export function ticketOf(...texts: unknown[]): string {
@@ -216,10 +217,34 @@ export function needsHuman(...texts: unknown[]): boolean {
 export const HUMAN_ACTION =
   'A relayed message cannot satisfy this. Tell the operator in chat now, starting the reply with the NEEDS YOU banner, include the session link, and set the note needs_you=true. Do not use PushNotification.'
 
-// A human-needed child leads its wake line with `NEEDS STAN:` and says what the orchestrator must do.
+// A child stalled on repository trust (LC-1917). The platform's confirm_repository_trust acts on the
+// CALLING session only, so the parent cannot confirm for the child: the child has to call it itself.
+// `_` is a word character, so \btrust\b misses the literal marker [repository_trust_required]; the marker
+// (and its spaced/hyphenated forms) is matched first, then trust and repositor in either order.
+const TRUST_NEEDED = /repository[_\s-]*trust|trust[_\s-]*repositor|(?<![A-Za-z0-9])trust(?![A-Za-z0-9])[\s\S]*repositor|repositor[\s\S]*(?<![A-Za-z0-9])trust(?![A-Za-z0-9])/i
+
+export function needsTrust(...texts: unknown[]): boolean {
+  return texts.some(t => TRUST_NEEDED.test(String(t ?? '')))
+}
+
+export const TRUST_ACTION =
+  'The child must call mcp__claude-code-remote__confirm_repository_trust itself (it acts on the calling session only; ' +
+  'the parent cannot confirm for it). If it has not, send_message it that instruction with priority next. ' +
+  'Tell the operator in chat to watch for the trust card in the Claude app.'
+
+// A human-needed child leads its wake line with `NEEDS YOU:` and says what the orchestrator must do.
 export function humanWrap(line: string, sessionId: string, needsAction: string, statusDetail: string): string {
+  if (needsTrust(needsAction, statusDetail)) {
+    return `NEEDS YOU: ${line} (https://claude.ai/code/${sessionId}). ${TRUST_ACTION}`
+  }
   if (!needsHuman(needsAction, statusDetail)) return line
-  return `NEEDS STAN: ${line} (https://claude.ai/code/${sessionId}). ${HUMAN_ACTION}`
+  return `NEEDS YOU: ${line} (https://claude.ai/code/${sessionId}). ${HUMAN_ACTION}`
+}
+
+// The platform may also push the parent a <child-session-event> turn when a child fails.
+export const FAILED_SUFFIX = ' (the harness may also have sent a child-session-event for this child; handle it once)'
+export function failedLine(line: string, bucket: string): string {
+  return bucket === 'FAILED' ? line + FAILED_SUFFIX : line
 }
 
 // Reminder line for a child still waiting: how long, and what it is waiting for.
@@ -241,38 +266,30 @@ export const LIVE_BUCKETS = new Set(['WORKING', 'NEEDS_INPUT'])
 export const CLOSABLE_BUCKETS = new Set(['COMPLETED', 'REVIEW_READY'])
 
 
-// LC-1843: a child spawned in default permission mode that calls a claude-code-remote
-// tool (report back with send_message, arm a check-in with send_later) opens a permission
-// prompt nobody is watching, and sits in NEEDS_INPUT until the orchestrator notices. Two
-// children stalled this way in one hour on 2026-10-19. Every create_session therefore
-// pre-approves the tools a child legitimately uses to talk to its parent. The platform drops
-// any entry the parent itself has not pre-approved, so this can never widen a grant.
-export const CHILD_REMOTE_TOOLS = [
-  'mcp__claude-code-remote__send_message',
-  'mcp__claude-code-remote__send_later',
-]
-
-// The pre-approval alone is not enough: probes on 2026-10-19 showed the child still prompted
-// (session_01Qdxi4smDu2NopVYu5iXfDE: the parent lacks the grant, so the platform drops it;
-// session_01TLmP2Mv2ig879JrahPF1nB: a user-settings allow written mid-session did not apply).
+// LC-1843: a child spawned in default permission mode that calls a claude-code-remote tool opens a
+// permission prompt nobody is watching and sits in NEEDS_INPUT. Probes on 2026-10-19 showed the platform
+// drops any extra_allowed_tools grant the parent does not itself hold (session_01Qdxi4smDu2NopVYu5iXfDE),
+// and a mid-session user-settings allow did not apply (session_01TLmP2Mv2ig879JrahPF1nB), so no grant is
+// attempted (LC-1917).
 // The child never NEEDS these tools: fleet-tracker already wakes the parent on every state
-// change and the parent reads the child's transcript. So every child is also told, in its
-// system prompt, not to call them and to end each turn with its result instead.
+// change and the parent reads the child's transcript. So every child is told, in its system
+// prompt, not to call them and to end each turn with its result instead.
+// One exception (LC-1917): confirm_repository_trust is not a permission prompt; it asks the owner on
+// their device, and it acts on the calling session only, so the child has to make the call itself.
 export const CHILD_NOTE =
   'Orchestrator note (fleet-tracker, LC-1843): your parent session watches your transcript and is woken ' +
   'when your state changes. Do NOT call claude-code-remote tools (send_message, send_later, create_session, ' +
   'create_trigger): in this session they open a permission prompt nobody is watching and you stall. End each ' +
-  'turn with your result in your final message (PR URL, head SHA, CI state, anything unverified).'
+  'turn with your result in your final message (PR URL, head SHA, CI state, anything unverified). ' +
+  'One exception: if a tool refusal is marked [repository_trust_required], call ' +
+  'mcp__claude-code-remote__confirm_repository_trust with that refusal\'s content_digest immediately (it asks ' +
+  'the owner on their device; it is not a permission prompt), then continue; if it records nothing, end your ' +
+  'turn with `NEEDS YOU: repository trust` and the digest.'
 
-// Returns the create_session input with CHILD_REMOTE_TOOLS merged into extra_allowed_tools
-// (caller's entries first, no duplicates) and CHILD_NOTE appended to append_system_prompt
+// Returns the create_session input with CHILD_NOTE appended to append_system_prompt
 // (after the caller's text, once).
-export function withChildTools<T extends { extra_allowed_tools?: unknown; append_system_prompt?: unknown }>(input: T): T {
-  const given = Array.isArray(input.extra_allowed_tools)
-    ? input.extra_allowed_tools.filter((t): t is string => typeof t === 'string')
-    : []
-  const merged = [...given, ...CHILD_REMOTE_TOOLS.filter(t => !given.includes(t))]
+export function withChildTools<T extends { append_system_prompt?: unknown }>(input: T): T {
   const prior = typeof input.append_system_prompt === 'string' ? input.append_system_prompt : ''
   const note = prior.includes(CHILD_NOTE) ? prior : [prior, CHILD_NOTE].filter(Boolean).join('\n\n')
-  return { ...input, extra_allowed_tools: merged, append_system_prompt: note }
+  return { ...input, append_system_prompt: note }
 }

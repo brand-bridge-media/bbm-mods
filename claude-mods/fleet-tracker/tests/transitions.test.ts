@@ -1,6 +1,6 @@
 import { expect, mock } from 'claude-code/testing'
 import { test } from './slow'
-import { decideWake, NEEDS_STAN } from '../hooks/logic'
+import { decideWake, NEEDS_OPERATOR } from '../hooks/logic'
 
 // Transition gate: which bucket changes wake the orchestrator, which flag the operator,
 // and which are suppressed. A broken gate would otherwise stay green (LC-1711 review).
@@ -48,6 +48,8 @@ test('FAILED wakes the orchestrator and flags the operator', async ($, on) => {
   const poll = await setup($, on)
   const out = await poll({ bucket: 'FAILED' })
   expect(out.prompts.length).toBe(1)
+  expect(out.prompts[0]).toContain('FAILED') // mapped from SESSION_STATUS_BUCKET_FAILED
+  expect(out.prompts[0]).toContain('(the harness may also have sent a child-session-event for this child; handle it once)')
   expect(out.toasts.join(' ')).toContain('needs you')
 })
 
@@ -145,7 +147,7 @@ test('a negated CI-wait summary still wakes', async ($, on) => {
   expect(out.prompts.length).toBe(1)
 })
 
-// BLOCKED/FAILED must wake whatever the summary says (guards the !NEEDS_STAN clause).
+// BLOCKED/FAILED must wake whatever the summary says (guards the !NEEDS_OPERATOR clause).
 for (const bucket of ['BLOCKED', 'FAILED']) {
   test(`${bucket} with CI-wait wording still wakes`, () => {
     expect(decideWake(new Map(), 's', 'WORKING', bucket, 'waiting on CI checks running').wake).toBe(true)
@@ -193,7 +195,7 @@ for (const summary of ['CI running, tests passed locally', 'READY: draft done, C
 for (const summary of [
   'READY: please review; CI still pending once rebase lands',
   'READY: draft done, CI queued until the rebase lands',
-  'NEEDS STAN: pick A or B; CI running',
+  'NEEDS YOU: pick A or B; CI running',
   'tests passed locally, CI running once rebase lands',
   'build successful, CI still pending until merge',
   'checks pending review',
@@ -243,6 +245,11 @@ test('BLOCKED/FAILED are never suppressed, even for an exact allowlisted phrase'
   }
 })
 
-test('NEEDS_STAN is the single shared set', () => {
-  expect([...NEEDS_STAN].sort()).toEqual(['BLOCKED', 'FAILED'])
+test('NEEDS_OPERATOR is the single shared set', () => {
+  expect([...NEEDS_OPERATOR].sort()).toEqual(['BLOCKED', 'FAILED'])
+})
+
+test('PROTOCOL accepts NEEDS YOU: and the legacy NEEDS STAN: (LC-1917)', () => {
+  expect(decideWake(new Map(), 's', 'WORKING', 'COMPLETED', 'NEEDS YOU: waiting on CI to pass').wake).toBe(true)
+  expect(decideWake(new Map(), 's', 'WORKING', 'COMPLETED', 'NEEDS STAN: waiting on CI to pass').wake).toBe(true)
 })

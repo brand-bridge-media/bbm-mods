@@ -517,7 +517,7 @@ export const register: Register = on => {
       await refreshFleet($).catch(err => logFailure($, 'fleet read', err))
       const l = await read($, ledger)
       const list = unmet(l)
-      const wrap = /\b(done|merged|shipped|wrapp?(?:ing|ed)(?: it)? up|all set|closing|handoff|READY:|NEEDS STAN:)/i.test(String(e.answer ?? ''))
+      const wrap = /\b(done|merged|shipped|wrapp?(?:ing|ed)(?: it)? up|all set|closing|handoff|READY:|NEEDS YOU:|NEEDS STAN:)/i.test(String(e.answer ?? ''))
       if (list.length === 0) {
         $.ui.status(undefined)
         // Nothing unmet, but a wrap-up turn still lists what the mods did this session.

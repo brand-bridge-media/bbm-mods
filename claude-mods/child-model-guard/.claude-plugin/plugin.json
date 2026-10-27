@@ -1,0 +1,8 @@
+{
+  "name": "child-model-guard",
+  "version": "0.1.0",
+  "description": "A create_session call must name its model: denies a missing or empty model, asks before a top-tier (opus/fable) child unless the brief names a design judgment.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

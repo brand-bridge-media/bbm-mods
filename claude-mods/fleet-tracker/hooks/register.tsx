@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 
 import type { FleetRow } from '../types'
 import {
-  childIdOf, CLOSABLE_BUCKETS, closeoutLine, decideCloseout, decideStall, decideWaitingReminder, decideWake, ESCALATE_MS, humanWrap, newestActivity, NEEDS_STAN,
+  childIdOf, CLOSABLE_BUCKETS, closeoutLine, decideCloseout, decideStall, decideWaitingReminder, decideWake, ESCALATE_MS, failedLine, humanWrap, newestActivity, NEEDS_OPERATOR,
   NUDGE_TEXT, STALL_MS, ticketOf, WAITING_BUCKETS, waitingLine, withChildTools,
 } from './logic'
 
@@ -115,14 +115,14 @@ async function poll($: any): Promise<FleetRow[]> {
           checkedAt: now,
           error: '',
           // A manual needs-you note sticks until cleared; a bucket flag tracks the bucket.
-          needsYou: NEEDS_STAN.has(bucket) || (row.needsYou && row.note !== ''),
+          needsYou: NEEDS_OPERATOR.has(bucket) || (row.needsYou && row.note !== ''),
         }
         const { wake, holdPrevBucket } = decideWake(lastWoken, row.sessionId, row.bucket, bucket, fresh.summary)
         if (holdPrevBucket) fresh.bucket = row.bucket
         if (wake) {
           const entry = `${row.ticket} (${row.label}) ${row.bucket || 'NEW'} -> ${bucket}: ${fresh.summary}`
           wakes.push(
-            WAITING_BUCKETS.has(bucket) ? humanWrap(entry, row.sessionId, needsAction, fresh.statusDetail ?? '') : entry,
+            WAITING_BUCKETS.has(bucket) ? humanWrap(entry, row.sessionId, needsAction, fresh.statusDetail ?? '') : failedLine(entry, bucket),
           )
         }
         if (fresh.needsYou && !row.needsYou) stanToasts.push(`${row.ticket} needs you: ${bucket}`)
@@ -236,7 +236,7 @@ async function poll($: any): Promise<FleetRow[]> {
         ticket: cur.ticket,
         label: cur.label,
         note: cur.note,
-        needsYou: NEEDS_STAN.has(p.bucket) || (cur.needsYou && cur.note !== ''),
+        needsYou: NEEDS_OPERATOR.has(p.bucket) || (cur.needsYou && cur.note !== ''),
       }
     }),
   )
