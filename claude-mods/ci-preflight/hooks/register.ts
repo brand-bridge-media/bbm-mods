@@ -1,7 +1,8 @@
 import type { Register } from 'claude-code'
 
 import {
-  PREFLIGHT_TIMEOUT_MS, decidePush, decideUpdateBranch, hasSkip, nudgeFor, parseCheckRuns, parsePushes, remember,
+  PREFLIGHT_TIMEOUT_MS, bodyFromGet, decidePush, decideUpdateBranch, hasSkip, nudgeFor, parseCheckRuns, parsePushes,
+  parseRemote, pickOpenPr, remember,
 } from './logic'
 import type { Push, PreflightRun } from './logic'
 
@@ -33,13 +34,57 @@ async function repoTop($: any, p: Push): Promise<string | undefined> {
   } catch { return undefined }
 }
 
-async function runPreflight($: any, p: Push, top: string | undefined): Promise<PreflightRun> {
+// The GitHub connector is named differently across sessions; try each.
+const GITHUB_SERVERS = ['github', 'GitHub_Custom']
+const BODY_FILE = 'ci-preflight-pr-body.md'
+
+/**
+ * LCH-582: write the branch's open PR body where preflight.sh can read it (inside the git dir, so it never
+ * shows up as a change) and return the path. Any miss (no remote, no PR, connector down) returns undefined
+ * and preflight runs without overrides, exactly as before: this can only turn a false block into a pass.
+ */
+async function prBodyFile($: any, p: Push, top: string): Promise<{ path: string; pr: number } | undefined> {
+  try {
+    const branch = await branchOf($, p, top)
+    if (!branch || branch === 'HEAD') return undefined
+    const remote = await $.process.run(['git', '-C', top, 'remote', 'get-url', 'origin'], { timeoutMs: 10_000 })
+    const where = remote.exitCode === 0 ? parseRemote(String(remote.stdout ?? '')) : undefined
+    if (!where) return undefined
+    let pr: { number: number; body?: string } | undefined
+    for (const server of GITHUB_SERVERS) {
+      try {
+        const r = await $.mcp.call(server, 'list_pull_requests', {
+          owner: where.owner, repo: where.repo, head: `${where.owner}:${branch}`, state: 'open', perPage: 10,
+        })
+        if (r.isError) continue
+        pr = pickOpenPr(textOf(r), branch)
+        if (pr && pr.body === undefined) {
+          const g = await $.mcp.call(server, 'pull_request_read', { method: 'get', owner: where.owner, repo: where.repo, pullNumber: pr.number })
+          pr = { number: pr.number, body: g.isError ? undefined : bodyFromGet(textOf(g)) }
+        }
+        break
+      } catch { /* try the next connector name */ }
+    }
+    if (!pr?.body) return undefined
+    const gitDir = await $.process.run(['git', '-C', top, 'rev-parse', '--absolute-git-dir'], { timeoutMs: 10_000 })
+    const dir = String(gitDir.stdout ?? '').trim()
+    if (gitDir.exitCode !== 0 || !dir) return undefined
+    const path = `${dir}/${BODY_FILE}`
+    const w = await $.process.run(['sh', '-c', 'printf "%s" "$1" > "$2"', 'sh', pr.body, path], { timeoutMs: 10_000 })
+    return w.exitCode === 0 ? { path, pr: pr.number } : undefined
+  } catch { return undefined }
+}
+
+async function runPreflight($: any, p: Push, top: string | undefined, notes: string[]): Promise<PreflightRun> {
   if (p.isDirUnresolved) return { kind: 'unresolved-dir' }
   // Other repos get this mod through the bbm-mods mirror; only a repo that carries the script is checked.
   if (!top || !(await $.fs.exists(`${top}/${SCRIPT}`))) return { kind: 'not-applicable' }
+  const body = await prBodyFile($, p, top)
+  if (body) notes.push(`schema-drift overrides read from the body of PR #${body.pr}.`)
   const started = await $.clock.now()
   try {
-    const r = await $.process.run(['bash', `${top}/${SCRIPT}`, top, 'origin/main'], { cwd: top, timeoutMs: PREFLIGHT_TIMEOUT_MS })
+    const argv = ['bash', `${top}/${SCRIPT}`, top, 'origin/main', ...(body ? [body.path] : [])]
+    const r = await $.process.run(argv, { cwd: top, timeoutMs: PREFLIGHT_TIMEOUT_MS })
     return { kind: 'exit', code: r.exitCode, output: `${r.stdout ?? ''}${r.stderr ? '\n' + r.stderr : ''}` }
   } catch (x) {
     const message = x instanceof Error ? x.message : String(x)
@@ -76,10 +121,11 @@ export const register: Register = on => {
       seen.add(key)
       const top = await repoTop($, p)
       targets.push({ p, top })
-      const run: PreflightRun = isSkip ? { kind: 'skipped' } : await runPreflight($, p, top)
+      const bodyNotes: string[] = []
+      const run: PreflightRun = isSkip ? { kind: 'skipped' } : await runPreflight($, p, top, bodyNotes)
       const d = decidePush(run)
       if (d.deny !== undefined) return { deny: say($, d.deny, d.toast) }
-      for (const c of d.context ?? []) notes.push(say($, c, undefined, d.isQuiet))
+      for (const c of [...bodyNotes, ...(d.context ?? [])]) notes.push(say($, c, undefined, d.isQuiet))
     }
 
     const ran = await next(e)

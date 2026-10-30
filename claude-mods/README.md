@@ -150,13 +150,14 @@ Known limits (measured on the three real cases, not guessed):
 Why: CI runs ~19 checks per push on a CPU-bound VPS; on 2026-10-19 schema-drift-check failed twice (#1833, #1834)
 and each failure cost a full round, though the check takes seconds locally.
 
-- **`scripts/ci/preflight.sh [repo_root] [base_ref]`** also runs by hand. It diffs HEAD against the merge base and runs only the
+- **`scripts/ci/preflight.sh [repo_root] [base_ref] [pr_body_file]`** also runs by hand. It diffs HEAD against the merge base and runs only the
   checks the changed files call for: **schema-drift** (added/renamed migrations; the exact guardrails G4 `extract` / grep / `judge`
   logic, using `scripts/ci/vendor/schema_drift.py` from bbm-guardrails `1b01cd8`, which must be re-copied when guardrails changes it),
   **operations-portal** (`lib/data/*.selftest.mjs`; `tsc --noEmit` only when `node_modules` exists), **migrations**
   (`lint_function_grants`, `lint_table_domains`), **workflows** (`bump_action_pins --check`, `runner_lane --check`).
   Exit `0` all pass, `1` any FAIL, `2` nothing failed but something is NOT CHECKED (never counted as a pass).
-  Known differences from CI: PR-body "by design" overrides are not seen unless `PREFLIGHT_PR_BODY_FILE` is set; CI checks the PR
+  Known differences from CI: PR-body "by design" overrides are seen only when a body file is given (the push hook passes the open
+  PR's body, below; by hand, the third argument or `PREFLIGHT_PR_BODY_FILE`); CI checks the PR
   merge ref and this reads HEAD (a branch behind main can fail here and pass there). Parity measured at `abee088f`
   (LC-1836 actions tab): the same 13 columns fail locally as in CI run 39309354157.
 - **Push hook** (`tool.call` on Bash): a `git push` (also `git -C dir push`, `cd dir && git push`, inside `bash -c`) runs the script
@@ -164,6 +165,11 @@ and each failure cost a full round, though the check takes seconds locally.
   NOT CHECKED warning; a timeout or crash allows with a NOT CHECKED warning; 0 allows quietly. `--dry-run`, `--delete` and
   `git push origin :branch` are not pushes. Matching is on parsed commands, so `echo "git push"` and a commit message naming a push
   do not match; `$(...)`, aliases and scripts that push are not seen (fails open). A repo without `scripts/ci/preflight.sh` is left alone.
+  **PR body (LCH-582):** before running, the hook looks up the branch's one open PR through the GitHub connector (`github`, then
+  `GitHub_Custom`), writes its body to `<git dir>/ci-preflight-pr-body.md` and passes it as the third argument, so a column declared
+  "read-only/write-only by design" in the PR body passes locally as it does in CI. No PR, two PRs, no remote or a connector failure
+  runs the script without a body, as before. A deny says that nothing in the command ran, so a chained `git commit ... && git push`
+  did not commit either.
   **Bypass for a real emergency:** put `PREFLIGHT_SKIP=1` in the command; the push is allowed with a note.
 - **Update-branch guard** (`update_pull_request_branch` on the `github` and `GitHub_Custom` servers): reads the PR's check runs and
   denies while any is failing or still queued/in progress (CLAUDE.md section 5: update once, when otherwise green). Advisory-strength:

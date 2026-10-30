@@ -174,6 +174,52 @@ export type Decision = { deny?: string; context?: string[]; toast?: string; isQu
 export const BYPASS_LINE =
   'Real emergency only: put PREFLIGHT_SKIP=1 in the command (PREFLIGHT_SKIP=1 git push ...) to push anyway; it is allowed with a note, and CI then runs every check.'
 
+/** LCH-582: a denied Bash call never runs at all, so a `git commit ... && git push` loses the commit too. */
+export const NOTHING_RAN_LINE =
+  'NOTHING in this command ran: if it also committed (git commit ... && git push), that commit was NOT made either. Re-run the commit on its own.'
+
+// ---------------------------------------------------------------------------------------------
+// LCH-582: the open PR's body carries schema-drift "read-only by design" / "write-only by design"
+// overrides that CI's drift check reads. Before this, the mod ran preflight without it, so a valid
+// declared column was blocked locally and passed in CI. These pure helpers find that body.
+
+/** owner/repo from a git remote URL (https, ssh, or a proxy path ending in /owner/repo[.git]). */
+export function parseRemote(url: string): { owner: string; repo: string } | undefined {
+  const m = url.trim().match(/[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/)
+  if (!m || !m[1] || !m[2] || m[1] === '.' || m[2] === '.') return undefined
+  return { owner: m[1], repo: m[2] }
+}
+
+export type OpenPr = { number: number; body?: string }
+
+/**
+ * The open PR whose head branch is `branch`, from a list_pull_requests answer (a JSON array, or an
+ * object holding one). Exactly one match or nothing: two open PRs from one branch is ambiguous, and
+ * guessing would apply the wrong PR's overrides.
+ */
+export function pickOpenPr(text: string, branch: string): OpenPr | undefined {
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { return undefined }
+  const list = Array.isArray(parsed) ? parsed
+    : parsed && typeof parsed === 'object'
+      ? (Object.values(parsed as Record<string, unknown>).find(Array.isArray) as unknown[] | undefined) ?? []
+      : []
+  const hits = list.filter((x): x is Record<string, any> =>
+    !!x && typeof x === 'object' && (x as any).head?.ref === branch && ((x as any).state ?? 'open') === 'open'
+    && Number.isInteger((x as any).number))
+  if (hits.length !== 1) return undefined
+  const pr = hits[0]!
+  return { number: pr.number, body: typeof pr.body === 'string' ? pr.body : undefined }
+}
+
+/** The body from a pull_request_read `get` answer, or undefined. */
+export function bodyFromGet(text: string): string | undefined {
+  try {
+    const b = (JSON.parse(text) as { body?: unknown }).body
+    return typeof b === 'string' ? b : undefined
+  } catch { return undefined }
+}
+
 /** Keeps a long summary readable: head, a marker, and the tail (the pass/fail count line). */
 export function trimLines(text: string, max = MAX_DENY_LINES): string {
   const lines = text.replace(/\s+$/, '').split('\n')
@@ -204,7 +250,7 @@ export function decidePush(run: PreflightRun): Decision {
       if (run.code === 1) {
         return {
           deny: `push blocked, preflight FAILED (each failed CI round costs ~19 checks on a CPU-bound runner). Fix, commit, push again.\n` +
-            `${trimLines(run.output)}\n${BYPASS_LINE}`,
+            `${NOTHING_RAN_LINE}\n${trimLines(run.output)}\n${BYPASS_LINE}`,
           toast: 'push blocked: preflight failed (see the session for the summary)',
         }
       }
