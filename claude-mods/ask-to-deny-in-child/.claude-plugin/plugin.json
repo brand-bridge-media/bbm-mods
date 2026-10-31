@@ -1,0 +1,8 @@
+{
+  "name": "ask-to-deny-in-child",
+  "version": "0.1.0",
+  "description": "In a cloud session another session created (parent_session_id set), a permission prompt (including an ask returned by another mod) becomes a deny: no human can answer it. Unreadable signal = leave the prompt alone.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
