@@ -80,6 +80,11 @@
       "description": "Blocks a turn's end once when the reply's last line is not `Noted separately: <keys>` / `Nothing`, or names a ticket no Jira call touched."
     },
     {
+      "name": "investigation-log",
+      "source": "./claude-mods/investigation-log",
+      "description": "Blocks a turn's end once when the session read page-level analytics 3+ times (GSC page tables, rank watch, SERP tools, live page fetches) but logged no page investigation."
+    },
+    {
       "name": "knowledge-superseded-check",
       "source": "./claude-mods/knowledge-superseded-check",
       "description": "After a read of knowledge_memories / knowledge_articles, names superseded rows and their replacements, and nudges a query that skips is_active / superseded_by."

@@ -1,0 +1,8 @@
+{
+  "name": "investigation-log",
+  "version": "0.1.0",
+  "description": "Blocks a turn's end once when the session read page-level analytics 3+ times (GSC page tables, rank watch, SERP tools, live page fetches) but logged no page investigation.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
