@@ -65,6 +65,11 @@
       "description": "Asks the operator before any tool that moves money, spends a balance or deletes something a session cannot restore (Stripe, PayPal, QuickBooks, link carts, Roominate, Airtable/Notion/Drive/GitHub/Cloudflare/Supabase deletes)."
     },
     {
+      "name": "no-ask-in-child",
+      "source": "./claude-mods/no-ask-in-child",
+      "description": "Denies AskUserQuestion in a cloud session another session created (parent_session_id set): no human is watching it. Unreadable signal = allow."
+    },
+    {
       "name": "no-browser-as-me",
       "source": "./claude-mods/no-browser-as-me",
       "description": "Refuses driving the operator's own browser or desktop: the chrome-browser / computer-use skills and any Chrome or computer-use MCP server."

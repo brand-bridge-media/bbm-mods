@@ -1,0 +1,8 @@
+{
+  "name": "no-ask-in-child",
+  "version": "0.1.0",
+  "description": "Denies AskUserQuestion in a cloud session another session created (parent_session_id set): no human is watching it. Unreadable signal = allow.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
