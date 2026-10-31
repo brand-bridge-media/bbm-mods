@@ -23,9 +23,20 @@ COUNTED as a page-level read (one count per call):
 NOT counted: reads of the investigation-log tables/view themselves, and writes
 (INSERT/UPDATE/DELETE...), so a data-only session never fires it.
 
-WHY IT CANNOT TRAP A SESSION. (1) Claude Code sets stop_hook_active on the stop after
-a block; the check passes then. (2) A per-session marker file means a later turn in the
-same session passes too. (3) It fails open on any error.
+WHY IT CANNOT TRAP A SESSION. (1) The mod's own per-session marker file (plus the MARK
+callout in the transcript when the marker cannot be written) means it blocks at most once
+per session. (2) It fails open on any error.
+
+`stop_hook_active` is NOT trusted as "I already fired" (LC-1962 follow-up): Claude Code
+sets it after a block from ANY Stop hook, so another mod's block made this one pass
+without ever firing. It is only recorded in the receipt. Worst case accepted: two
+different block messages in a row in one session, never two from this mod.
+
+RECEIPT. Every invocation appends one line to ~/.investigation-log-runs.log (override:
+INVESTIGATION_LOG_RECEIPT), skips and errors included, so "did it run?" is answerable:
+  <UTC ISO time> session=<id> active=<stop_hook_active> reads=<n> kinds=<k:n,...>
+  log_call=<true|false> marker=<true|false> decision=<block|allow|skip:<why>|error:<msg>>
+A receipt-write failure is swallowed; the file is trimmed to its last 2000 lines past 5000.
 
 Self-test: python3 investigation-log.py --selftest
 """
@@ -45,7 +56,8 @@ MAX_SCAN = 20000  # chars of a query that are read; page-level reads are short, 
 OWNER_SKILL = "analytics-reporting"
 MARK = "[mod:investigation-log]"
 
-_LOG_CALL = re.compile(r"\b(?:log|update)_page_investigation\s*\(", re.I)
+# Optional closing double quote: `public."log_page_investigation"(` is a real call too.
+_LOG_CALL = re.compile(r"\b(?:log|update)_page_investigation\"?\s*\(", re.I)
 _OWN_TABLES = re.compile(r"\b(?:page_investigations|page_investigation_hypotheses|v_page_timeline)\b", re.I)
 _WRITE = re.compile(r"^\s*(?:insert|update|delete|merge|truncate|create|alter|drop|grant|revoke|copy|call|do)\b", re.I)
 _DML = re.compile(r"\b(?:insert\s+into|delete\s+from|merge\s+into|update\s+[\w.\"]+\s+set|truncate\s+table)\b", re.I)
@@ -131,9 +143,13 @@ def _marker(sid: str) -> str:
     return os.path.join(_state_dir(), re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:120])
 
 
-def already_fired(payload: dict, rows: list[dict]) -> bool:
+def marker_present(payload: dict) -> bool:
     sid = payload.get("session_id")
-    if isinstance(sid, str) and sid and os.path.exists(_marker(sid)):
+    return isinstance(sid, str) and bool(sid) and os.path.exists(_marker(sid))
+
+
+def already_fired(payload: dict, rows: list[dict]) -> bool:
+    if marker_present(payload):
         return True
     # Backup when the marker cannot be written: the block's feedback shows up as a
     # prompt-type row (never a tool result) carrying our callout.
@@ -151,25 +167,75 @@ def remember(payload: dict) -> None:
         os.makedirs(_state_dir(), exist_ok=True)
         open(_marker(sid), "w").close()
     except OSError:
-        pass  # the transcript check and stop_hook_active still bound it
+        pass  # the transcript check still bounds it
+
+
+RECEIPT_TRIM_AT = 5000
+RECEIPT_KEEP = 2000
+
+
+def _receipt_path() -> str:
+    return os.environ.get("INVESTIGATION_LOG_RECEIPT") or os.path.join(os.path.expanduser("~"), ".investigation-log-runs.log")
+
+
+def write_receipt(info: dict) -> None:
+    """Append one line per run. Never raises: a receipt must not change a verdict."""
+    try:
+        import datetime
+        kinds = ",".join(f"{k}:{v}" for k, v in info.get("kinds", {}).items()) or "-"
+        line = " ".join([
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            f"session={info.get('session') or '-'}",
+            f"active={info.get('active')}",
+            f"reads={info.get('reads', 0)}",
+            f"kinds={kinds}",
+            f"log_call={str(bool(info.get('log_call'))).lower()}",
+            f"marker={str(bool(info.get('marker'))).lower()}",
+            f"decision={' '.join(str(info.get('decision', 'error:unknown')).split())[:200]}",
+        ])
+        path = _receipt_path()
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+        if len(lines) > RECEIPT_TRIM_AT:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.writelines(lines[-RECEIPT_KEEP:])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def decide(payload: dict) -> tuple[str | None, dict]:
+    """(block reason or None, receipt info). stop_hook_active is recorded, never trusted."""
+    info: dict = {"session": payload.get("session_id") if isinstance(payload.get("session_id"), str) else None,
+                  "active": payload.get("stop_hook_active"), "marker": marker_present(payload), "decision": "skip:no-transcript"}
+    rows = tr.rows_for(payload)
+    found = reads(rows)
+    info["reads"] = len(found)
+    info["kinds"] = dict(collections.Counter(found))
+    info["log_call"] = logged(rows)
+    if len(found) < THRESHOLD:
+        info["decision"] = "skip:below-threshold" if rows else "skip:no-transcript"
+        return None, info
+    if info["log_call"]:
+        info["decision"] = "allow"
+        return None, info
+    if already_fired(payload, rows):
+        info["decision"] = "allow"
+        return None, info
+    counts = collections.Counter(found)
+    short = ", ".join(f"{k} x{v}" if v > 1 else k for k, v in counts.most_common(4))
+    remember(payload)
+    info["decision"] = "block"
+    return (f"{MARK} This session analysed page performance ({len(found)} reads: {short}) but logged no "
+            f"investigation. Log it with log_page_investigation (owner skill: {OWNER_SKILL}), add to an open "
+            "one with update_page_investigation, or say in one line why this was not an investigation "
+            "(e.g. a one-off number lookup)."), info
 
 
 def evaluate(payload: dict) -> str | None:
     """Block reason, or None to let the turn end."""
-    active = payload.get("stop_hook_active")
-    if active is True or (isinstance(active, str) and active.strip().lower() in ("true", "1", "yes")):
-        return None
-    rows = tr.rows_for(payload)
-    found = reads(rows)
-    if len(found) < THRESHOLD or logged(rows) or already_fired(payload, rows):
-        return None
-    counts = collections.Counter(found)
-    short = ", ".join(f"{k} x{v}" if v > 1 else k for k, v in counts.most_common(4))
-    remember(payload)
-    return (f"{MARK} This session analysed page performance ({len(found)} reads: {short}) but logged no "
-            f"investigation. Log it with log_page_investigation (owner skill: {OWNER_SKILL}), add to an open "
-            "one with update_page_investigation, or say in one line why this was not an investigation "
-            "(e.g. a one-off number lookup).")
+    return decide(payload)[0]
 
 
 def _selftest() -> int:
@@ -187,6 +253,8 @@ def _selftest() -> int:
 
     state = tempfile.mkdtemp()
     os.environ["INVESTIGATION_LOG_STATE_DIR"] = state
+    receipt = os.path.join(state, "runs.log")
+    os.environ["INVESTIGATION_LOG_RECEIPT"] = receipt
     SQL = "mcp__Supabase__execute_sql"
 
     def call(name: str, **inp) -> tuple[str, dict]:
@@ -235,7 +303,8 @@ def _selftest() -> int:
     ck(run([R1, R2, R3, R4], "once") is not None, "first stop of a session fires")
     ck(run([R1, R2, R3, R4], "once") is None, "second stop of the same session passes (marker)")
     ck(run([R1, R2, R3], "other-session") is not None, "a different session still fires")
-    ck(run([R1, R2, R3], "x", stop_hook_active=True) is None, "stop_hook_active always passes")
+    ck(run([R1, R2, R3], "x", stop_hook_active=True) is not None, "stop_hook_active=true with no marker and 3 reads still blocks")
+    ck(run([R1, R2, R3], "x", stop_hook_active=True) is None, "stop_hook_active=true with the marker present allows")
     fb = {"type": "user", "message": {"content": MARK + " earlier block feedback"}}
     ck(run([R1, R2, R3], "no-marker", extra=[fb]) is None, "feedback row in transcript also means already fired")
     quoted = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t0", "content": MARK}]}}
@@ -259,7 +328,7 @@ def _selftest() -> int:
     OPENC = call(SQL, query="select /* log_page_investigation(")
     ck(run([R1, R2, R3, OPENC], "open-comment") is not None, "an unterminated block comment is not a log call")
     ck(run([R1, R2, R3], "str-false", stop_hook_active="false") is not None, 'stop_hook_active "false" (string) is not active')
-    ck(run([R1, R2, R3], "str-true", stop_hook_active="true") is None, 'stop_hook_active "true" (string) is active')
+    ck(run([R1, R2, R3], "str-true", stop_hook_active="true") is not None, 'stop_hook_active "true" (string) does not suppress')
     OWNLIT = call(SQL, query="select page, clicks from gsc_page_daily where note = 'page_investigations'")
     ck(run([OWNLIT, OWNLIT, OWNLIT], "ownlit") is not None, "a log-table name only inside a literal does not hide a real read")
     OWNREAL = call(SQL, query="select * from gsc_page_daily g join page_investigations p on true")
@@ -307,6 +376,58 @@ def _selftest() -> int:
     ck(evaluate({"transcript_rows": side, "session_id": "side2"}) is None, "subagent (sidechain) reads are not counted")
     ck(evaluate({}) is None, "no transcript -> pass")
 
+    # quoted function names are real log calls; a quoted name inside a literal is not
+    QL = call(SQL, query='select public."log_page_investigation"(\'{}\'::jsonb)')
+    QU = call(SQL, query='select "update_page_investigation"(\'00000000-0000-0000-0000-000000000000\', \'{}\'::jsonb)')
+    ck(run([R1, R2, R3, QL], "q-log") is None, 'public."log_page_investigation"( counts as a log call')
+    ck(run([R1, R2, R3, QU], "q-upd") is None, '"update_page_investigation"( counts as a log call')
+    QLIT = call(SQL, query="select '\"log_page_investigation\"(' as note")
+    ck(run([R1, R2, R3, QLIT], "q-lit") is not None, "a quoted name inside a string literal is not a log call")
+
+    # receipts: one line per invocation, whatever the decision; failures swallowed
+    def lines() -> list[str]:
+        return open(receipt).read().splitlines() if os.path.exists(receipt) else []
+
+    def proc(stdin: str, env_extra=None):
+        return subprocess.run([sys.executable, os.path.abspath(__file__)], input=stdin, capture_output=True, text=True,
+                              env={**os.environ, **(env_extra or {})})
+
+    def sub(calls, sid, **more):
+        p = transcript(calls)
+        try:
+            return proc(json.dumps({"transcript_path": p, "session_id": sid, **more}))
+        finally:
+            os.unlink(p)
+
+    if os.path.exists(receipt):
+        os.unlink(receipt)
+    sub([R1, R2, R3], "rc-block", stop_hook_active=True)
+    sub([R1, R2, R3], "rc-block")            # marker now present -> allow
+    sub([R1], "rc-skip")
+    proc("{bad")
+    L = lines()
+    ck(len(L) == 4, f"one receipt line per invocation (got {len(L)})")
+    ck(len(L) == 4 and "session=rc-block" in L[0] and "active=True" in L[0] and "reads=3" in L[0] and "gsc_page_daily:1" in L[0]
+       and "log_call=false" in L[0] and "marker=false" in L[0] and L[0].endswith("decision=block"), "block receipt line")
+    ck(len(L) == 4 and "marker=true" in L[1] and L[1].endswith("decision=allow"), "allow receipt line")
+    ck(len(L) == 4 and "reads=1" in L[2] and L[2].endswith("decision=skip:below-threshold"), "skip receipt line")
+    ck(len(L) == 4 and "decision=error:" in L[3], "error receipt line")
+    # a receipt-write failure never blocks, crashes or changes the verdict
+    bad = proc(json.dumps({"session_id": "x"}), {"INVESTIGATION_LOG_RECEIPT": os.path.join(state, "no", "such", "dir", "r.log")})
+    ck(bad.returncode == 0 and bad.stdout == "", "receipt-write failure is swallowed (allow path)")
+    p = transcript([R1, R2, R3])
+    try:
+        bad = proc(json.dumps({"transcript_path": p, "session_id": "rc-fail"}), {"INVESTIGATION_LOG_RECEIPT": os.path.join(state, "no", "dir", "r.log")})
+    finally:
+        os.unlink(p)
+    ck(bad.returncode == 0 and json.loads(bad.stdout)["decision"] == "block", "receipt-write failure is swallowed (block still emitted)")
+    # trimming: over 5000 lines -> last 2000
+    with open(receipt, "w") as fh:
+        fh.write("old\n" * (RECEIPT_TRIM_AT + 1))
+    write_receipt({"decision": "allow", "session": "trim"})
+    L = lines()
+    ck(len(L) == RECEIPT_KEEP and "session=trim" in L[-1], "receipt file is trimmed to the last 2000 lines")
+
     # process level: block JSON on stdout, junk fails open and visible
     p = transcript([R1, R2, R3])
     try:
@@ -326,13 +447,17 @@ def _selftest() -> int:
 def main() -> int:
     if "--selftest" in sys.argv:
         return _selftest()
+    info: dict = {"decision": "error:unknown"}
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
-        reason = evaluate(payload if isinstance(payload, dict) else {})
+        reason, info = decide(payload if isinstance(payload, dict) else {})
     except Exception as e:  # noqa: BLE001
+        info["decision"] = f"error:{type(e).__name__}: {e}"
+        write_receipt(info)
         sys.stderr.write(f"investigation-log: could not evaluate ({e}); letting the turn end.\n")
         return 1
+    write_receipt(info)
     if reason:
         json.dump({"decision": "block", "reason": reason}, sys.stdout)
         sys.stdout.write("\n")
