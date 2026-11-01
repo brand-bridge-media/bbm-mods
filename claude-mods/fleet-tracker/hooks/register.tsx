@@ -6,6 +6,8 @@ import {
   childIdOf, CLOSABLE_BUCKETS, closeoutLine, decideCloseout, decideStall, decideWaitingReminder, decideWake, ESCALATE_MS, failedLine, humanWrap, newestActivity, NEEDS_OPERATOR,
   NUDGE_TEXT, STALL_MS, ticketOf, WAITING_BUCKETS, waitingLine, withChildTools,
 } from './logic'
+import { AWAIT_CHECK_MS, decideAwait, IDLE_BUCKETS, mergeAwaits, parseAwaits, prState, runState, waitingOn } from './awaits'
+import type { Await, ItemState } from './awaits'
 
 // Fleet tracker: one line per cloud session the orchestrator spins up.
 // Why it exists: a child session's report back to its parent is not reliable
@@ -31,6 +33,7 @@ function say($: any, reason: string, toast = true): string {
 
 const PANE = 'fleet'
 const SERVER = 'claude-code-remote'
+const GITHUB = 'github'
 const POLL_MS = 90_000
 const STORE_KEY = 'rows'
 
@@ -76,6 +79,25 @@ async function mutate($: any, fn: (cur: FleetRow[]) => FleetRow[]): Promise<Flee
   await update($, rows, (cur: FleetRow[]) => (out = fn(cur)))
   await $.store.set(STORE_KEY, out)
   return out
+}
+
+// LC-1975 fix 4: the state of one awaited item, read by the orchestrator itself. null = could not tell.
+async function itemState($: any, a: Await): Promise<ItemState> {
+  try {
+    if (a.kind === 'pr') {
+      const get = await $.mcp.call(GITHUB, 'pull_request_read', { method: 'get', owner: a.owner, repo: a.repo, pullNumber: a.number })
+      if (get.isError) return null
+      const first = prState(textOf(get), undefined, !!a.untilMerge)
+      if (first && first.done) return first
+      const runs = await $.mcp.call(GITHUB, 'pull_request_read', { method: 'get_check_runs', owner: a.owner, repo: a.repo, pullNumber: a.number, perPage: 100 })
+      return runs.isError ? null : prState(textOf(get), textOf(runs), !!a.untilMerge)
+    }
+    if (a.kind === 'run') {
+      const r = await $.mcp.call(GITHUB, 'actions_list', { method: 'list_workflow_runs', owner: a.owner, repo: a.repo, resource_id: a.workflow, perPage: 20 })
+      return r.isError ? null : runState(textOf(r), a.since)
+    }
+  } catch { /* unknown */ }
+  return null // a bridge dispatch runs in a repo this session cannot read: shown, never judged
 }
 
 // One poll: refresh every row from get_session, then react to transitions.
@@ -214,6 +236,30 @@ async function poll($: any): Promise<FleetRow[]> {
         const final = stallOf.get(row.sessionId)!
         fresh.nudgedAt = final.nudgedAt
         fresh.stallEscalated = final.escalated
+
+        // LC-1975 fix 4: what the child waits on. Re-read its transcript only when it changed (updated_at),
+        // and check each item only while the child is idle, at most every AWAIT_CHECK_MS.
+        try {
+          // Only a child idle on two polls in a row costs a transcript read: a working fleet costs no extra call.
+          if (IDLE_BUCKETS.has(fresh.bucket) && IDLE_BUCKETS.has(row.bucket) && fresh.updatedAt && fresh.updatedAt !== row.awaitsScannedAt) {
+            const ev = await $.mcp.call(SERVER, 'list_events', { session_id: row.sessionId, kinds: ['user'], limit: 100 })
+            if (!ev.isError) {
+              fresh.awaits = mergeAwaits(row.awaits ?? [], parseAwaits(textOf(ev)))
+              fresh.awaitsScannedAt = fresh.updatedAt
+            }
+          }
+          if (IDLE_BUCKETS.has(fresh.bucket) && fresh.awaits?.length) {
+            const childLast = Math.max(Date.parse(fresh.updatedAt) || 0, Date.parse(fresh.lastActivity ?? '') || 0)
+            const next: Await[] = []
+            for (const a of fresh.awaits) {
+              if (a.woke || a.kind === 'dispatch' || now - (a.checkedAt ?? 0) < AWAIT_CHECK_MS) { next.push(a); continue }
+              const d = decideAwait(a, await itemState($, a), fresh.bucket, childLast, now)
+              next.push(d.item)
+              if (d.wake) wakes.push(`${row.ticket} (${row.label}) AWAITED THING FINISHED: ${d.wake}`)
+            }
+            fresh.awaits = next
+          }
+        } catch { /* the waiting-on check never fails a poll */ }
         return fresh
       } catch (err) {
         // A failed poll is evidence about the poll, not the session: show it, don't flag the operator.
@@ -328,7 +374,7 @@ function render(list: FleetRow[], now: number): string {
         .map(
           r =>
             `${r.needsYou ? '!!' : '  '} ${r.ticket.padEnd(9)} ${shown(r).padEnd(12)} $${r.costUsd.toFixed(2)} ` +
-            `${ago(r.updatedAt, now)}  ${r.label}${r.note ? ` | ${r.note}` : ''}${r.error ? ` | poll error: ${r.error}` : ''}`,
+            `${ago(r.updatedAt, now)}  ${r.label}${r.note ? ` | ${r.note}` : ''}${waitingOn(r.awaits) ? ` | ${waitingOn(r.awaits)}` : ''}${r.error ? ` | poll error: ${r.error}` : ''}`,
         )
         .join('\n')
 }
@@ -566,6 +612,7 @@ export const register: Register = on => {
             </Text>
             <Text dimColor wrap="truncate-end">  {r.label}{r.summary ? ` — ${r.summary}` : ''}</Text>
             {r.note ? <Text color={r.needsYou ? 'warning' : 'subtle'} wrap="wrap">  {r.note}</Text> : null}
+            {waitingOn(r.awaits) ? <Text color="subtle" wrap="truncate-end">  {waitingOn(r.awaits)}</Text> : null}
             {r.error ? <Text color="warning" wrap="truncate-end">  poll error: {r.error}</Text> : null}
           </Box>
         ))}
