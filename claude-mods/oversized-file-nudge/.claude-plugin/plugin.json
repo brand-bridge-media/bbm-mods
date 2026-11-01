@@ -1,0 +1,8 @@
+{
+  "name": "oversized-file-nudge",
+  "version": "0.1.0",
+  "description": "Advisory only, never denies: on an Edit/Write to a source file already over 1,500 lines, reminds the session of the strangler rule (extract the touched job into its own module instead of growing the file) and names the ticket tracking the split (LC-1983).",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

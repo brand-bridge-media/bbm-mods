@@ -100,6 +100,11 @@
       "description": "Puts the session-naming convention (`<TICKET> \u2014 <summary>`) in front of the model at session start, and a rename reminder when createJiraIssue mints a key."
     },
     {
+      "name": "oversized-file-nudge",
+      "source": "./claude-mods/oversized-file-nudge",
+      "description": "Advisory only: on an Edit/Write to a source file already over 1,500 lines, reminds the session to extract the touched job into its own module instead of growing the file (LC-1983)."
+    },
+    {
       "name": "skill-copy-guard",
       "source": "./claude-mods/skill-copy-guard",
       "description": "Refuses edits to .claude/skills/ byte copies; skills change in brand-bridge-media/claude-skills, and the mirror brings them here."
