@@ -1,0 +1,8 @@
+{
+  "name": "refresh-start-path-guard",
+  "version": "0.1.0",
+  "description": "Denies starting refresh-run.yml any way but the github-dispatch bridge (GitHub MCP actions_run_trigger, gh workflow run, gh api / curl dispatches), so dispatch-watch sees every refresh run.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

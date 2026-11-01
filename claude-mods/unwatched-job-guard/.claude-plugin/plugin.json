@@ -1,0 +1,9 @@
+{
+  "name": "unwatched-job-guard",
+  "version": "0.1.0",
+  "description": "In a session another session created, refuses to end a turn while a job it started (workflow run, bridge dispatch, auto-merge) is unfinished and no watcher mod or check-in holds it. Top-level sessions get a toast only.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

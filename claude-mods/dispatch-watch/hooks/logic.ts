@@ -106,3 +106,6 @@ export function decide(w: Watch, reply: Reply, now: number): Decision {
     `${run.html_url}` + (fast ? ' A finish under 2 minutes usually means it did nothing (memory 1440431b: a section ' +
     'parked at `partial`; read the newest receipts and redispatch it by name).' : ' Read its outcome and continue.') }
 }
+
+/** The key other mods use for a bridge dispatch of `workflow` (unwatched-job-guard, LC-1975). */
+export const watchKey = (workflow: string) => `dispatch:${workflow}`.toLowerCase()

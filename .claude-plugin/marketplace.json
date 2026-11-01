@@ -97,7 +97,7 @@
     {
       "name": "session-title-nudge",
       "source": "./claude-mods/session-title-nudge",
-      "description": "Puts the session-naming convention (`<TICKET> — <summary>`) in front of the model at session start, and a rename reminder when createJiraIssue mints a key."
+      "description": "Puts the session-naming convention (`<TICKET> \u2014 <summary>`) in front of the model at session start, and a rename reminder when createJiraIssue mints a key."
     },
     {
       "name": "skill-copy-guard",
@@ -112,7 +112,22 @@
     {
       "name": "pr-ci-watch",
       "source": "./claude-mods/pr-ci-watch",
-      "description": "After a git push or create_pull_request, checks the branch's PR every 2 minutes and wakes the session once its CI has finished, so a session never depends on GitHub's PR events alone."
+      "description": "After a git push or create_pull_request, checks the branch's PR every 2 minutes and wakes the session once its CI has finished, so a session never depends on GitHub's PR events alone; after auto-merge is armed it watches until the merge and wakes if green but not merged within 30 minutes, naming why."
+    },
+    {
+      "name": "refresh-start-path-guard",
+      "source": "./claude-mods/refresh-start-path-guard",
+      "description": "Denies starting refresh-run.yml any way but the github-dispatch bridge, so dispatch-watch follows every refresh run (LC-1902, LC-1975)."
+    },
+    {
+      "name": "workflow-run-watch",
+      "source": "./claude-mods/workflow-run-watch",
+      "description": "After a GitHub MCP actions_run_trigger start or re-run, polls the run every minute and wakes the session when it finishes (flagging a finish under 2 minutes), never registers, or runs long."
+    },
+    {
+      "name": "unwatched-job-guard",
+      "source": "./claude-mods/unwatched-job-guard",
+      "description": "In a session another session created, refuses to end a turn while a job it started is unfinished and no watcher mod or check-in holds it."
     },
     {
       "name": "supabase-guard",

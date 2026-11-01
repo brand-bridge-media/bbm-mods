@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, findPr, prNumberFrom, parseCheckRuns, parsePr, parsePushes, parseRemote, POLL_MS } from './logic'
+import { decide, findPr, mergeFactsDue, prNumberFrom, parseCheckRuns, parsePr, parsePushes, parseRemote, parseTrainComment, parseTrainStatus, POLL_MS, watchKey } from './logic'
 import type { Observation, PushCmd } from './logic'
 
 // Why (LC-1896): a session must not depend on GitHub's PR events alone to learn its CI finished.
@@ -10,6 +10,8 @@ import type { Observation, PushCmd } from './logic'
 
 const DEFAULT_SERVER = 'github'
 const watches = atom({ plugin: 'pr-ci-watch', key: 'watches' } as const, [] as Watch[])
+// Keys of watches that ended (merged, closed, failed, gave up): unwatched-job-guard reads them via `watching`.
+const finished = atom({ plugin: 'pr-ci-watch', key: 'finished' } as const, [] as string[])
 
 // Wakes the host refused (submitted from inside a tool call) wait for the turn's end.
 const pendingWakes: string[] = []
@@ -44,13 +46,22 @@ async function git($: any, args: string[]): Promise<string | undefined> {
   } catch { return undefined }
 }
 
-async function observe($: any, w: Watch): Promise<Observation> {
+async function observe($: any, w: Watch, now: number): Promise<Observation> {
   const pr = parsePr((await mcp($, w.server, 'pull_request_read', { method: 'get', owner: w.owner, repo: w.repo, pullNumber: w.number })) ?? '')
   if (!pr) return { kind: 'error', detail: 'pull_request_read get unreadable' }
   if (pr.merged || pr.state === 'closed') return { kind: 'pr', ...pr, runs: [] }
   const runs = parseCheckRuns((await mcp($, w.server, 'pull_request_read',
     { method: 'get_check_runs', owner: w.owner, repo: w.repo, pullNumber: w.number, perPage: 100 })) ?? '')
-  return { kind: 'pr', ...pr, runs }
+  if (!mergeFactsDue(w, now) || pr.headSha !== w.sha) return { kind: 'pr', ...pr, runs }
+  // A stuck wake is due: read why the queue has not taken it (best effort; missing facts say "unknown").
+  const raw = (await mcp($, w.server, 'pull_request_read', { method: 'get', owner: w.owner, repo: w.repo, pullNumber: w.number })) ?? ''
+  let mergeableState: string | undefined
+  try { mergeableState = JSON.parse(raw)?.mergeable_state } catch { /* unknown */ }
+  const status = parseTrainStatus((await mcp($, w.server, 'pull_request_read', { method: 'get_status', owner: w.owner, repo: w.repo, pullNumber: w.number })) ?? '')
+  const trainRun = (runs ?? []).find(r => r.name === 'merge-train' && r.status === 'completed')
+  const train = status ?? (trainRun ? { state: trainRun.conclusion ?? 'unknown' } : undefined)
+  const trainComment = parseTrainComment((await mcp($, w.server, 'pull_request_read', { method: 'get_comments', owner: w.owner, repo: w.repo, pullNumber: w.number, perPage: 100 })) ?? '')
+  return { kind: 'pr', ...pr, runs, merge: { mergeableState, train, trainComment } }
 }
 
 async function tick($: any) {
@@ -59,10 +70,11 @@ async function tick($: any) {
   try {
     const now = await $.clock.now()
     for (const w of await read($, watches)) {
-      const d = decide(w, await observe($, w), now)
+      const d = decide(w, await observe($, w, now), now)
       if (d.wake) { pendingWakes.push(d.wake); flush($) }
       const same = (x: Watch) => x.owner === w.owner && x.repo === w.repo && x.number === w.number && x.startedAt === w.startedAt
       await update($, watches, l => (d.done ? l.filter(x => !same(x)) : l.map(x => (same(x) ? { ...x, ...d.patch } : x))))
+      if (d.done) await update($, finished, l => [...l.filter(k => k !== watchKey(w)), watchKey(w)].slice(-50))
     }
   } catch { /* a failed tick is retried by the next one */ } finally {
     busy = false
@@ -72,10 +84,18 @@ async function tick($: any) {
 /** Adds or replaces the watch for one PR (a new push restarts its clock), and starts the timer. */
 async function watch($: any, w: Omit<Watch, 'startedAt'>): Promise<string> {
   const startedAt = await $.clock.now()
-  await update($, watches, l => [...l.filter(x => !(x.owner === w.owner && x.repo === w.repo && x.number === w.number)), { ...w, startedAt }])
+  const samePr = (x: Watch) => x.owner === w.owner && x.repo === w.repo && x.number === w.number
+  // A push to an armed PR keeps it armed: auto-merge survives a push on GitHub, so the watch must too.
+  const armed = !!w.armed || (await read($, watches)).some(x => samePr(x) && x.armed)
+  await update($, watches, l => [...l.filter(x => !samePr(x)), { ...w, armed: armed || undefined, startedAt }])
+  await update($, finished, l => l.filter(k => k !== watchKey(w)))
   if (!ticking) {
     ticking = true
     $.clock.every(POLL_MS, () => { void tick($) })
+  }
+  if (armed) {
+    return `[mod:pr-ci-watch] Watching ${w.owner}/${w.repo}#${w.number} until it merges: checked every 2 minutes; this session is ` +
+      'woken when it merges, when CI fails, or if it is green but not merged within 30 minutes (with the reason). No check-in needed for it.'
   }
   return `[mod:pr-ci-watch] Watching CI on ${w.owner}/${w.repo}#${w.number}: checked every 2 minutes; this session is ` +
     'woken when it finishes (or registers nothing, or runs past an hour). No check-in needed for it.'
@@ -99,12 +119,17 @@ export const register: Register = on => {
     const started = await next(e)
     await $.tool.register({
       name: 'watch_pr',
-      description: 'Watch an existing PR\'s CI and be woken when it finishes. Pushes and create_pull_request are watched automatically; use this for a PR this session did not just push.',
+      description: 'Watch an existing PR\'s CI and be woken when it finishes. Pushes, create_pull_request and enable_pr_auto_merge are watched automatically; use this for a PR this session did not just push. armed: true = auto-merge is on, keep watching until it merges.',
       inputSchema: {
         type: 'object',
-        properties: { owner: { type: 'string' }, repo: { type: 'string' }, pullNumber: { type: 'number' } },
+        properties: { owner: { type: 'string' }, repo: { type: 'string' }, pullNumber: { type: 'number' }, armed: { type: 'boolean' } },
         required: ['owner', 'repo', 'pullNumber'],
       },
+    })
+    await $.tool.register({
+      name: 'watching',
+      description: 'What pr-ci-watch is watching now and which watches ended (JSON {active, finished} of pr:owner/repo#N keys). Read by unwatched-job-guard.',
+      inputSchema: { type: 'object', properties: {} },
     })
     return started
   }).catch(($, e, next) => next(e))
@@ -112,7 +137,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__pr-ci-watch__watch_pr' }, async ($, e: any) => {
     const number = Number(e.pullNumber)
     if (!e.owner || !e.repo || !Number.isInteger(number)) return { result: '[mod:pr-ci-watch] owner, repo and pullNumber are required.' }
-    return { result: await watch($, { owner: String(e.owner), repo: String(e.repo), number, server: DEFAULT_SERVER, sha: '' }) }
+    return { result: await watch($, { owner: String(e.owner), repo: String(e.repo), number, server: DEFAULT_SERVER, sha: '', armed: e.armed === true || undefined }) }
   }).catch(() => ({ result: '[mod:pr-ci-watch] could not start the watch; check the PR\'s CI yourself.' }))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
@@ -141,6 +166,30 @@ export const register: Register = on => {
     const note = await watch($, { owner: String(a.owner), repo: String(a.repo), number, server, sha: '' })
     return { ...ran, context: [...(ran.context ?? []), note] }
   }).catch(($, e, next) => next(e))
+
+  // LC-1975 (fix 2): arming auto-merge hands the PR to the merge train; keep watching until it merges.
+  on('tool.call', { tool: /^mcp__.*__enable_pr_auto_merge$/ }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny !== undefined || ran.isError) return ran
+    const a = e as any
+    const number = Number(a.pullNumber)
+    if (!a.owner || !a.repo || !Number.isInteger(number)) return ran
+    const server = String(a.tool).split('__')[1] ?? DEFAULT_SERVER
+    const prior = (await read($, watches)).find(x => x.owner === a.owner && x.repo === a.repo && x.number === number)
+    // Already watching this head: arm it in place so a green picture already seen is not thrown away.
+    if (prior) {
+      await update($, watches, l => l.map(x => (x === prior || (x.owner === prior.owner && x.repo === prior.repo && x.number === prior.number) ? { ...x, armed: true } : x)))
+      return { ...ran, context: [...(ran.context ?? []), `[mod:pr-ci-watch] ${a.owner}/${a.repo}#${number} is armed: watching it until it merges; ` +
+        'woken on merge, on a CI failure, or if green but not merged within 30 minutes (with the reason). No check-in needed.'] }
+    }
+    const note = await watch($, { owner: String(a.owner), repo: String(a.repo), number, server, sha: '', armed: true })
+    return { ...ran, context: [...(ran.context ?? []), note] }
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'mcp__pr-ci-watch__watching' }, async $ => {
+    const active = (await read($, watches)).map(watchKey)
+    return { result: JSON.stringify({ active, finished: (await read($, finished)).filter(k => !active.includes(k)) }) }
+  }).catch(() => ({ result: '{"error":"pr-ci-watch could not read its watches"}' }))
 
   on('turn.complete', async ($, e, next) => {
     const res = await next(e)

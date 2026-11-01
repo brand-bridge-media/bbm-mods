@@ -2,12 +2,14 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, parseDispatch, parseReply, parseReqId, POLL_MS, replySql, REPLY_STALE_MS, statusSql } from './logic'
+import { decide, parseDispatch, watchKey, parseReply, parseReqId, POLL_MS, replySql, REPLY_STALE_MS, statusSql } from './logic'
 
 // Why (LCH-528): a dispatched workflow is watched by the mod, not by a check-in the session
 // schedules and forgets. Decisions live in ./logic.ts; this file gathers facts and acts.
 
 const watches = atom({ plugin: 'dispatch-watch', key: 'watches' } as const, [] as Watch[])
+// Keys of watches that ended: unwatched-job-guard (LC-1975) reads both lists through the `watching` tool.
+const finished = atom({ plugin: 'dispatch-watch', key: 'finished' } as const, [] as string[])
 
 function textOf(r: { content?: readonly unknown[] }): string {
   return (r.content ?? []).map(c => String((c as { text?: unknown }).text ?? '')).join('')
@@ -53,6 +55,7 @@ async function tick($: any) {
       }
       const d = decide(w, parseReply((await sql($, w, replySql(w.reqId))) ?? ''), now)
       if (d.wake) wake($, d.wake)
+      if (d.done) await update($, finished, l => [...l.filter(k => k !== watchKey(w.workflow)), watchKey(w.workflow)].slice(-50))
       await update($, watches, l => (d.done
         ? l.filter(x => x.startedAt !== w.startedAt)
         // The answer is used: the next tick sends a fresh status request.
@@ -64,6 +67,21 @@ async function tick($: any) {
 }
 
 export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    const started = await next(e)
+    await $.tool.register({
+      name: 'watching',
+      description: 'What dispatch-watch is watching now and which watches ended (JSON {active, finished} of dispatch:<workflow> keys). Read by unwatched-job-guard.',
+      inputSchema: { type: 'object', properties: {} },
+    })
+    return started
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'mcp__dispatch-watch__watching' }, async $ => {
+    const active = [...new Set((await read($, watches)).map(w => watchKey(w.workflow)))]
+    return { result: JSON.stringify({ active, finished: (await read($, finished)).filter(k => !active.includes(k)) }) }
+  }).catch(() => ({ result: '{"error":"dispatch-watch could not read its watches"}' }))
+
   on('tool.call', { tool: /^mcp__.*__execute_sql$/ }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError) return ran
@@ -78,6 +96,7 @@ export const register: Register = on => {
       startedAt: now,
     }
     await update($, watches, l => [...l, w])
+    await update($, finished, l => l.filter(k => k !== watchKey(workflow)))
     if (!ticking) {
       ticking = true
       $.clock.every(POLL_MS, () => { void tick($) })

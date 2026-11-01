@@ -15,6 +15,6 @@ export type Watch = {
 
 declare module 'claude-code' {
   interface PluginState {
-    'dispatch-watch': { watches: Watch[] }
+    'dispatch-watch': { watches: Watch[]; finished: string[] }
   }
 }

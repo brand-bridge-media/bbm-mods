@@ -13,10 +13,16 @@ export type Watch = {
   errors?: number
   warnedNone?: boolean
   warnedLong?: boolean
+  /** Auto-merge was armed on this PR (enable_pr_auto_merge or watch_pr armed:true): watch until it merges (LC-1975). */
+  armed?: boolean
+  /** When CI was first seen all green while armed; the merge clock runs from here. */
+  greenAt?: number
+  /** Stuck-in-queue wakes already sent. */
+  stuckWakes?: number
 }
 
 declare module 'claude-code' {
   interface PluginState {
-    'pr-ci-watch': { watches: Watch[] }
+    'pr-ci-watch': { watches: Watch[]; finished: string[] }
   }
 }
