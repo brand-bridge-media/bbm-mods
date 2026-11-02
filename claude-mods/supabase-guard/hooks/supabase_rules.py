@@ -29,7 +29,7 @@ PASS / BLOCK / WARN / NOT CHECKED with a reason. RULES is the list the engine re
 data; adding a rule is a row and a function, never a change to the engine. A batch with a
 DO block reports NOT CHECKED for what dynamic SQL could hide (it is never a PASS).
 
-THE SAME MODULE runs as the PR gate (lint-supabase-rules.yml, preflight) and inside the
+THE SAME MODULE runs as the PR gate (pr-quick-checks.yml supabase_rules step, preflight) and inside the
 session mod supabase-guard (byte-identical copy, claude-mods.yml parity), so a PR and a
 session are judged identically. Stdlib only.
 
