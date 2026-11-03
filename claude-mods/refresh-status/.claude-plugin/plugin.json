@@ -1,0 +1,22 @@
+{
+  "name": "refresh-status",
+  "version": "0.1.0",
+  "description": "When the operator types \"refresh status\", reads v_refresh_status (the Overseer's per-stage table for every monitored refresh) and injects it with the order to show it verbatim. NOT CHECKED if the read fails; never invents a row.",
+  "author": {
+    "name": "Brand Bridge Media"
+  },
+  "userConfig": {
+    "supabaseServer": {
+      "type": "string",
+      "title": "Supabase MCP server name",
+      "description": "Server name as /mcp lists it; runs the read-only select on v_refresh_status.",
+      "default": "Supabase"
+    },
+    "projectId": {
+      "type": "string",
+      "title": "Supabase project id",
+      "description": "project_id passed to execute_sql (livingcozy-hub).",
+      "default": "tlcbwwgfqnasmiipgmmd"
+    }
+  }
+}

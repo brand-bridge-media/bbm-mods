@@ -158,6 +158,11 @@
       "name": "child-model-guard",
       "source": "./claude-mods/child-model-guard",
       "description": "A create_session call must name its model: denies a missing or empty model, asks before a top-tier (opus/fable) child unless the brief names a design judgment."
+    },
+    {
+      "name": "refresh-status",
+      "source": "./claude-mods/refresh-status",
+      "description": "Types \"refresh status\" and gets the Overseer's per-stage table for every monitored refresh, injected to be shown verbatim. NOT CHECKED if the read fails; never invents a row."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."
