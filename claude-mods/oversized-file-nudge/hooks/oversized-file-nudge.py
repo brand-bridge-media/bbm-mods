@@ -265,6 +265,8 @@ def _selftest() -> int:
         ck(p.returncode == 0 and p.stdout == "", "main(): null input is silent")
         p = run("{x")
         ck(p.returncode == 1 and p.stdout == "", "main(): junk fails open and visible")
+        p = subprocess.run([sys.executable, os.path.abspath(__file__), "--bogus"], input="{}", capture_output=True, text=True)
+        ck(p.returncode == 2 and p.stdout == "" and "unknown arguments" in p.stderr, "main(): an unknown argument is refused, not run as a hook")
 
     print("oversized-file-nudge selftest: %d/%d checks passed" % (checks - fails, checks))
     return 1 if fails else 0
@@ -273,6 +275,12 @@ def _selftest() -> int:
 def main() -> int:
     if "--selftest" in sys.argv:
         return _selftest()
+    if len(sys.argv) > 1:
+        # The mod runs this hook with no arguments, payload on stdin (py.ts runArgs). Refusing any
+        # other argument makes a broken --selftest dispatch fail the selftest run loudly, instead of
+        # the run being read as a silent hook call that exits 0 (LC-2016: the floor's main|guard-off).
+        sys.stderr.write("oversized-file-nudge: unknown arguments %r; the hook takes its payload on stdin.\n" % sys.argv[1:])
+        return 2
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
