@@ -4,8 +4,9 @@ import type { Register } from 'claude-code'
 import type { FleetRow } from '../types'
 import {
   childIdOf, CLOSABLE_BUCKETS, closeoutLine, decideCloseout, decideStall, decideWaitingReminder, decideWake, ESCALATE_MS, failedLine, humanWrap, newestActivity, NEEDS_OPERATOR,
-  NUDGE_TEXT, STALL_MS, ticketOf, WAITING_BUCKETS, waitingLine, withChildTools,
+  NUDGE_TEXT, STALL_MS, stampWake, ticketOf, WAITING_BUCKETS, waitingLine, withChildTools,
 } from './logic'
+import type { Wake } from './logic'
 import { AWAIT_CHECK_MS, decideAwait, IDLE_BUCKETS, mergeAwaits, parseAwaits, prState, runState, waitingOn } from './awaits'
 import type { Await, ItemState } from './awaits'
 
@@ -105,7 +106,12 @@ async function poll($: any): Promise<FleetRow[]> {
   const before: FleetRow[] = await read($, rows)
   if (before.length === 0) return before
   const now = await $.clock.now()
-  const wakes: string[] = []
+  // Each wake carries its own event time (the child's own updated_at where known, else the poll time), so two
+  // wakes can never swap times (CI review, LC-2043).
+  const wakes = {
+    list: [] as Wake[],
+    push(text: string, at: number = now) { this.list.push({ text, at }) },
+  }
   const stanToasts: string[] = []
 
   const after = await Promise.all(
@@ -143,9 +149,9 @@ async function poll($: any): Promise<FleetRow[]> {
         if (holdPrevBucket) fresh.bucket = row.bucket
         if (wake) {
           const entry = `${row.ticket} (${row.label}) ${row.bucket || 'NEW'} -> ${bucket}: ${fresh.summary}`
-          wakes.push(
-            WAITING_BUCKETS.has(bucket) ? humanWrap(entry, row.sessionId, needsAction, fresh.statusDetail ?? '') : failedLine(entry, bucket),
-          )
+          const line = WAITING_BUCKETS.has(bucket) ? humanWrap(entry, row.sessionId, needsAction, fresh.statusDetail ?? '') : failedLine(entry, bucket)
+          const changedAt = Date.parse(fresh.updatedAt)
+          wakes.push(line, Number.isFinite(changedAt) && changedAt <= now ? changedAt : now)
         }
         if (fresh.needsYou && !row.needsYou) stanToasts.push(`${row.ticket} needs you: ${bucket}`)
 
@@ -291,7 +297,7 @@ async function poll($: any): Promise<FleetRow[]> {
   for (const id of [...closeoutClaim.keys()]) if (!merged.some(r => r.sessionId === id)) closeoutClaim.delete(id)
   for (const id of [...waitClaim.keys()]) if (!merged.some(r => r.sessionId === id)) waitClaim.delete(id)
   for (const t of stanToasts) say($, t)
-  pendingWakes.push(...wakes)
+  pendingWakes.push(...wakes.list)
   flushWakes($)
   return merged
 }
@@ -346,24 +352,28 @@ function blankRow(sessionId: string, ticket: string, label: string): FleetRow {
 // the host refuses it, and before LC-1834 that wake was silently lost (stall.test.ts
 // surfaced the refusal). A refused submit keeps its lines here; the next timer poll
 // or the end of the orchestrator's turn delivers them.
-const pendingWakes: string[] = []
+const pendingWakes: Wake[] = []
 
 function flushWakes($: any) {
   if (pendingWakes.length === 0) return
-  const lines = pendingWakes.splice(0)
+  const wakes = pendingWakes.splice(0)
   // Queues a turn once the session is idle, so the orchestrator triages and,
   // if the operator is needed, tells them in chat.
   Promise.resolve()
-    .then(() =>
-      $.prompt.submit({
+    .then(async () => {
+      // LC-2043: each line says when its event really happened and how late it arrives, so an old
+      // event delivered after the session idled is never mistaken for a new one.
+      const now = await $.clock.now()
+      const lines = wakes.map(w => stampWake(w, now))
+      await $.prompt.submit({
         text:
           '[mod:fleet-tracker] Session state changed:\n' +
           lines.map(w => `- ${w}`).join('\n') +
           '\nTriage each: inspect the session, act or relay. If it needs the operator, tell them in chat starting with the NEEDS YOU banner and set the note needs_you=true. Never use PushNotification.',
-      }),
-    )
+      })
+    })
     .catch(() => {
-      pendingWakes.unshift(...lines)
+      pendingWakes.unshift(...wakes)
     })
 }
 

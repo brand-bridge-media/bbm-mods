@@ -18,7 +18,7 @@ export const MAX_ERRORS = 5
 export const STUCK_MS = 30 * 60_000
 export const MAX_STUCK_WAKES = 3 // then stop watching and say so: three ignored wakes need a person
 
-export type CheckRun = { name: string; status: string; conclusion: string | null }
+export type CheckRun = { name: string; status: string; conclusion: string | null; /** ms; when the run finished (LC-2043). */ completedAt?: number }
 
 /** Why an armed, green PR has not merged: read only when a stuck wake is due. */
 export type MergeFacts = {
@@ -30,10 +30,10 @@ export type MergeFacts = {
 }
 
 export type Observation =
-  | { kind: 'pr'; state: string; merged: boolean; headSha: string; runs: CheckRun[] | undefined; merge?: MergeFacts }
+  | { kind: 'pr'; state: string; merged: boolean; mergedAt?: number; headSha: string; runs: CheckRun[] | undefined; merge?: MergeFacts }
   | { kind: 'error'; detail: string }
 
-export type Decision = { done: boolean; wake?: string; patch?: Partial<Watch> }
+export type Decision = { done: boolean; wake?: string; patch?: Partial<Watch>; /** When the event the wake reports really happened (LC-2043). */ eventAt?: number }
 
 const BAD = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale'])
 // Only these read as a pass. neutral, null or anything unrecognised is never reported as green.
@@ -112,10 +112,11 @@ export function prNumberFrom(text: string): number | undefined {
 }
 
 /** state, merged and head sha from pull_request_read get text. */
-export function parsePr(text: string): { state: string; merged: boolean; headSha: string } | undefined {
+export function parsePr(text: string): { state: string; merged: boolean; mergedAt?: number; headSha: string } | undefined {
   const v = json(text) as any
   if (!v || typeof v !== 'object' || typeof v.head?.sha !== 'string') return undefined
-  return { state: String(v.state ?? ''), merged: v.merged === true || typeof v.merged_at === 'string', headSha: v.head.sha }
+  const mergedAt = typeof v.merged_at === 'string' ? Date.parse(v.merged_at) : NaN
+  return { state: String(v.state ?? ''), merged: v.merged === true || typeof v.merged_at === 'string', ...(Number.isFinite(mergedAt) ? { mergedAt } : {}), headSha: v.head.sha }
 }
 
 /** The `merge-train` verdict from get_status text (commit statuses), if the train has set one. */
@@ -161,8 +162,10 @@ export function parseCheckRuns(text: string): CheckRun[] | undefined {
   const out: CheckRun[] = []
   for (const r of list) {
     if (!r || typeof r !== 'object' || typeof (r as any).name !== 'string' || typeof (r as any).status !== 'string') return undefined
+    const done = typeof (r as any).completed_at === 'string' ? Date.parse((r as any).completed_at) : NaN
     out.push({ name: (r as any).name, status: (r as any).status.toLowerCase(),
-      conclusion: typeof (r as any).conclusion === 'string' ? (r as any).conclusion.toLowerCase() : null })
+      conclusion: typeof (r as any).conclusion === 'string' ? (r as any).conclusion.toLowerCase() : null,
+      ...(Number.isFinite(done) ? { completedAt: done } : {}) })
   }
   return out
 }
@@ -173,6 +176,12 @@ const label = (w: Watch) => `${w.owner}/${w.repo}#${w.number}`
 const short = (sha: string) => sha.slice(0, 7)
 const list = (rs: CheckRun[]) => rs.slice(0, 6).map(r => `${r.name} (${r.conclusion})`).join('; ') + (rs.length > 6 ? `; +${rs.length - 6} more` : '')
 
+/** When the last of these runs finished, if the reply said (LC-2043). */
+export function finishedAt(runs: CheckRun[]): number | undefined {
+  const t = runs.map(r => r.completedAt).filter((x): x is number => x !== undefined)
+  return t.length ? Math.max(...t) : undefined
+}
+
 export function decide(w: Watch, o: Observation, now: number): Decision {
   const P = `[mod:pr-ci-watch] ${label(w)}`
   if (o.kind === 'error') {
@@ -180,7 +189,7 @@ export function decide(w: Watch, o: Observation, now: number): Decision {
     if (errors < MAX_ERRORS) return { done: false, patch: { errors } }
     return { done: true, wake: `${P}: could not read the PR or its checks ${errors} times in a row (${o.detail}); stopped watching. Check its CI yourself now.` }
   }
-  if (o.merged) return { done: true, wake: `${P} merged. Do what the merge calls for (Jira, mirror, follow-ups).` }
+  if (o.merged) return { done: true, eventAt: o.mergedAt, wake: `${P} merged. Do what the merge calls for (Jira, mirror, follow-ups).` }
   // Armed, already green, same head: the question is no longer CI but why the queue has not taken it.
   // Only while every run is still finished and passing: a re-run that fails after greenAt is a CI failure, not a stuck queue.
   const stillGreen = (o.runs ?? []).length > 0 && (o.runs ?? []).every(r => r.status === 'completed' && r.conclusion !== null && GOOD.has(r.conclusion))
@@ -213,7 +222,7 @@ export function decide(w: Watch, o: Observation, now: number): Decision {
   if (runs.length === 0) {
     if (!w.warnedNone && now - w.startedAt >= NO_CHECKS_MS) {
       return { done: false, patch: { ...base, warnedNone: true },
-        wake: `${P}: no checks have registered on ${short(sha)} after ${Math.round((now - w.startedAt) / 60_000)} min. A workflow may not have triggered; look at the PR's Actions.` }
+        eventAt: w.startedAt + NO_CHECKS_MS, wake: `${P}: no checks have registered on ${short(sha)} after ${Math.round((now - w.startedAt) / 60_000)} min. A workflow may not have triggered; look at the PR's Actions.` }
     }
     return { done: false, patch: base }
   }
@@ -223,7 +232,7 @@ export function decide(w: Watch, o: Observation, now: number): Decision {
     const patch = { ...base, lastSig: undefined }
     if (!w.warnedLong && now - w.startedAt >= LONG_MS) {
       return { done: false, patch: { ...patch, warnedLong: true },
-        wake: `${P}: CI on ${short(sha)} is still running after ${Math.round((now - w.startedAt) / 60_000)} min (${running.slice(0, 4).map(r => r.name).join(', ')}). A queued job may be waiting on a busy runner; check before assuming it is dead.` }
+        eventAt: w.startedAt + LONG_MS, wake: `${P}: CI on ${short(sha)} is still running after ${Math.round((now - w.startedAt) / 60_000)} min (${running.slice(0, 4).map(r => r.name).join(', ')}). A queued job may be waiting on a busy runner; check before assuming it is dead.` }
     }
     return { done: false, patch }
   }
@@ -234,7 +243,7 @@ export function decide(w: Watch, o: Observation, now: number): Decision {
 
   const bad = runs.filter(r => r.conclusion !== null && BAD.has(r.conclusion))
   if (bad.length > 0) {
-    return { done: true, wake: `${P}: CI finished on ${short(sha)}: ${bad.length} of ${runs.length} checks failed: ${list(bad)}. ` +
+    return { done: true, eventAt: finishedAt(runs), wake: `${P}: CI finished on ${short(sha)}: ${bad.length} of ${runs.length} checks failed: ${list(bad)}. ` +
       'This PR is yours to drive: read the failure (delegate the log), fix and push.' +
       (w.armed ? ' Auto-merge is armed but cannot fire until this is green; the new push is watched again.' : '') }
   }
@@ -244,10 +253,10 @@ export function decide(w: Watch, o: Observation, now: number): Decision {
     return { done: false, patch: { ...base, greenAt: now, stuckWakes: 0 } }
   }
   if (unclear.length > 0) {
-    return { done: true, wake: `${P}: CI finished on ${short(sha)} but ${unclear.length} of ${runs.length} checks did not clearly pass: ` +
+    return { done: true, eventAt: finishedAt(runs), wake: `${P}: CI finished on ${short(sha)} but ${unclear.length} of ${runs.length} checks did not clearly pass: ` +
       `${list(unclear)}. Read them before treating the PR as green.` }
   }
-  return { done: true, wake: `${P}: CI finished on ${short(sha)}: all ${runs.length} checks passed. Do what the PR needs next (review threads, ready-for-review, auto-merge).` }
+  return { done: true, eventAt: finishedAt(runs), wake: `${P}: CI finished on ${short(sha)}: all ${runs.length} checks passed. Do what the PR needs next (review threads, ready-for-review, auto-merge).` }
 }
 
 /** An armed PR whose CI is green: wake if it has not merged within STUCK_MS, naming why, then every STUCK_MS. */
@@ -258,10 +267,10 @@ export function decideMerge(w: Watch, o: Extract<Observation, { kind: 'pr' }>, n
   const mins = Math.round((now - w.greenAt!) / 60_000)
   const why = stuckReasons(o.merge).join('; ')
   if (n + 1 >= MAX_STUCK_WAKES) {
-    return { done: true, wake: `${P} is armed for auto-merge and green on ${short(w.sha)}, but still not merged after ${mins} min: ${why}. ` +
+    return { done: true, eventAt: w.greenAt! + STUCK_MS * (n + 1), wake: `${P} is armed for auto-merge and green on ${short(w.sha)}, but still not merged after ${mins} min: ${why}. ` +
       'Stopped watching after three reminders; fix it or tell the operator what blocks it (NEEDS YOU).' }
   }
-  return { done: false, patch: { errors: 0, stuckWakes: n + 1 },
+  return { done: false, patch: { errors: 0, stuckWakes: n + 1 }, eventAt: w.greenAt! + STUCK_MS * (n + 1),
     wake: `${P} is armed for auto-merge and green on ${short(w.sha)}, but not merged after ${mins} min: ${why}. ` +
       'Still watching; a fix push is picked up automatically.' }
 }
@@ -273,3 +282,18 @@ export function mergeFactsDue(w: Watch, now: number): boolean {
 
 /** The key other mods use for this watch (unwatched-job-guard, LC-1975). */
 export const watchKey = (w: Pick<Watch, 'owner' | 'repo' | 'number'>) => `pr:${w.owner}/${w.repo}#${w.number}`.toLowerCase()
+
+// LATE-NOTE-BEGIN (LC-2043; keep identical in the logic.ts of fleet-tracker, pr-ci-watch, workflow-run-watch and dispatch-watch)
+// A wake delivered long after its event reads as news. When the timer that should have fired it stopped (the session
+// idled), the event can be hours old: say when it really happened and how late it arrives.
+export const LATE_MS = 5 * 60_000
+export type Wake = { text: string; at: number }
+export function lateNote(eventAt: number, deliveredAt: number): string {
+  const late = deliveredAt - eventAt
+  if (!Number.isFinite(eventAt) || !Number.isFinite(deliveredAt) || late < LATE_MS) return ''
+  const iso = new Date(eventAt).toISOString()
+  const when = late >= 12 * 3_600_000 ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z` : `${iso.slice(11, 16)}Z`
+  return ` (event at ${when}, delivered ${Math.round(late / 60_000)} min late)`
+}
+export const stampWake = (w: Wake, deliveredAt: number): string => w.text + lateNote(w.at, deliveredAt)
+// LATE-NOTE-END

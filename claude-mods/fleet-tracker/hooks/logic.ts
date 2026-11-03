@@ -293,3 +293,18 @@ export function withChildTools<T extends { append_system_prompt?: unknown }>(inp
   const note = prior.includes(CHILD_NOTE) ? prior : [prior, CHILD_NOTE].filter(Boolean).join('\n\n')
   return { ...input, append_system_prompt: note }
 }
+
+// LATE-NOTE-BEGIN (LC-2043; keep identical in the logic.ts of fleet-tracker, pr-ci-watch, workflow-run-watch and dispatch-watch)
+// A wake delivered long after its event reads as news. When the timer that should have fired it stopped (the session
+// idled), the event can be hours old: say when it really happened and how late it arrives.
+export const LATE_MS = 5 * 60_000
+export type Wake = { text: string; at: number }
+export function lateNote(eventAt: number, deliveredAt: number): string {
+  const late = deliveredAt - eventAt
+  if (!Number.isFinite(eventAt) || !Number.isFinite(deliveredAt) || late < LATE_MS) return ''
+  const iso = new Date(eventAt).toISOString()
+  const when = late >= 12 * 3_600_000 ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z` : `${iso.slice(11, 16)}Z`
+  return ` (event at ${when}, delivered ${Math.round(late / 60_000)} min late)`
+}
+export const stampWake = (w: Wake, deliveredAt: number): string => w.text + lateNote(w.at, deliveredAt)
+// LATE-NOTE-END

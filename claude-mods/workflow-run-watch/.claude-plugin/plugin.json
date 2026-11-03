@@ -1,6 +1,6 @@
 {
   "name": "workflow-run-watch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "After a GitHub MCP actions_run_trigger start or re-run, polls the run every minute and wakes the session when it finishes (warning on a finish under 2 minutes), never registers, or runs past 90 minutes.",
   "types": "./types/index.d.ts",
   "author": {

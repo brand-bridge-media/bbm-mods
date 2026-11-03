@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, findPr, mergeFactsDue, prNumberFrom, parseCheckRuns, parsePr, parsePushes, parseRemote, parseTrainComment, parseTrainStatus, POLL_MS, watchKey } from './logic'
-import type { Observation, PushCmd } from './logic'
+import { decide, findPr, mergeFactsDue, prNumberFrom, parseCheckRuns, parsePr, parsePushes, parseRemote, parseTrainComment, parseTrainStatus, POLL_MS, stampWake, watchKey } from './logic'
+import type { Observation, PushCmd, Wake } from './logic'
 
 // Why (LC-1896): a session must not depend on GitHub's PR events alone to learn its CI finished.
 // Decisions live in ./logic.ts; this file gathers facts (git, GitHub MCP) and acts.
@@ -14,7 +14,7 @@ const watches = atom({ plugin: 'pr-ci-watch', key: 'watches' } as const, [] as W
 const finished = atom({ plugin: 'pr-ci-watch', key: 'finished' } as const, [] as string[])
 
 // Wakes the host refused (submitted from inside a tool call) wait for the turn's end.
-const pendingWakes: string[] = []
+const pendingWakes: Wake[] = []
 let ticking = false
 let busy = false
 
@@ -24,11 +24,16 @@ function textOf(r: { content?: readonly unknown[] }): string {
 
 function flush($: any) {
   if (pendingWakes.length === 0) return
-  const lines = pendingWakes.splice(0)
-  try { $.ui.toast(lines[0]!.slice(0, 200)) } catch { /* a toast never changes a wake */ }
+  const wakes = pendingWakes.splice(0)
+  // LC-2043: stamp each line with its real event time and how late it arrives, at the moment of delivery.
   Promise.resolve()
-    .then(() => $.prompt.submit({ text: lines.join('\n') }))
-    .catch(() => { pendingWakes.unshift(...lines) })
+    .then(async () => {
+      const now = await $.clock.now()
+      const lines = wakes.map(w => stampWake(w, now))
+      try { $.ui.toast(lines[0]!.slice(0, 200)) } catch { /* a toast never changes a wake */ }
+      await $.prompt.submit({ text: lines.join('\n') })
+    })
+    .catch(() => { pendingWakes.unshift(...wakes) })
 }
 
 async function mcp($: any, server: string, tool: string, args: Record<string, unknown>): Promise<string | undefined> {
@@ -71,7 +76,7 @@ async function tick($: any) {
     const now = await $.clock.now()
     for (const w of await read($, watches)) {
       const d = decide(w, await observe($, w, now), now)
-      if (d.wake) { pendingWakes.push(d.wake); flush($) }
+      if (d.wake) { pendingWakes.push({ text: d.wake, at: d.eventAt ?? now }); flush($) }
       const same = (x: Watch) => x.owner === w.owner && x.repo === w.repo && x.number === w.number && x.startedAt === w.startedAt
       await update($, watches, l => (d.done ? l.filter(x => !same(x)) : l.map(x => (same(x) ? { ...x, ...d.patch } : x))))
       if (d.done) await update($, finished, l => [...l.filter(k => k !== watchKey(w)), watchKey(w)].slice(-50))

@@ -1,6 +1,6 @@
 {
   "name": "dispatch-watch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "After a session dispatches a workflow through the github-dispatch bridge, checks the run every minute and wakes the session when it finishes, fails to start, or runs long; flags a finish under 2 minutes as the did-nothing shape. Reports its watches through a `watching` tool (LC-1975).",
   "types": "./types/index.d.ts",
   "author": {

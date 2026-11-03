@@ -18,7 +18,7 @@ export type Run = { id: number; status: string; conclusion: string | null; creat
   run_started_at: string | null; html_url: string; event?: string }
 
 export type Observation = { kind: 'runs'; runs: Run[] } | { kind: 'error'; detail: string }
-export type Decision = { done: boolean; wake?: string; patch?: Partial<Watch> }
+export type Decision = { done: boolean; wake?: string; patch?: Partial<Watch>; /** When the event the wake reports really happened (LC-2043). */ eventAt?: number }
 
 const STARTS = new Set(['run_workflow', 'rerun_workflow_run', 'rerun_failed_jobs'])
 
@@ -74,20 +74,35 @@ export function decide(w: Watch, o: Observation, now: number): Decision {
     : o.runs.filter(r => Date.parse(r.created_at) >= floor).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0]
   if (!run) {
     return now - w.startedAt > NO_RUN_MS
-      ? { done: true, wake: `${tag}: no run appeared ${mins(now - w.startedAt)} after the start. It likely never registered ` +
+      ? { done: true, eventAt: w.startedAt + NO_RUN_MS, wake: `${tag}: no run appeared ${mins(now - w.startedAt)} after the start. It likely never registered ` +
           '(a workflow_dispatch file must be on the default branch; check the ref and inputs) before waiting further.' }
       : { done: false, patch: { errors: 0 } }
   }
   const patch: Partial<Watch> = { errors: 0, runId: run.id }
   if (run.status !== 'completed') {
     if (now - w.startedAt > LONG_MS && !w.warnedLong) {
-      return { done: false, patch: { ...patch, warnedLong: true }, wake: `${tag} run ${run.id} is still ${run.status} after ` +
+      return { done: false, patch: { ...patch, warnedLong: true }, eventAt: w.startedAt + LONG_MS, wake: `${tag} run ${run.id} is still ${run.status} after ` +
         `${mins(now - w.startedAt)}. A queued job may be waiting on a busy runner; check before assuming it is dead. ${run.html_url}` }
     }
     return { done: false, patch }
   }
   const took = Date.parse(run.updated_at) - Date.parse(run.run_started_at ?? run.created_at)
   const fast = Number.isFinite(took) && took < FAST_MS
-  return { done: true, wake: `${tag} run ${run.id} finished: ${run.conclusion ?? 'no conclusion'} after ${mins(took)}. ${run.html_url}` +
+  return { done: true, eventAt: Date.parse(run.updated_at), wake: `${tag} run ${run.id} finished: ${run.conclusion ?? 'no conclusion'} after ${mins(took)}. ${run.html_url}` +
     (fast ? ' A finish under 2 minutes often means it did nothing: read what it wrote before treating it as done.' : ' Read its outcome and continue.') }
 }
+
+// LATE-NOTE-BEGIN (LC-2043; keep identical in the logic.ts of fleet-tracker, pr-ci-watch, workflow-run-watch and dispatch-watch)
+// A wake delivered long after its event reads as news. When the timer that should have fired it stopped (the session
+// idled), the event can be hours old: say when it really happened and how late it arrives.
+export const LATE_MS = 5 * 60_000
+export type Wake = { text: string; at: number }
+export function lateNote(eventAt: number, deliveredAt: number): string {
+  const late = deliveredAt - eventAt
+  if (!Number.isFinite(eventAt) || !Number.isFinite(deliveredAt) || late < LATE_MS) return ''
+  const iso = new Date(eventAt).toISOString()
+  const when = late >= 12 * 3_600_000 ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}Z` : `${iso.slice(11, 16)}Z`
+  return ` (event at ${when}, delivered ${Math.round(late / 60_000)} min late)`
+}
+export const stampWake = (w: Wake, deliveredAt: number): string => w.text + lateNote(w.at, deliveredAt)
+// LATE-NOTE-END

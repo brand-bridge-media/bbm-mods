@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, parseDispatch, watchKey, parseReply, parseReqId, POLL_MS, replySql, REPLY_STALE_MS, statusSql } from './logic'
+import { decide, parseDispatch, watchKey, parseReply, parseReqId, POLL_MS, replySql, REPLY_STALE_MS, stampWake, statusSql } from './logic'
+import type { Wake } from './logic'
 
 // Why (LCH-528): a dispatched workflow is watched by the mod, not by a check-in the session
 // schedules and forgets. Decisions live in ./logic.ts; this file gathers facts and acts.
@@ -16,22 +17,27 @@ function textOf(r: { content?: readonly unknown[] }): string {
 }
 
 // Wakes the host refused (submitted from inside a tool call) wait for the turn's end.
-const pendingWakes: string[] = []
+const pendingWakes: Wake[] = []
 let ticking = false
 let busy = false
 
-function wake($: any, line: string) {
-  pendingWakes.push(line)
+function wake($: any, line: string, at: number) {
+  pendingWakes.push({ text: line, at })
   flush($)
 }
 
 function flush($: any) {
   if (pendingWakes.length === 0) return
-  const lines = pendingWakes.splice(0)
-  try { $.ui.toast(lines[0]!.slice(0, 200)) } catch { /* a toast never changes a wake */ }
+  const wakes = pendingWakes.splice(0)
+  // LC-2043: stamp each line with its real event time and how late it arrives, at the moment of delivery.
   Promise.resolve()
-    .then(() => $.prompt.submit({ text: lines.join('\n') }))
-    .catch(() => { pendingWakes.unshift(...lines) })
+    .then(async () => {
+      const now = await $.clock.now()
+      const lines = wakes.map(w => stampWake(w, now))
+      try { $.ui.toast(lines[0]!.slice(0, 200)) } catch { /* a toast never changes a wake */ }
+      await $.prompt.submit({ text: lines.join('\n') })
+    })
+    .catch(() => { pendingWakes.unshift(...wakes) })
 }
 
 async function sql($: any, w: Watch, query: string): Promise<string | null> {
@@ -54,7 +60,7 @@ async function tick($: any) {
         continue
       }
       const d = decide(w, parseReply((await sql($, w, replySql(w.reqId))) ?? ''), now)
-      if (d.wake) wake($, d.wake)
+      if (d.wake) wake($, d.wake, d.eventAt ?? now)
       if (d.done) await update($, finished, l => [...l.filter(k => k !== watchKey(w.workflow)), watchKey(w.workflow)].slice(-50))
       await update($, watches, l => (d.done
         ? l.filter(x => x.startedAt !== w.startedAt)

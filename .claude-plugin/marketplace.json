@@ -135,6 +135,11 @@
       "description": "In a session another session created, refuses to end a turn while a job it started is unfinished and no watcher mod or check-in holds it."
     },
     {
+      "name": "idle-backstop-guard",
+      "source": "./claude-mods/idle-backstop-guard",
+      "description": "Refuses to end a turn while the session has open fleet children or watcher items and no server-side check-in (send_later / create_trigger) fires within 35 minutes: the in-process timers that watch them stop while the session idles (LC-2043). Fails open; child sessions get a toast only."
+    },
+    {
       "name": "supabase-guard",
       "source": "./claude-mods/supabase-guard",
       "description": "Supabase exposure rules before SQL runs or a migration is written (execute_sql, apply_migration, migration-file Write/Edit): blocks a table without RLS, a view without security_invoker, an unrevoked or search_path-less SECURITY DEFINER, and an unmarked GRANT to anon/authenticated; warns on a function without search_path. Same rules as the lint-supabase-rules PR gate."

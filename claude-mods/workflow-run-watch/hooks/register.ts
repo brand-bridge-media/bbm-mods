@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, parseRuns, parseStart, POLL_MS, watchKey } from './logic'
+import { decide, parseRuns, parseStart, POLL_MS, stampWake, watchKey } from './logic'
+import type { Wake } from './logic'
 import type { Observation } from './logic'
 
 // Why (LC-1975): see ./logic.ts. Decisions live there; this file gathers facts and acts.
@@ -11,7 +12,7 @@ const watches = atom({ plugin: 'workflow-run-watch', key: 'watches' } as const, 
 // Keys of watches that ended: unwatched-job-guard reads both lists through the `watching` tool.
 const finished = atom({ plugin: 'workflow-run-watch', key: 'finished' } as const, [] as string[])
 
-const pendingWakes: string[] = []
+const pendingWakes: Wake[] = []
 let ticking = false
 let busy = false
 
@@ -21,11 +22,16 @@ function textOf(r: { content?: readonly unknown[] }): string {
 
 function flush($: any) {
   if (pendingWakes.length === 0) return
-  const lines = pendingWakes.splice(0)
-  try { $.ui.toast(lines[0]!.slice(0, 200)) } catch { /* a toast never changes a wake */ }
+  const wakes = pendingWakes.splice(0)
+  // LC-2043: stamp each line with its real event time and how late it arrives, at the moment of delivery.
   Promise.resolve()
-    .then(() => $.prompt.submit({ text: lines.join('\n') }))
-    .catch(() => { pendingWakes.unshift(...lines) })
+    .then(async () => {
+      const now = await $.clock.now()
+      const lines = wakes.map(w => stampWake(w, now))
+      try { $.ui.toast(lines[0]!.slice(0, 200)) } catch { /* a toast never changes a wake */ }
+      await $.prompt.submit({ text: lines.join('\n') })
+    })
+    .catch(() => { pendingWakes.unshift(...wakes) })
 }
 
 async function observe($: any, w: Watch): Promise<Observation> {
@@ -47,7 +53,7 @@ async function tick($: any) {
     const now = await $.clock.now()
     for (const w of await read($, watches)) {
       const d = decide(w, await observe($, w), now)
-      if (d.wake) { pendingWakes.push(d.wake); flush($) }
+      if (d.wake) { pendingWakes.push({ text: d.wake, at: d.eventAt ?? now }); flush($) }
       await update($, watches, l => (d.done ? l.filter(x => x.startedAt !== w.startedAt || watchKey(x) !== watchKey(w))
         : l.map(x => (x.startedAt === w.startedAt && watchKey(x) === watchKey(w) ? { ...x, ...d.patch } : x))))
       if (d.done) await update($, finished, l => [...l.filter(k => k !== watchKey(w)), watchKey(w)].slice(-50))
