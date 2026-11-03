@@ -287,5 +287,7 @@ def main() -> int:
     return 0
 
 
+# Equivalent mutant, waived (LC-1983): with the __main__ guard off the selftest prints nothing and
+# exits 0; CI reads the count line, which kills it. The floor waiver names LC-1983 and points here.
 if __name__ == "__main__":
     raise SystemExit(main())
