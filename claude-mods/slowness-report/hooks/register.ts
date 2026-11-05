@@ -24,10 +24,16 @@ function textOf(r: { content?: readonly unknown[] }): string {
 }
 
 async function mcp($: any, server: string, tool: string, args: Record<string, unknown>): Promise<string | undefined> {
+  return (await mcpCall($, server, tool, args)).text
+}
+
+// Why (LCH-600): the first live wake (#2897, 2026-11-05) got "Jira did not take the occurrence" with no reason,
+// so nobody could tell a guard denial from a wrong server name. The error text now travels with the fallback.
+async function mcpCall($: any, server: string, tool: string, args: Record<string, unknown>): Promise<{ text?: string, error?: string }> {
   try {
     const r = await $.mcp.call(server, tool, args)
-    return r.isError ? undefined : textOf(r)
-  } catch { return undefined }
+    return r.isError ? { error: textOf(r).slice(0, 300) || 'isError with no text' } : { text: textOf(r) }
+  } catch (err) { return { error: String((err as Error)?.message ?? err).slice(0, 300) } }
 }
 
 function flush($: any) {
@@ -91,9 +97,10 @@ async function file($: any, r: Report): Promise<string> {
   }
   const ticket = causeTicketFor(report)
   const body = occurrenceBody(report, t, now)
-  const ok = await mcp($, JIRA, 'addCommentToJiraIssue', { cloudId: CLOUD_ID, issueIdOrKey: ticket, commentBody: body, contentFormat: 'markdown' })
-  if (ok === undefined) {
-    return `${OWN} Jira did not take the occurrence. Read ${ticket}'s newest comment, then add this as a comment on ${ticket} ` +
+  const sent = await mcpCall($, JIRA, 'addCommentToJiraIssue', { cloudId: CLOUD_ID, issueIdOrKey: ticket, commentBody: body, contentFormat: 'markdown' })
+  if (sent.text === undefined) {
+    return `${OWN} Jira did not take the occurrence (${JIRA}.addCommentToJiraIssue said: ${sent.error ?? 'nothing'}). ` +
+      `Read ${ticket}'s newest comment, then add this as a comment on ${ticket} ` +
       `with addCommentToJiraIssue (cloudId ${CLOUD_ID}; never create a ticket for it):\n${body}`
   }
   if (clock) await update($, clocks, l => l.map(c => (clockKey(c) === clockKey(clock) ? { ...c, reportedTo: ticket } : c)))

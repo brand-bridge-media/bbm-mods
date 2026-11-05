@@ -22,8 +22,9 @@ export const MAX_ERRORS = 5
 // only place a stage maps to a cause ticket; a cause with no ticket yet goes to the epic itself.
 export const CAUSE_TICKETS = {
   runner_queue: 'LCH-603',   // jobs waiting for a free check runner (capacity)
-  train_wait: 'LCH-604',     // green, waiting for the merge train to form / tick
-  train_recheck: 'LCH-605',  // the train re-running checks the members already passed
+  // LCH-604 and LCH-605 closed 2026-11-05, superseded by LCH-614 (vendor merge queue, operator decision D1a).
+  train_wait: 'LCH-614',     // green, waiting for the merge train / queue to form or tick
+  train_recheck: 'LCH-614',  // the train / queue re-running checks the members already passed
   reviewer: 'LCH-595',       // AI reviewer slow, timed out or red
   failed_check: EPIC,        // a red check, eviction or retry round
   deploy: EPIC,              // merged, waiting on the deploy
@@ -147,7 +148,7 @@ export function readReport(a: Record<string, unknown>, source: Report['source'])
   const stage = s('stage') as Stage
   if (!STAGES.includes(stage)) return `${OWN} stage must be one of ${STAGES.join(', ')}.`
   const ticket = s('cause_ticket').toUpperCase()
-  if (ticket && !/^(LCH|LC|BBM|LCC)-\d+$/.test(ticket)) return `${OWN} cause_ticket must be an existing LCH/LC/BBM/LCC key, e.g. LCH-605.`
+  if (ticket && !/^(LCH|LC|BBM|LCC)-\d+$/.test(ticket)) return `${OWN} cause_ticket must be an existing LCH/LC/BBM/LCC key, e.g. LCH-614.`
   const started = s('started_at') ? Date.parse(s('started_at')) : NaN
   const waited = Number(a.waited_minutes)
   return {

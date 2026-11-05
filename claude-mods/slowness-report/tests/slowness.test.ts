@@ -82,8 +82,8 @@ test('PR references of every shape resolve to one key', () => {
 test('every stage maps to a cause ticket; the measured clock beats the reported numbers', () => {
   for (const st of STAGES) expect(CAUSE_TICKETS[st]).toMatch(/^(LCH|LC)-\d+$/)
   expect(CAUSE_TICKETS.runner_queue).toBe('LCH-603')
-  expect(CAUSE_TICKETS.train_wait).toBe('LCH-604')
-  expect(CAUSE_TICKETS.train_recheck).toBe('LCH-605')
+  expect(CAUSE_TICKETS.train_wait).toBe('LCH-614')
+  expect(CAUSE_TICKETS.train_recheck).toBe('LCH-614')
   expect(CAUSE_TICKETS.other).toBe(EPIC)
   const r = readReport({ subject: 'record 7 picks', stage: 'runner_queue', cause: 'queue', evidence: 'ev', fix: 'fx', waited_minutes: 5 }, 'auto') as any
   expect(causeTicketFor(r)).toBe('LCH-603')
