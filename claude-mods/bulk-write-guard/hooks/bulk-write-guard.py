@@ -30,6 +30,15 @@ accepted. A narrow list costs a rewrite; a loose one is a hole.
 NOT GATED. Function calls (`select registrar_fn(...)`): the sanctioned RPCs carry
 their own guards (e.g. the LC-1550 price registrar). DDL: prod-deploy-guard.
 
+TYPED OPS (LC-2076). A call to one of the schema-`ops` functions (ops.record_slot_rulings,
+ops.set_product_price, ops.swap_slot_product, ops.retire_redirect, ops.undo) is the FAST PATH
+for a known operation type: the function validates, caps rows, dry-runs by default, writes a
+data_change_runs ledger row and has a one-step undo, so it needs no package PR. The guard lets
+the call run and says so (additionalContext, so the transcript records WHICH op and whether it
+is a dry run or an apply) plus a best-effort line in ~/.cache/bulk-write-guard/ops-calls.log.
+It never widens anything else: a raw multi-row UPDATE/INSERT/DELETE, in the same call or any
+other, is judged exactly as before, and an ops call that also carries one is still denied.
+
 Self-test: python3 bulk-write-guard.py --selftest
 """
 from __future__ import annotations
@@ -182,6 +191,63 @@ def findings(sql: str) -> list[str]:
     return out
 
 
+# The public typed-op entry points (supabase/migrations/*_lc2076_ops_typed_writes.sql). A name not
+# listed here (ops._snap, a future helper) is NOT waved through: it reads as an ordinary call.
+OPS_FUNCTIONS = ("record_slot_rulings", "set_product_price", "swap_slot_product", "retire_redirect", "undo")
+_OPS_CALL = re.compile(r"(?<![\w.])ops\.(" + "|".join(OPS_FUNCTIONS) + r")\s*\(")
+# Positional parameter count of each function, `dry_run` being the last one: a call with fewer
+# positional arguments than this takes the function's default, a dry run.
+OPS_ARITY = {"record_slot_rulings": 6, "set_product_price": 8, "swap_slot_product": 5,
+             "retire_redirect": 4, "undo": 4}
+_NAMED_DRY = re.compile(r"^dry_run\s*=>\s*(.*)$", re.S)
+
+
+def _mode(fn: str, args: list[str]) -> str:
+    """'dry run' or 'APPLY' from the call's OWN top-level arguments (never text nested inside one:
+    `coalesce(1, false)` as an earlier argument says nothing about dry_run). The statement text is
+    already lowercased by the lexer, so `False` / `FALSE` read as `false`. Anything that is not a
+    plain `true` or a defaulted argument is treated as APPLY: the note must never understate."""
+    for a in args:
+        m = _NAMED_DRY.match(a)
+        if m:
+            return "dry run" if m.group(1).strip() == "true" else "APPLY"
+    if len(args) < OPS_ARITY[fn]:
+        return "dry run"          # dry_run omitted: the function's default
+    return "dry run" if args[-1].strip() == "true" else "APPLY"
+
+
+def ops_calls(sql: str) -> list[tuple[str, str]]:
+    """(function, 'dry run' | 'APPLY') for every typed-op call in the SQL."""
+    calls: list[tuple[str, str]] = []
+    for st in sql_lexer.statements(sql):
+        for m in _OPS_CALL.finditer(st):
+            depth, end = 0, len(st)
+            for i in range(m.end() - 1, len(st)):
+                depth += st[i] == "("
+                depth -= st[i] == ")"
+                if depth == 0:
+                    end = i
+                    break
+            # split_top counts parentheses only, so bracketed array literals are turned into parentheses first
+            body = st[m.end():end].replace("[", "(").replace("]", ")")
+            args = [x.strip() for x in sql_lexer.split_top(body, ",") if x.strip()]
+            calls.append((m.group(1), _mode(m.group(1), args)))
+    return calls
+
+
+def _log_ops_calls(calls: list[tuple[str, str]]) -> None:
+    """Best effort: the transcript already carries the note; this is the second copy."""
+    try:
+        d = os.path.join(os.path.expanduser("~"), ".cache", "bulk-write-guard")
+        os.makedirs(d, exist_ok=True)
+        import time
+        with open(os.path.join(d, "ops-calls.log"), "a") as f:
+            for fn, mode in calls:
+                f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} ops.{fn} {mode}\n")
+    except Exception:  # noqa: BLE001  # a log never changes a verdict
+        pass
+
+
 REASON_TAIL = (
     "\n\nWrites over 5 rows of a production table go through a data-changes/ package PR "
     "(CLAUDE.md §4, LC-1683; format in data-changes/README.md): lint, a production dry-run "
@@ -203,12 +269,23 @@ def evaluate(tool_name: str, tool_input: dict) -> tuple[str, str] | None:
                         "cannot read it. Send the SQL as plain text." + REASON_TAIL)
     hits = findings(query)
     if not hits:
-        return None
+        calls = ops_calls(query)
+        if not calls:
+            return None
+        _log_ops_calls(calls)
+        what = "; ".join(f"ops.{fn} ({mode})" for fn, mode in calls)
+        return "context", (f"[mod:bulk-write-guard] ALLOWED typed write: {what}. Typed ops are the fast path "
+                           "(LC-2076): a dry run shows the receipt, an APPLY needs the operator's quoted yes as "
+                           "approval_ref, and ops.undo(<ledger id>) reverses it. Raw multi-row writes stay guarded.")
     return "deny", ("[mod:bulk-write-guard] REFUSED: this write is not provably 5 rows or "
                     "fewer — " + "; ".join(hits) + "." + REASON_TAIL)
 
 
 def emit(decision: str, reason: str) -> None:
+    if decision == "context":  # let the call run; the note lands in the transcript
+        json.dump({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": reason}}, sys.stdout)
+        sys.stdout.write("\n")
+        return
     json.dump({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": decision,
@@ -304,6 +381,38 @@ def _selftest() -> int:
     for q in denied:
         ck(d(q) == "deny", f"denied: {q[:60]}")
 
+    # typed ops (LC-2076): allowed WITH a note; everything raw stays guarded
+    os.environ["HOME"] = "/nonexistent-selftest-home"  # the best-effort log must not need a real one
+    ops_ok = (
+        "select ops.record_slot_rulings('r', '[{\"slot\":1}]'::jsonb, 'tester')",
+        "select ops.set_product_price('p', 10, 'catalog', null, null, 'why', 'ref', false)",
+        "select ops.swap_slot_product('s', 'P-1', dry_run => true)",
+        "select ops.retire_redirect(array['a','b'], 'why', 'ref', false)",
+        "select ops.undo(12, 'why', 'ref', false)",
+        "SELECT OPS.UNDO(12)",
+        "select ops.record_slot_rulings('r', '[{\"note\":\"update everything, delete from t\"}]'::jsonb, 'tester')",
+    )
+    for q in ops_ok:
+        ck(d(q) == "context", f"typed op allowed with a note: {q[:60]}")
+    ck(d("select ops._snap('t'::regclass, 'true', array['a'])") is None, "a private ops helper is not a typed op (reads as an ordinary call)")
+    ck(d("select myops.undo(1)") is None and d("select x.ops.undo(1)") is None, "only the ops schema counts")
+    ck(d("select 'ops.undo(1)'") is None, "ops.undo inside a string literal is not a call")
+    ck(d("select ops.undo(1); delete from t where a = 1") == "deny", "an ops call does not launder a raw write in the same call")
+    ck(d("update products set price = 1 where brand_id = 'b'") == "deny", "a raw multi-row write is still denied")
+    ck(ops_calls("select ops.undo(12, 'a', 'b', false)") == [("undo", "APPLY")], "positional trailing false = APPLY")
+    ck(ops_calls("select ops.undo(12, 'a', 'b', dry_run => false)") == [("undo", "APPLY")], "named dry_run => false = APPLY")
+    ck(ops_calls("select ops.undo(12, 'a', 'b', true)") == [("undo", "dry run")], "trailing true = dry run")
+    ck(ops_calls("select ops.undo(12)") == [("undo", "dry run")], "no dry_run argument = the function's default dry run")
+    ck(ops_calls("select ops.undo(12, 'a', 'b', False)") == [("undo", "APPLY")], "False in any case reads as APPLY")
+    ck(ops_calls("select ops.undo(coalesce(1, false), 'a', 'b', true)") == [("undo", "dry run")], "a false nested in an earlier argument does not make it an APPLY")
+    ck(ops_calls("select ops.undo(12, 'a', 'b', coalesce(true, false))") == [("undo", "APPLY")], "a non-literal dry_run is treated as APPLY, never understated")
+    ck(ops_calls("select ops.undo(12, dry_run => coalesce(false, true))") == [("undo", "APPLY")], "a non-literal named dry_run is treated as APPLY")
+    ck(ops_calls("select ops.retire_redirect(array['a','b'], 'why', 'ref')") == [("retire_redirect", "dry run")], "3 of 4 positional arguments = default dry run")
+    ck(ops_calls("select ops.undo(12, 'why', 'ref', true), ops.undo(13, 'why', 'ref', false)") == [("undo", "dry run"), ("undo", "APPLY")],
+       "each call in one statement is judged on its own arguments")
+    r = evaluate(SQL, {"query": "select ops.undo(5, 'why', 'ref', false)"})
+    ck(r is not None and "ops.undo (APPLY)" in r[1] and "[mod:bulk-write-guard]" in r[1], "the note names the op, the mode and the mod")
+
     r = evaluate(SQL, {"query": "update t set a = 1 where id in ('1','2','3','4','5','6')"})
     ck("6 rows > 5" in r[1], "reason names the row count")
     ck("data-changes/" in r[1] and "WHERE id IN" in r[1], "reason gives both ways forward")
@@ -338,6 +447,10 @@ def _selftest() -> int:
        "main(): a bad call emits a deny")
     rc, out, _ = run(json.dumps({'tool_name': 'mcp__Supabase__execute_sql', 'tool_input': {'query': 'select 1'}}))
     ck(rc == 0 and out == "", "main(): a fine call emits nothing")
+    rc, out, _ = run(json.dumps({'tool_name': 'mcp__Supabase__execute_sql', 'tool_input': {'query': "select ops.undo(5, 'w', 'r', false)"}}))
+    h = json.loads(out)["hookSpecificOutput"] if rc == 0 and out else {}
+    ck("permissionDecision" not in h and "ops.undo (APPLY)" in h.get("additionalContext", ""),
+       "main(): a typed op emits a note and NO permission decision (the call runs)")
     rc, out, err = run("{not json")
     ck(rc == 1 and out == "" and "allowing" in err, "main(): junk input fails open and visible")
     rc, out, _ = run(json.dumps({"tool_name": 'mcp__Supabase__execute_sql', "tool_input": "str"}))
