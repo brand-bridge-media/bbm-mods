@@ -190,7 +190,7 @@ export function parseRemote(url: string): { owner: string; repo: string } | unde
   return { owner: m[1], repo: m[2] }
 }
 
-export type OpenPr = { number: number; body?: string }
+export type OpenPr = { number: number; body?: string; labels?: string[] }
 
 /**
  * The open PR whose head branch is `branch`, from a list_pull_requests answer (a JSON array, or an
@@ -209,7 +209,14 @@ export function pickOpenPr(text: string, branch: string): OpenPr | undefined {
     && Number.isInteger((x as any).number))
   if (hits.length !== 1) return undefined
   const pr = hits[0]!
-  return { number: pr.number, body: typeof pr.body === 'string' ? pr.body : undefined }
+  return { number: pr.number, body: typeof pr.body === 'string' ? pr.body : undefined, labels: labelNames(pr.labels) }
+}
+
+/** Label names from a PR's `labels` (objects with a name, or bare strings); undefined when the field is absent or junk. */
+export function labelNames(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const names = raw.map(x => (typeof x === 'string' ? x : (x as { name?: unknown } | null)?.name))
+  return names.every((n): n is string => typeof n === 'string' && n !== '') ? names : undefined
 }
 
 /** The body from a pull_request_read `get` answer, or undefined. */
@@ -335,4 +342,35 @@ export function remember(map: Record<string, number> | undefined, key: string, n
   const kept = Object.entries(map ?? {}).filter(([k, t]) => k !== key && typeof t === 'number' && nowMs - t < 3_600_000)
   kept.sort((a, b) => b[1] - a[1])
   return Object.fromEntries([[key, nowMs], ...kept.slice(0, 49)])
+}
+
+// ---------------------------------------------------------------------------------------------
+// 4. Risk-tier label (LCH-615, Phase 0). After a push that went through, the mod asks
+// scripts/ci/tier_label.py which tier the branch's diff is and puts it on the open PR as `tier:T0`,
+// `tier:T1`, `tier:T1-strict` or `tier:T2`, replacing a stale tier label. Labelling is NOT a gate:
+// nothing here can deny a push, and every miss (no script, no PR, connector down) says nothing.
+// The CI labeller (.github/workflows/tier-label.yml) labels PRs that were not pushed through a mod
+// session, and overwrites this label from main's rules on its next run, so a local answer from a
+// stale checkout never sticks.
+// ---------------------------------------------------------------------------------------------
+
+export const TIER_SCRIPT = 'scripts/ci/tier_label.py'
+export const TIER_TIMEOUT_MS = 20_000
+export const TIER_PREFIX = 'tier:'
+export const TIER_LABELS = ['tier:T0', 'tier:T1', 'tier:T1-strict', 'tier:T2'] as const
+
+/** The label from tier_label.py's receipt line, or undefined for NOT CHECKED, junk or an unknown label. */
+export function tierFromReceipt(output: string): string | undefined {
+  const m = output.match(/^RESULT=PASS label=(\S+) /m)
+  return m && (TIER_LABELS as readonly string[]).includes(m[1]!) ? m[1] : undefined
+}
+
+/**
+ * The full label set the PR should have, or undefined when it already has exactly `want` as its tier
+ * label (nothing to write). Every non-tier label is kept; every other `tier:*` label is dropped.
+ */
+export function labelsAfter(current: string[], want: string): string[] | undefined {
+  const stale = current.some(n => n.startsWith(TIER_PREFIX) && n !== want)
+  if (!stale && current.includes(want)) return undefined
+  return [...current.filter(n => !n.startsWith(TIER_PREFIX)), want]
 }

@@ -1,8 +1,8 @@
 import type { Register } from 'claude-code'
 
 import {
-  PREFLIGHT_TIMEOUT_MS, bodyFromGet, decidePush, decideUpdateBranch, hasSkip, nudgeFor, parseCheckRuns, parsePushes,
-  parseRemote, pickOpenPr, remember,
+  PREFLIGHT_TIMEOUT_MS, TIER_SCRIPT, TIER_TIMEOUT_MS, bodyFromGet, decidePush, decideUpdateBranch, hasSkip, labelsAfter,
+  labelNames, nudgeFor, parseCheckRuns, parsePushes, parseRemote, pickOpenPr, remember, tierFromReceipt,
 } from './logic'
 import type { Push, PreflightRun } from './logic'
 
@@ -96,6 +96,52 @@ async function runPreflight($: any, p: Push, top: string | undefined, notes: str
   }
 }
 
+/**
+ * LCH-615 Phase 0: label the branch's open PR with its risk tier. Returns a note for the model, or
+ * undefined (silence) on any miss. NEVER throws and never blocks: it runs after the push, with its own
+ * 20 s box per step, so the 180 s preflight box is untouched. Labelling is not a gate.
+ */
+async function labelTier($: any, p: Push, top: string | undefined): Promise<string | undefined> {
+  try {
+    if (!top || p.isDirUnresolved || !(await $.fs.exists(`${top}/${TIER_SCRIPT}`))) return undefined
+    const branch = await branchOf($, p, top)
+    if (!branch || branch === 'HEAD') return undefined
+    // --no-renames lists both the old and the new path of a rename: a move out of a gate path still counts.
+    const r = await $.process.run(['sh', '-c',
+      `git -C "$1" diff --name-only --no-renames origin/main...HEAD | python3 -I "$1/${TIER_SCRIPT}" files`, 'sh', top],
+      { timeoutMs: TIER_TIMEOUT_MS })
+    const want = r.exitCode === 0 ? tierFromReceipt(String(r.stdout ?? '')) : undefined
+    if (!want) return undefined
+    const remote = await $.process.run(['git', '-C', top, 'remote', 'get-url', 'origin'], { timeoutMs: 10_000 })
+    const where = remote.exitCode === 0 ? parseRemote(String(remote.stdout ?? '')) : undefined
+    if (!where) return undefined
+    for (const server of GITHUB_SERVERS) {
+      try {
+        const l = await $.mcp.call(server, 'list_pull_requests', {
+          owner: where.owner, repo: where.repo, head: `${where.owner}:${branch}`, state: 'open', perPage: 10,
+        })
+        if (l.isError) continue
+        const pr = pickOpenPr(textOf(l), branch)
+        if (!pr) return undefined // no PR yet: the CI labeller labels it when it opens
+        let current = pr.labels
+        if (!current) {
+          const g = await $.mcp.call(server, 'pull_request_read', { method: 'get', owner: where.owner, repo: where.repo, pullNumber: pr.number })
+          if (g.isError) return undefined
+          current = labelNames((JSON.parse(textOf(g)) as { labels?: unknown }).labels)
+        }
+        if (!current) return undefined // unreadable labels: writing would risk dropping the real ones
+        const next = labelsAfter(current, want)
+        if (!next) return `PR #${pr.number} already carries ${want}.`
+        const w = await $.mcp.call(server, 'issue_write', {
+          method: 'update', owner: where.owner, repo: where.repo, issue_number: pr.number, labels: next,
+        })
+        return w.isError ? undefined : `PR #${pr.number} labelled ${want} (risk tier of this diff; nothing is enforced yet).`
+      } catch { /* try the next connector name */ }
+    }
+    return undefined
+  } catch { return undefined }
+}
+
 async function branchOf($: any, p: Push, top: string | undefined): Promise<string> {
   if (p.branch) return p.branch
   try {
@@ -130,6 +176,12 @@ export const register: Register = on => {
 
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError) return ran
+
+    // LCH-615: risk-tier label on the open PR. After the push, never before, and silent on any miss.
+    for (const { p, top } of targets) {
+      const note = await labelTier($, p, top)
+      if (note) notes.push(say($, note, undefined, true))
+    }
 
     // Batching nudge: warning only, after a push that looks successful.
     try {

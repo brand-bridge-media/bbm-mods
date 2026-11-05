@@ -7,7 +7,7 @@
     {
       "name": "ci-preflight",
       "source": "./claude-mods/ci-preflight",
-      "description": "Runs the fast CI checks (schema-drift, portal selftests, migration lints, workflow pins) before a git push leaves the session; refuses update-branch while checks fail or run; warns on repeat pushes within 10 minutes."
+      "description": "Runs the fast CI checks (schema-drift, portal selftests, migration lints, workflow pins) before a git push leaves the session; refuses update-branch while checks fail or run; warns on repeat pushes within 10 minutes; labels the open PR with its risk tier after a push (labels only, nothing enforced)."
     },
     {
       "name": "ask-to-deny-in-child",

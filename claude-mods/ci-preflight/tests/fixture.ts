@@ -24,6 +24,11 @@ export type World = {
   prs?: unknown // list_pull_requests answer (JSON-stringified)
   prGet?: unknown // pull_request_read `get` answer
   failServers?: string[] // MCP servers whose calls throw
+  // LCH-615: the risk-tier label
+  hasTierScript?: boolean // scripts/ci/tier_label.py exists (default false: existing tests see no label calls)
+  tierOut?: string // stdout of the tier_label.py pipeline
+  tierExit?: number
+  writeError?: boolean // issue_write reports isError
 }
 
 export function world(on: any, w: World = {}) {
@@ -35,9 +40,10 @@ export function world(on: any, w: World = {}) {
   const mcpCalls: { server: string; tool: string; args: any }[] = []
   const reached: any[] = []
   const writes: { body: string; path: string }[] = []
+  const tierRuns: { argv: string[]; timeoutMs?: number }[] = []
   const top = w.top === undefined ? '/work/repo' : w.top
   on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
-  on('fs.exists', (_$: any, e: any) => ({ value: (w.hasScript ?? true) && String(e.path).endsWith('scripts/ci/preflight.sh') }) as any)
+  on('fs.exists', (_$: any, e: any) => ({ value: ((w.hasScript ?? true) && String(e.path).endsWith('scripts/ci/preflight.sh')) || ((w.hasTierScript ?? false) && String(e.path).endsWith('scripts/ci/tier_label.py')) }) as any)
   on('process.run', async (_$: any, e: any) => {
     const argv: string[] = [...e.argv]
     if (argv[0] === 'git') {
@@ -49,6 +55,10 @@ export function world(on: any, w: World = {}) {
         return { value: url === null ? { exitCode: 2, stdout: '', stderr: 'no remote' } : { exitCode: 0, stdout: url + '\n', stderr: '' } } as any
       }
       if (argv.includes('--absolute-git-dir')) return { value: { exitCode: 0, stdout: `${top}/.git\n`, stderr: '' } } as any
+    }
+    if (argv[0] === 'sh' && String(argv[2]).includes('tier_label.py')) {
+      tierRuns.push({ argv, timeoutMs: e.init?.timeoutMs })
+      return { value: { exitCode: w.tierExit ?? 0, stdout: w.tierOut ?? '', stderr: '' } } as any
     }
     if (argv[0] === 'sh') {
       writes.push({ body: argv[4]!, path: argv[5]! })
@@ -66,6 +76,7 @@ export function world(on: any, w: World = {}) {
     mcpCalls.push({ server: e.server, tool: e.tool, args: e.args })
     if (w.failServers?.includes(e.server)) throw new Error(`no such server ${e.server}`)
     if (e.tool === 'list_pull_requests') return { value: { isError: false, content: [{ type: 'text', text: JSON.stringify(w.prs ?? []) }] } } as any
+    if (e.tool === 'issue_write') return { value: { isError: !!w.writeError, content: [{ type: 'text', text: '{}' }] } } as any
     if (e.tool === 'pull_request_read' && e.args?.method === 'get') {
       return { value: { isError: false, content: [{ type: 'text', text: JSON.stringify(w.prGet ?? {}) }] } } as any
     }
@@ -79,7 +90,7 @@ export function world(on: any, w: World = {}) {
     reached.push(e)
     return (w.engineError ? { result: 'fatal: rejected', text: 'fatal: rejected', isError: true } : { result: 'ok', text: 'ok' }) as any
   })
-  return { toasts, preflightRuns, gitCalls, mcpCalls, reached, clock, writes }
+  return { toasts, preflightRuns, gitCalls, mcpCalls, reached, clock, writes, tierRuns }
 }
 
 export const runs = (...r: [string, string, string | null][]) =>

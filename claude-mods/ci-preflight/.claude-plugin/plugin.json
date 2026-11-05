@@ -1,7 +1,7 @@
 {
   "name": "ci-preflight",
-  "version": "0.1.0",
-  "description": "Runs the fast CI checks (scripts/ci/preflight.sh) before a git push leaves the session; guards update-branch against failing or still-running checks; nudges when pushes to one branch come within 10 minutes.",
+  "version": "0.2.0",
+  "description": "Runs the fast CI checks (scripts/ci/preflight.sh) before a git push leaves the session; guards update-branch against failing or still-running checks; nudges when pushes to one branch come within 10 minutes; after a push, labels the open PR with its risk tier (tier:T0, tier:T1, tier:T1-strict, tier:T2; LCH-615, labels only).",
   "author": {
     "name": "Brand Bridge Media"
   }
