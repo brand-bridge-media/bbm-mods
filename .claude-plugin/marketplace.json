@@ -97,7 +97,7 @@
     {
       "name": "session-title-nudge",
       "source": "./claude-mods/session-title-nudge",
-      "description": "Puts the session-naming convention (`<TICKET> \u2014 <summary>`) in front of the model at session start, and a rename reminder when createJiraIssue mints a key."
+      "description": "Puts the session-naming convention (`<TICKET> — <summary>`) in front of the model at session start, and a rename reminder when createJiraIssue mints a key."
     },
     {
       "name": "oversized-file-nudge",
@@ -168,6 +168,11 @@
       "name": "refresh-status",
       "source": "./claude-mods/refresh-status",
       "description": "Types \"refresh status\" and gets the Overseer's per-stage table for every monitored refresh, injected to be shown verbatim. NOT CHECKED if the read fails; never invents a row."
+    },
+    {
+      "name": "slowness-report",
+      "source": "./claude-mods/slowness-report",
+      "description": "Puts a clock on every PR a session opens or arms for auto-merge; past a 30-minute budget it wakes the session once to measure where the time went, then records ONE dated occurrence comment (with the PR reference) on the ticket that owns that cause under epic LCH-600. Never creates a ticket: recurrence is the comment count per cause. /slow does the same on the operator's demand."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."

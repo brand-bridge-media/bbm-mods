@@ -1,0 +1,9 @@
+{
+  "name": "slowness-report",
+  "version": "0.2.0",
+  "description": "Puts a clock on every PR a session opens or arms for auto-merge; past a 30-minute budget it wakes the session once to measure where the time went, then records ONE dated occurrence comment (with the PR reference) on the ticket that owns that cause under epic LCH-600. Never creates a ticket: recurrence is the comment count per cause. /slow does the same on the operator's demand.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
