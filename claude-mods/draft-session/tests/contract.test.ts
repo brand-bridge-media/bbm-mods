@@ -35,3 +35,19 @@ test('/draft-done refuses when the contract is unreadable', { options: OPTS }, a
   const done = await $.command.run({ command: 'draft-done', args: '' } as any)
   expect(JSON.stringify(done)).toContain('contract unreadable')
 })
+
+test('with no contractPath, the session root checkout is tried first (headless agent/ layout)', { options: { ...OPTS, contractPath: '' } }, async ($, on) => {
+  base(on)
+  on('session.root', () => ({ value: '/w/agent' }) as any)
+  const reads: string[] = []
+  on('fs.read', (_$: any, e: any) => {
+    const p = String(e.path)
+    reads.push(p)
+    if (p === '/w/agent/stages/v2_s6_draft.md') return { value: 'CONTRACT-FROM-ROOT' } as any
+    throw new Error('ENOENT')
+  })
+  on('ui.toast', () => ({ value: undefined }) as any)
+  const out = JSON.stringify(await $.prompt.compose(ARGS as any))
+  expect(out).toContain('CONTRACT-FROM-ROOT')
+  expect(reads[0]).toBe('/w/agent/stages/v2_s6_draft.md')
+})

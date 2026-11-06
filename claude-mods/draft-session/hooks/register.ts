@@ -177,8 +177,17 @@ const failClosed = ($: any, e: any, next: any) =>
 
 type Contract = { ok: true; path: string; text: string } | { ok: false; tried: string[]; err: string }
 
+// LC-2019: a headless job (refresh-session-step.yml) runs from a nested `agent/` checkout of bbm-refresh-agent,
+// where neither fallback exists (run 42311005913: ENOENT). The session root is that checkout, so it is tried first.
+async function contractCandidates($: any, configured: string): Promise<string[]> {
+  if (configured) return [configured]
+  const root = await $.session.root().catch(() => '')
+  const fromRoot = root ? [`${String(root).replace(/\/$/, '')}/stages/v2_s6_draft.md`] : []
+  return [...fromRoot, ...CONTRACT_FALLBACKS.filter((p) => !fromRoot.includes(p))]
+}
+
 async function loadContract($: any, configured: string): Promise<Contract> {
-  const tried = configured ? [configured] : CONTRACT_FALLBACKS
+  const tried = await contractCandidates($, configured)
   let err = ''
   for (const p of tried) {
     try {
