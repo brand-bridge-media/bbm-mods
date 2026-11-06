@@ -163,8 +163,16 @@ and each failure cost a full round, though the check takes seconds locally.
 - **`scripts/ci/preflight.sh [repo_root] [base_ref] [pr_body_file]`** also runs by hand. It diffs HEAD against the merge base and runs only the
   checks the changed files call for: **schema-drift** (added/renamed migrations; the exact guardrails G4 `extract` / grep / `judge`
   logic, using `scripts/ci/vendor/schema_drift.py` from bbm-guardrails `1b01cd8`, which must be re-copied when guardrails changes it),
-  **operations-portal** (`lib/data/*.selftest.mjs`; `tsc --noEmit` only when `node_modules` exists), **migrations**
-  (`lint_function_grants`, `lint_table_domains`), **workflows** (`bump_action_pins --check`, `runner_lane --check`).
+  **operations-portal** (`lib/data/*.selftest.mjs`; `tsc --noEmit` only when `node_modules` exists), and (LCH-622) **the `quick` list**:
+  `scripts/quick_checks.py plan` / `run ID` are called, so the checks are the ones in `scripts/ci/quick_checks.json` (file-size ratchet, owner_name,
+  action pins + runner_lane + schedule_lint + sha_pins, workflow environment/permissions, cadence drift, supabase_rules, function_grants,
+  table_domains), each only when its paths changed: one definition, no second list to keep in sync (the old `migrations` / `workflows` tokens are
+  aliases of it). Also **floor** (`floor_presence.sh check`, needs bbm-guardrails `mutation_gate.py`: `$PREFLIGHT_GUARDRAILS_DIR`, `../bbm-guardrails`,
+  `~/bbm-guardrails`, else fetched at the SHA pinned in `quick.yml` with an authenticated `gh`; absent = NOT CHECKED) and **diffsize** (WARN at 500 KB of
+  diff against the independent reviewer's 600 KB limit; advisory). A failing check prints the exact accepted shape (the schema-drift waiver, the
+  `size-exception:` line, the SHA-pin form, the floor_write command), and a PR-body line that looks like a waiver but would not be accepted is named.
+  Full run measured at ~11 s (180 s box). Kill switch: delete the check from `scripts/ci/preflight.sh`, or `PREFLIGHT_SKIP=1`.
+  bbm-guardrails has its own `scripts/ci/preflight.sh` (its `fast-checks` list + file-size ratchet, ~70 s); this mod runs it the same way.
   Exit `0` all pass, `1` any FAIL, `2` nothing failed but something is NOT CHECKED (never counted as a pass).
   Known differences from CI: PR-body "by design" overrides are seen only when a body file is given (the push hook passes the open
   PR's body, below; by hand, the third argument or `PREFLIGHT_PR_BODY_FILE`); CI checks the PR
