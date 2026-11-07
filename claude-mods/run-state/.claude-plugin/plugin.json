@@ -1,6 +1,6 @@
 {
   "name": "run-state",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Band above the prompt with the refresh run's stage, next READY section, Pass A age and missing receipts; plus a guard that refuses receipt writes for sections the conductor has not marked READY.",
   "types": "./types/index.d.ts",
   "author": {

@@ -187,3 +187,22 @@ test('without the pin the same IN_PROGRESS re-write still asks (and is refused u
   expect(log.asked.length).toBe(1)
   expect(log.engine).toBe(0)
 })
+
+// LC-2019: the headless Draft's run is `blocked`, so the active list is empty and never trusted; the harness pin
+// (BBM_DRAFT_RUN_ID) makes the guard read that run directly and judge the write on its plan.
+test('with no active run, the BBM_DRAFT_RUN_ID pin is read directly and a READY write goes through', async ($, on) => {
+  const log = await world($, on, { active: [], runs: { [A]: {} } })
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'BBM_DRAFT_RUN_ID' ? A : undefined }) as any)
+  await $.tool.call({ tool: 'Bash', command: UNNAMED } as any)
+  expect(log.asked.length).toBe(0)
+  expect(log.engine).toBe(1)
+  expect(log.listQueries).toBe(0) // the pinned run was read, not the active list
+})
+
+test('the env pin is judged like any plan: a BLOCKED section on the pinned run is still denied', async ($, on) => {
+  const log = await world($, on, { active: [], runs: { [A]: { v2_s9c2: 'BLOCKED' } } })
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'BBM_DRAFT_RUN_ID' ? A : undefined }) as any)
+  const out: any = await $.tool.call({ tool: 'Bash', command: UNNAMED } as any)
+  expect(JSON.stringify(out)).toContain('BLOCKED')
+  expect(log.engine).toBe(0)
+})

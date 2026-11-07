@@ -101,7 +101,14 @@ async function sql($: any, o: Opts, q: Q): Promise<unknown[]> {
 // it is the pin, else the only active run. Returns null when there is NO active run (and nothing
 // was asked for); throws with a reason when any step fails, which callers turn into "ask".
 async function loadView($: any, o: Opts, which?: string): Promise<RunView | null> {
-  const wanted = which ?? (await read($, pin))
+  // LC-2019 (operator-approved 2026-11-07): a session the harness pinned (BBM_DRAFT_RUN_ID, set by session_step.py for
+  // the headless Draft) reads THAT run directly. Its run is `blocked` (the loop parked it for this very session), so the
+  // active list is empty, and an empty list is never trusted as "no active run"; without this no plan could be read.
+  let envPin = ''
+  if (!which) {
+    try { envPin = String((await $.env.get('BBM_DRAFT_RUN_ID')) ?? '').trim() } catch { envPin = '' }
+  }
+  const wanted = which ?? ((await read($, pin)) || envPin)
   let q: Q
   if (wanted) {
     const clause = pinClause(wanted)
