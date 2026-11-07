@@ -2,7 +2,7 @@ import { expect, mock } from 'claude-code/testing'
 import { test } from './slow'
 
 import { helperOutput, sqlReply } from './fixture'
-import { decide, receiptWritesInBash } from '../hooks/logic'
+import { decide, pinnedSupersede, receiptWritesInBash } from '../hooks/logic'
 
 // Which run a write is judged against, what a human barrier does, and what the guard does when no
 // run is active or its own refresh fails (orchestrator review of PR #1581).
@@ -149,4 +149,41 @@ test('with no active run, a write that NAMES a run is still judged against that 
   const out2: any = await $.tool.call({ tool: 'Bash', command: WRITE(A) } as any)
   expect(log.asked.length).toBe(1)
   expect(JSON.stringify(out2)).toContain('refused')
+})
+
+// LC-2019: a session pinned to the run (BBM_DRAFT_RUN_ID) may supersede that run's IN_PROGRESS receipt; nothing else.
+test('decide + pinnedSupersede: only IN_PROGRESS on the pinned run itself is allowed', () => {
+  const view: any = {
+    slug: 'family-sofa', runId: A, table: [{ id: 'x', stage: 9, part: 'c2' }],
+    sections: [{ id: 'x', label: 'x', state: 'IN_PROGRESS', unmet: [] }],
+  }
+  const [t] = receiptWritesInBash(WRITE(A))
+  const d = decide(view, t)
+  expect(d.action).toBe('ask')
+  expect(pinnedSupersede(d, view, A).action).toBe('allow')
+  expect(pinnedSupersede(d, view, A.toUpperCase()).action).toBe('allow')
+  expect(pinnedSupersede(d, view, '').action).toBe('ask')
+  expect(pinnedSupersede(d, view, B).action).toBe('ask')
+  view.sections[0].state = 'DONE'
+  expect(pinnedSupersede(decide(view, t), view, A).action).toBe('ask')
+  view.sections[0].state = 'WAITING_STAN'
+  expect(pinnedSupersede(decide(view, t), view, A).action).toBe('ask')
+  view.sections[0].state = 'BLOCKED'
+  expect(pinnedSupersede(decide(view, t), view, A).action).toBe('deny')
+})
+
+test('a pinned headless session re-writes its own IN_PROGRESS receipt without asking', async ($, on) => {
+  const log = await world($, on, { active: [A], runs: { [A]: { v2_s9c2: 'IN_PROGRESS' } } })
+  on('env.get', (_$: any, e: any) => ({ value: e.name === 'BBM_DRAFT_RUN_ID' ? A : undefined }) as any)
+  await $.tool.call({ tool: 'Bash', command: WRITE(A) } as any)
+  expect(log.asked.length).toBe(0)
+  expect(log.engine).toBe(1)
+})
+
+test('without the pin the same IN_PROGRESS re-write still asks (and is refused unanswered)', async ($, on) => {
+  const log = await world($, on, { active: [A], runs: { [A]: { v2_s9c2: 'IN_PROGRESS' } } })
+  on('env.get', () => ({ value: undefined }) as any)
+  await $.tool.call({ tool: 'Bash', command: WRITE(A) } as any)
+  expect(log.asked.length).toBe(1)
+  expect(log.engine).toBe(0)
 })

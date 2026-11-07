@@ -4,6 +4,7 @@ import type { Register } from 'claude-code'
 import type { RunView } from '../types'
 import {
   LIST_ACTIVE_SQL,
+  pinnedSupersede,
   PY_HELPER,
   REST_ACTIVE_QS,
   SQL_TOOL,
@@ -236,7 +237,13 @@ export const register: Register = (on, options) => {
               continue
             }
           }
-          decisions.push(decide(v as RunView, t))
+          const d0 = decide(v as RunView, t)
+          // Read the pin only for the one ask it can change; an unreadable env is "not pinned" (the ask stands).
+          let pinned = ''
+          if (d0.supersede === 'IN_PROGRESS') {
+            try { pinned = String((await $.env.get('BBM_DRAFT_RUN_ID')) ?? '') } catch { pinned = '' }
+          }
+          decisions.push(pinnedSupersede(d0, v as RunView, pinned))
         }
         const d = decisions.length ? worst(decisions) : null
         if (d?.action === 'deny') return { deny: say($, d.reason) }

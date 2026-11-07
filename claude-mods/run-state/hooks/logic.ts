@@ -458,7 +458,8 @@ export function receiptWritesInSql(tool: string, query: string, knownIds: string
 
 // ---------------------------------------------------------------- the decision
 
-export type Decision = { action: 'allow' | 'ask' | 'deny'; reason: string }
+// `supersede` names the state a re-write would replace (DONE / IN_PROGRESS), so the guard can tell that ask apart.
+export type Decision = { action: 'allow' | 'ask' | 'deny'; reason: string; supersede?: string }
 
 const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-9
 
@@ -504,7 +505,7 @@ export function decide(view: RunView, t: WriteTarget): Decision {
   }
   const redo = verdicts.find(v => v.s!.state === 'DONE' || v.s!.state === 'IN_PROGRESS')
   if (redo) {
-    return { action: 'ask', reason: `run-state: ${redo.id} is already ${redo.s!.state} on ${view.slug}; this write supersedes its receipt. Confirm.` }
+    return { action: 'ask', reason: `run-state: ${redo.id} is already ${redo.s!.state} on ${view.slug}; this write supersedes its receipt. Confirm.`, supersede: redo.s!.state }
   }
   // Allow-list, not fall-through: only READY, or FAILED (the conductor lists a failed gate
   // under LAUNCH NOW as a re-run). Any other state (a future or malformed one) asks.
@@ -525,3 +526,13 @@ export const mayWriteRunState = (tool: string, query: string): boolean =>
 // The write names a run: is it the one the view is of? (a run id or an article slug)
 export const sameRun = (view: RunView, run: string): boolean =>
   run === view.runId.toLowerCase() || run === view.slug.toLowerCase()
+
+// LC-2019 (operator-approved 2026-11-07). A drafting session the harness pinned to a run (BBM_DRAFT_RUN_ID, set by
+// session_step.py for the headless job) owns that run's in-progress receipt: a failed earlier attempt left it
+// `pending`, so the next attempt's write would otherwise ask, and a headless job has no one to answer
+// (refresh-session-step run 42312136226). Only IN_PROGRESS on the pinned run itself is waved through; DONE still asks.
+export function pinnedSupersede(d: Decision, view: RunView, pinnedRun: string): Decision {
+  const pin = pinnedRun.trim().toLowerCase()
+  if (d.action !== 'ask' || d.supersede !== 'IN_PROGRESS' || !pin || !sameRun(view, pin)) return d
+  return { action: 'allow', reason: `${d.reason.replace(/ Confirm\.$/, '')} Allowed: this session is pinned to that run.` }
+}
