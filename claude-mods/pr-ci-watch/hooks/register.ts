@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, findPr, mergeFactsDue, prNumberFrom, parseCheckRuns, parsePr, parsePushes, parseRemote, parseTrainComment, parseTrainStatus, POLL_MS, stampWake, watchKey } from './logic'
+import { decide, findPr, mergeFactsDue, prNumberFrom, parseCheckRuns, parsePr, parsePushes, parseRemote, parseTrainComment, parseTrainStatus, POLL_MS, splitMergify, stampWake, watchKey } from './logic'
 import type { Observation, PushCmd, Wake } from './logic'
 
 // Why (LC-1896): a session must not depend on GitHub's PR events alone to learn its CI finished.
@@ -55,8 +55,12 @@ async function observe($: any, w: Watch, now: number): Promise<Observation> {
   const pr = parsePr((await mcp($, w.server, 'pull_request_read', { method: 'get', owner: w.owner, repo: w.repo, pullNumber: w.number })) ?? '')
   if (!pr) return { kind: 'error', detail: 'pull_request_read get unreadable' }
   if (pr.merged || pr.state === 'closed') return { kind: 'pr', ...pr, runs: [] }
-  const runs = parseCheckRuns((await mcp($, w.server, 'pull_request_read',
+  const all = parseCheckRuns((await mcp($, w.server, 'pull_request_read',
     { method: 'get_check_runs', owner: w.owner, repo: w.repo, pullNumber: w.number, perPage: 100 })) ?? '')
+  // LCH-614: Mergify's own checks are queue state, not CI (see splitMergify).
+  const split = all ? splitMergify(all) : undefined
+  const runs = split?.ci
+  const queue = split?.queue
   if (!mergeFactsDue(w, now) || pr.headSha !== w.sha) return { kind: 'pr', ...pr, runs }
   // A stuck wake is due: read why the queue has not taken it (best effort; missing facts say "unknown").
   const raw = (await mcp($, w.server, 'pull_request_read', { method: 'get', owner: w.owner, repo: w.repo, pullNumber: w.number })) ?? ''
@@ -66,7 +70,7 @@ async function observe($: any, w: Watch, now: number): Promise<Observation> {
   const trainRun = (runs ?? []).find(r => r.name === 'merge-train' && r.status === 'completed')
   const train = status ?? (trainRun ? { state: trainRun.conclusion ?? 'unknown' } : undefined)
   const trainComment = parseTrainComment((await mcp($, w.server, 'pull_request_read', { method: 'get_comments', owner: w.owner, repo: w.repo, pullNumber: w.number, perPage: 100 })) ?? '')
-  return { kind: 'pr', ...pr, runs, merge: { mergeableState, train, trainComment } }
+  return { kind: 'pr', ...pr, runs, merge: { mergeableState, train, trainComment, ...(queue ? { queue } : {}) } }
 }
 
 async function tick($: any) {
@@ -172,7 +176,7 @@ export const register: Register = on => {
     return { ...ran, context: [...(ran.context ?? []), note] }
   }).catch(($, e, next) => next(e))
 
-  // LC-1975 (fix 2): arming auto-merge hands the PR to the merge train; keep watching until it merges.
+  // LC-1975 (fix 2): arming auto-merge hands a tier-0 PR to GitHub (tier 1+ uses the `queue` label, below); keep watching until it merges.
   on('tool.call', { tool: /^mcp__.*__enable_pr_auto_merge$/ }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError) return ran
@@ -186,6 +190,26 @@ export const register: Register = on => {
       await update($, watches, l => l.map(x => (x === prior || (x.owner === prior.owner && x.repo === prior.repo && x.number === prior.number) ? { ...x, armed: true } : x)))
       return { ...ran, context: [...(ran.context ?? []), `[mod:pr-ci-watch] ${a.owner}/${a.repo}#${number} is armed: watching it until it merges; ` +
         'woken on merge, on a CI failure, or if green but not merged within 30 minutes (with the reason). No check-in needed.'] }
+    }
+    const note = await watch($, { owner: String(a.owner), repo: String(a.repo), number, server, sha: '', armed: true })
+    return { ...ran, context: [...(ran.context ?? []), note] }
+  }).catch(($, e, next) => next(e))
+
+  // LCH-614: the `queue` label is how a PR enters the Mergify merge queue (it replaced arming auto-merge for tier 1+).
+  // Adding it hands the PR to the queue exactly as arming did for the train: keep watching until it merges.
+  on('tool.call', { tool: /^mcp__.*__issue_write$/ }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny !== undefined || ran.isError) return ran
+    const a = e as any
+    const number = Number(a.issue_number)
+    const labels: unknown = a.labels
+    if (!a.owner || !a.repo || !Number.isInteger(number) || !Array.isArray(labels) || !labels.includes('queue')) return ran
+    const server = String(a.tool).split('__')[1] ?? DEFAULT_SERVER
+    const prior = (await read($, watches)).find(x => x.owner === a.owner && x.repo === a.repo && x.number === number)
+    if (prior) {
+      await update($, watches, l => l.map(x => (x.owner === prior.owner && x.repo === prior.repo && x.number === prior.number ? { ...x, armed: true } : x)))
+      return { ...ran, context: [...(ran.context ?? []), `[mod:pr-ci-watch] ${a.owner}/${a.repo}#${number} carries the queue label: watching it until it merges; ` +
+        'woken on merge, on a CI failure, a dequeue, or if green but not merged within 30 minutes (with the reason).'] }
     }
     const note = await watch($, { owner: String(a.owner), repo: String(a.repo), number, server, sha: '', armed: true })
     return { ...ran, context: [...(ran.context ?? []), note] }

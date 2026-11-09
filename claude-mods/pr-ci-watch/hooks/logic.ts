@@ -25,8 +25,10 @@ export type MergeFacts = {
   mergeableState?: string
   /** The merge train's own verdict on the head: a `merge-train` commit status or check run. */
   train?: { state: string; description?: string }
-  /** The newest PR comment that mentions the merge train (eviction comments name the reason). */
+  /** The newest PR comment that mentions the merge train or merge queue (eviction comments name the reason). */
   trainComment?: string
+  /** LCH-614: Mergify's own `Mergify Merge Queue` check on the PR head (queued, dequeued, merged). */
+  queue?: { state: string }
 }
 
 export type Observation =
@@ -126,11 +128,37 @@ export function parseTrainStatus(text: string): { state: string; description?: s
   return s && typeof s.state === 'string' ? { state: s.state.toLowerCase(), description: typeof s.description === 'string' ? s.description : undefined } : undefined
 }
 
-/** The newest comment that talks about the merge train, from get_comments text, trimmed to one line. */
+// LCH-614: Mergify (the merge queue that replaced the in-house train) reports on the PR through two checks of its own.
+// `Mergify Merge Protections` is NEUTRAL by design (it is not a required check), and `Mergify Merge Queue` stays
+// in progress for as long as the PR waits in the queue. Neither is CI: left in the list, the first would read as
+// "did not clearly pass" and the second as "still running" for the whole wait, so an armed PR would never count as green.
+export const MERGIFY_PROTECTIONS = 'Mergify Merge Protections'
+export const MERGIFY_QUEUE = 'Mergify Merge Queue'
+
+/** Splits Mergify's own checks off the CI picture. A COMPLETED non-success queue check stays in `ci`: that is a dequeue. */
+export function splitMergify(runs: CheckRun[]): { ci: CheckRun[]; queue?: { state: string } } {
+  const ci: CheckRun[] = []
+  const queueRuns = runs.filter(r => r.name === MERGIFY_QUEUE)
+  // A re-queued PR can show an old failed queue check beside a new in-progress one: the live one wins, so a stale
+  // dequeue never keeps a re-queued PR reading red.
+  const live = queueRuns.some(r => r.status !== 'completed')
+  // No live run: the newest finished one speaks (by completion time; the API's list order is not a promise).
+  const newest = [...queueRuns].sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0)).pop()
+  const queue = queueRuns.length === 0 ? undefined : { state: live ? 'queued' : (newest!.conclusion ?? 'unknown') }
+  for (const r of runs) {
+    // Protections is neutral by design; any other result (a failing rule) stays visible as a CI problem.
+    if (r.name === MERGIFY_PROTECTIONS && (r.conclusion === 'neutral' || r.conclusion === 'success')) continue
+    if (r.name === MERGIFY_QUEUE && (live || r.status !== 'completed' || r !== newest || r.conclusion === 'success')) continue
+    ci.push(r)
+  }
+  return { ci, ...(queue ? { queue } : {}) }
+}
+
+/** The newest comment that talks about the merge train or merge queue, from get_comments text, trimmed to one line. */
 export function parseTrainComment(text: string): string | undefined {
   const v = json(text)
   if (!Array.isArray(v)) return undefined
-  const hits = v.filter((c: any) => typeof c?.body === 'string' && /merge[- ]train|evict/i.test(c.body))
+  const hits = v.filter((c: any) => typeof c?.body === 'string' && /merge[- ]train|merge queue|evict|dequeue/i.test(c.body))
   const c: any = hits.sort((a: any, b: any) => String(a.updated_at ?? a.created_at ?? '').localeCompare(String(b.updated_at ?? b.created_at ?? ''))).pop()
   if (!c) return undefined
   const body = c.body.replace(/<!--[\s\S]*?-->/g, '').replace(/\s+/g, ' ').trim()
@@ -143,14 +171,21 @@ export function stuckReasons(m: MergeFacts | undefined): string[] {
   if (m?.train && ['failure', 'error'].includes(m.train.state)) {
     out.push(`the merge train evicted it (merge-train ${m.train.state}${m.train.description ? `: ${m.train.description}` : ''})`)
   }
+  if (m?.queue && ['failure', 'cancelled', 'timed_out', 'action_required'].includes(m.queue.state)) {
+    out.push(`the merge queue dropped it (${MERGIFY_QUEUE} ${m.queue.state}): read Mergify's comment on the PR, fix, push, and re-add the \`queue\` label if it was removed`)
+  }
   if (m?.mergeableState === 'dirty') out.push('it conflicts with main (mergeable_state dirty): merge main into the branch and push')
-  if (m?.mergeableState === 'draft') out.push('it is a draft: the train only takes ready PRs')
-  if (m?.mergeableState === 'blocked' && !m.train) {
-    out.push('a required check has no result on this head (mergeable_state blocked, no merge-train verdict yet): ' +
-      'check that every ruleset-required check, including the independent review, is green on this exact sha')
+  if (m?.mergeableState === 'draft') out.push('it is a draft: neither the queue nor the train takes drafts')
+  if (m?.mergeableState === 'blocked' && !m.train && !m.queue) {
+    out.push('a required check has no result on this head (mergeable_state blocked, no queue or train verdict yet): ' +
+      'check that every ruleset-required check, including the independent review, is green on this exact sha, ' +
+      'and that the PR carries the `queue` label (Mergify takes only labelled PRs; a tier-0 PR is armed for auto-merge instead)')
+  }
+  if (m?.queue && !['failure', 'cancelled', 'timed_out', 'action_required'].includes(m.queue.state)) {
+    out.push(`it is in the merge queue (${MERGIFY_QUEUE}: ${m.queue.state}); the queue tests it on a mergify/merge-queue/* draft before merging`)
   }
   if (m?.trainComment) out.push(`newest train comment: "${m.trainComment}"`)
-  if (out.length === 0) out.push(`no reason visible (mergeable_state ${m?.mergeableState ?? 'unknown'}); read the newest merge-train run receipt (.github/MERGE-TRAIN.md) and check auto-merge is still on`)
+  if (out.length === 0) out.push(`no reason visible (mergeable_state ${m?.mergeableState ?? 'unknown'}); read the newest Mergify comment on the PR (and .github/MERGE-QUEUE.md) and check the \`queue\` label (or, for tier 0, auto-merge) is still on`)
   return out
 }
 

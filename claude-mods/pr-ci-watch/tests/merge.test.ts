@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { decide, MAX_STUCK_WAKES, mergeFactsDue, parseTrainComment, parseTrainStatus, STUCK_MS, stuckReasons, watchKey } from '../hooks/logic'
+import { decide, MAX_STUCK_WAKES, mergeFactsDue, parseTrainComment, parseTrainStatus, splitMergify, STUCK_MS, stuckReasons, watchKey } from '../hooks/logic'
 
 // LC-1975 fix 2: an armed PR is watched until it merges, and a green one the queue leaves alone wakes the session.
 const T0 = Date.parse('2026-11-01T00:00:00Z')
@@ -145,4 +145,49 @@ test('a re-run on an armed, green PR stops the merge clock; the next green resta
   const g2 = decide({ ...w2, ...g1.patch }, pr(), T0 + 32 * MIN)
   expect(g2.wake).toBeUndefined()
   expect(g2.patch?.greenAt).toBe(T0 + 32 * MIN)
+})
+
+test('LCH-614: Mergify own checks are queue state, not CI', () => {
+  const r = (name: string, status: string, conclusion: string | null) => ({ name, status, conclusion })
+  // queued: protections is neutral by design, the queue check is still in progress: neither may stop the PR reading green.
+  const queued = splitMergify([r('lint', 'completed', 'success'), r('Mergify Merge Protections', 'completed', 'neutral'), r('Mergify Merge Queue', 'in_progress', null)])
+  expect(queued.ci.map(x => x.name)).toEqual(['lint'])
+  expect(queued.queue).toEqual({ state: 'queued' })
+  // merged: a successful queue check is also not CI.
+  expect(splitMergify([r('Mergify Merge Queue', 'completed', 'success')]).ci).toEqual([])
+  // dequeued: a failed queue check STAYS in the CI list so the PR reads red, and the state is reported.
+  const dropped = splitMergify([r('lint', 'completed', 'success'), r('Mergify Merge Queue', 'completed', 'failure')])
+  expect(dropped.ci.map(x => x.name)).toEqual(['lint', 'Mergify Merge Queue'])
+  expect(dropped.queue).toEqual({ state: 'failure' })
+  // no Mergify checks at all (tier 0): untouched.
+  expect(splitMergify([r('lint', 'completed', 'success')])).toEqual({ ci: [r('lint', 'completed', 'success')] })
+})
+
+test('LCH-614: stuck reasons name the queue, a dequeue, and the missing label', () => {
+  expect(stuckReasons({ queue: { state: 'failure' } })[0]).toContain('merge queue dropped it')
+  expect(stuckReasons({ queue: { state: 'queued' } }).join(' ')).toContain('it is in the merge queue')
+  expect(stuckReasons({ mergeableState: 'blocked' }).join(' ')).toContain('`queue` label')
+  expect(stuckReasons({ mergeableState: 'blocked', queue: { state: 'queued' } }).join(' ')).not.toContain('required check has no result')
+  expect(parseTrainComment(JSON.stringify([{ body: '<!--- x --> Dequeued: the batch failed', created_at: '2026-11-10T00:00:00Z' }]))).toBe('Dequeued: the batch failed')
+})
+
+test('LCH-614: a stale dequeue never outlives a re-queue, and a failing Protections rule stays visible', () => {
+  const r = (name: string, status: string, conclusion: string | null) => ({ name, status, conclusion })
+  const requeued = splitMergify([r('Mergify Merge Queue', 'completed', 'failure'), r('Mergify Merge Queue', 'in_progress', null), r('lint', 'completed', 'success')])
+  expect(requeued.ci.map(x => x.name)).toEqual(['lint'])
+  expect(requeued.queue).toEqual({ state: 'queued' })
+  expect(splitMergify([r('Mergify Merge Protections', 'completed', 'failure')]).ci.map(x => `${x.name}:${x.conclusion}`)).toEqual(['Mergify Merge Protections:failure'])
+  expect(splitMergify([r('Mergify Merge Protections', 'completed', 'success')]).ci).toEqual([])
+})
+
+test('LCH-614: with no live queue run, the NEWEST finished one decides, whatever the list order', () => {
+  const r = (conclusion: string, completedAt: number) => ({ name: 'Mergify Merge Queue', status: 'completed', conclusion, completedAt })
+  for (const runs of [[r('failure', 1), r('success', 2)], [r('success', 2), r('failure', 1)]]) {
+    const s = splitMergify(runs)
+    expect(s.queue).toEqual({ state: 'success' })
+    expect(s.ci).toEqual([])
+  }
+  const bad = splitMergify([r('success', 1), r('failure', 2)])
+  expect(bad.queue).toEqual({ state: 'failure' })
+  expect(bad.ci.length).toBe(1)
 })
