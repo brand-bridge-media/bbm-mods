@@ -32,7 +32,9 @@ export type MergeFacts = {
 }
 
 export type Observation =
-  | { kind: 'pr'; state: string; merged: boolean; mergedAt?: number; headSha: string; runs: CheckRun[] | undefined; merge?: MergeFacts }
+  | { kind: 'pr'; state: string; merged: boolean; mergedAt?: number; headSha: string; runs: CheckRun[] | undefined; merge?: MergeFacts;
+      /** LCH-614: Mergify's queue check on the head, and the PR's labels (a dequeue shows in both). */
+      queue?: { state: string }; labels?: string[] }
   | { kind: 'error'; detail: string }
 
 export type Decision = { done: boolean; wake?: string; patch?: Partial<Watch>; /** When the event the wake reports really happened (LC-2043). */ eventAt?: number }
@@ -114,11 +116,12 @@ export function prNumberFrom(text: string): number | undefined {
 }
 
 /** state, merged and head sha from pull_request_read get text. */
-export function parsePr(text: string): { state: string; merged: boolean; mergedAt?: number; headSha: string } | undefined {
+export function parsePr(text: string): { state: string; merged: boolean; mergedAt?: number; headSha: string; labels: string[] } | undefined {
   const v = json(text) as any
   if (!v || typeof v !== 'object' || typeof v.head?.sha !== 'string') return undefined
   const mergedAt = typeof v.merged_at === 'string' ? Date.parse(v.merged_at) : NaN
-  return { state: String(v.state ?? ''), merged: v.merged === true || typeof v.merged_at === 'string', ...(Number.isFinite(mergedAt) ? { mergedAt } : {}), headSha: v.head.sha }
+  const labels = Array.isArray(v.labels) ? v.labels.map((l: any) => String(typeof l === 'string' ? l : l?.name ?? '').toLowerCase()).filter(Boolean) : []
+  return { state: String(v.state ?? ''), merged: v.merged === true || typeof v.merged_at === 'string', ...(Number.isFinite(mergedAt) ? { mergedAt } : {}), headSha: v.head.sha, labels }
 }
 
 /** The `merge-train` verdict from get_status text (commit statuses), if the train has set one. */
@@ -135,7 +138,11 @@ export function parseTrainStatus(text: string): { state: string; description?: s
 export const MERGIFY_PROTECTIONS = 'Mergify Merge Protections'
 export const MERGIFY_QUEUE = 'Mergify Merge Queue'
 
-/** Splits Mergify's own checks off the CI picture. A COMPLETED non-success queue check stays in `ci`: that is a dequeue. */
+/**
+ * Splits Mergify's own checks off the CI picture. A finished queue check is never CI: a non-success one is a DEQUEUE and
+ * `queue.state` carries it to `dequeueReason`, which wakes once and names it (a copy left in `ci` would wake a second time
+ * as "CI failed: Mergify Merge Queue", and only after the two-picture rule).
+ */
 export function splitMergify(runs: CheckRun[]): { ci: CheckRun[]; queue?: { state: string } } {
   const ci: CheckRun[] = []
   const queueRuns = runs.filter(r => r.name === MERGIFY_QUEUE)
@@ -148,10 +155,27 @@ export function splitMergify(runs: CheckRun[]): { ci: CheckRun[]; queue?: { stat
   for (const r of runs) {
     // Protections is neutral by design; any other result (a failing rule) stays visible as a CI problem.
     if (r.name === MERGIFY_PROTECTIONS && (r.conclusion === 'neutral' || r.conclusion === 'success')) continue
-    if (r.name === MERGIFY_QUEUE && (live || r.status !== 'completed' || r !== newest || r.conclusion === 'success')) continue
+    if (r.name === MERGIFY_QUEUE) continue
     ci.push(r)
   }
   return { ci, ...(queue ? { queue } : {}) }
+}
+
+// A finished queue check that is not a success is a drop, whatever Mergify calls it (stale, unknown, a conclusion we have not
+// seen). Only these read as not-a-drop: queued (live), success (merged), neutral and skipped (nothing happened).
+const NOT_DROPPED = new Set(['queued', 'success', 'neutral', 'skipped'])
+export const isDrop = (state: string) => !NOT_DROPPED.has(state)
+
+/**
+ * LCH-614 (twice in the week of 2026-11-09 a session was not woken when Mergify dequeued its PR): why Mergify took the PR
+ * out of the queue, or undefined when it did not. Two signals, either is enough: the `dequeued` label Mergify adds, and a
+ * FINISHED `Mergify Merge Queue` check that failed or asked for action. A live queue run beats both (the PR was re-queued).
+ */
+export function dequeueReason(o: { queue?: { state: string }; labels?: string[] }): string | undefined {
+  if (o.queue?.state === 'queued') return undefined
+  const check = o.queue && isDrop(o.queue.state) ? `${MERGIFY_QUEUE} ${o.queue.state}` : undefined
+  const label = (o.labels ?? []).includes('dequeued') ? 'dequeued label' : undefined
+  return [check, label].filter(Boolean).join(' + ') || undefined
 }
 
 /** The newest comment that talks about the merge train or merge queue, from get_comments text, trimmed to one line. */
@@ -225,10 +249,22 @@ export function decide(w: Watch, o: Observation, now: number): Decision {
     return { done: true, wake: `${P}: could not read the PR or its checks ${errors} times in a row (${o.detail}); stopped watching. Check its CI yourself now.` }
   }
   if (o.merged) return { done: true, eventAt: o.mergedAt, wake: `${P} merged. Do what the merge calls for (Jira, mirror, follow-ups).` }
+  // A dequeue is not CI and not a stuck queue: say so once per (head, reason), before the green-and-armed path can sit on it.
+  // Only for the head this watch is on (right after a push the PR can still show the old head and its old queue state).
+  const dq = dequeueReason(o)
+  if (dq && o.state !== 'closed' && (!w.sha || o.headSha === w.sha)) {
+    const sig = `${o.headSha}|${dq}`
+    if (w.dequeueSig !== sig) {
+      return { done: false, patch: { errors: 0, dequeueSig: sig, greenAt: undefined, stuckWakes: 0 },
+        wake: `${P}: Mergify dequeued: ${dq} on ${short(o.headSha)}. Read Mergify's comment on the PR for the reason. If the reason is a real failure, fix and push; ` +
+          'if nothing is wrong with the PR, re-queue it per .github/MERGE-QUEUE.md (draft and back to ready, or remove both the `queue` and `dequeued` labels and re-add `queue`). Still watching.' }
+    }
+  }
   // Armed, already green, same head: the question is no longer CI but why the queue has not taken it.
   // Only while every run is still finished and passing: a re-run that fails after greenAt is a CI failure, not a stuck queue.
   const stillGreen = (o.runs ?? []).length > 0 && (o.runs ?? []).every(r => r.status === 'completed' && r.conclusion !== null && GOOD.has(r.conclusion))
-  if (w.armed && w.greenAt !== undefined && o.state !== 'closed' && o.headSha === w.sha && stillGreen) return decideMerge(w, o, now)
+  // A dequeued PR is not "stuck in the queue" (the dequeue wake already said why): the merge clock does not run while dequeueReason is set.
+  if (w.armed && w.greenAt !== undefined && o.state !== 'closed' && o.headSha === w.sha && stillGreen && !dq) return decideMerge(w, o, now)
   if (o.state === 'closed') return { done: true, wake: `${P} was closed without merging.` }
 
   const base: Partial<Watch> = { errors: 0 }

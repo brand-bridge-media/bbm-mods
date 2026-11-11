@@ -32,7 +32,7 @@ test('MCP results are read, and unreadable ones are undefined', () => {
   expect(findPr(list, 'feat-x')).toBe(7)
   expect(findPr(list, 'nope')).toBeUndefined()
   expect(findPr('garbage', 'feat-x')).toBeUndefined()
-  expect(parsePr(JSON.stringify({ state: 'open', merged: false, head: { sha: SHA } }))).toEqual({ state: 'open', merged: false, headSha: SHA })
+  expect(parsePr(JSON.stringify({ state: 'open', merged: false, head: { sha: SHA } }))).toEqual({ state: 'open', merged: false, headSha: SHA, labels: [] })
   expect(parsePr(JSON.stringify({ state: 'closed', merged_at: '2026-10-22', head: { sha: SHA } }))!.merged).toBe(true)
   expect(parseCheckRuns(JSON.stringify({ total_count: 1, check_runs: [run('a', 'IN_PROGRESS', null)] }))).toEqual([run('a', 'in_progress', null)])
   expect(parseCheckRuns('{"check_runs":[{"status":"completed"}]}')).toBeUndefined()

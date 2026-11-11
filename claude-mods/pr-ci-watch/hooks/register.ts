@@ -61,7 +61,8 @@ async function observe($: any, w: Watch, now: number): Promise<Observation> {
   const split = all ? splitMergify(all) : undefined
   const runs = split?.ci
   const queue = split?.queue
-  if (!mergeFactsDue(w, now) || pr.headSha !== w.sha) return { kind: 'pr', ...pr, runs }
+  const queueFacts = queue ? { queue } : {}
+  if (!mergeFactsDue(w, now) || pr.headSha !== w.sha) return { kind: 'pr', ...pr, runs, ...queueFacts }
   // A stuck wake is due: read why the queue has not taken it (best effort; missing facts say "unknown").
   const raw = (await mcp($, w.server, 'pull_request_read', { method: 'get', owner: w.owner, repo: w.repo, pullNumber: w.number })) ?? ''
   let mergeableState: string | undefined
@@ -70,7 +71,7 @@ async function observe($: any, w: Watch, now: number): Promise<Observation> {
   const trainRun = (runs ?? []).find(r => r.name === 'merge-train' && r.status === 'completed')
   const train = status ?? (trainRun ? { state: trainRun.conclusion ?? 'unknown' } : undefined)
   const trainComment = parseTrainComment((await mcp($, w.server, 'pull_request_read', { method: 'get_comments', owner: w.owner, repo: w.repo, pullNumber: w.number, perPage: 100 })) ?? '')
-  return { kind: 'pr', ...pr, runs, merge: { mergeableState, train, trainComment, ...(queue ? { queue } : {}) } }
+  return { kind: 'pr', ...pr, runs, ...queueFacts, merge: { mergeableState, train, trainComment, ...queueFacts } }
 }
 
 async function tick($: any) {

@@ -19,6 +19,8 @@ export type Watch = {
   greenAt?: number
   /** Stuck-in-queue wakes already sent. */
   stuckWakes?: number
+  /** `head|reason` of the last Mergify dequeue reported, so one dequeue wakes once (LCH-614). */
+  dequeueSig?: string
 }
 
 declare module 'claude-code' {

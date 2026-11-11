@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { decide, MAX_STUCK_WAKES, mergeFactsDue, parseTrainComment, parseTrainStatus, splitMergify, STUCK_MS, stuckReasons, watchKey } from '../hooks/logic'
+import { decide, dequeueReason, MAX_STUCK_WAKES, parsePr, mergeFactsDue, parseTrainComment, parseTrainStatus, splitMergify, STUCK_MS, stuckReasons, watchKey } from '../hooks/logic'
 
 // LC-1975 fix 2: an armed PR is watched until it merges, and a green one the queue leaves alone wakes the session.
 const T0 = Date.parse('2026-11-01T00:00:00Z')
@@ -155,9 +155,9 @@ test('LCH-614: Mergify own checks are queue state, not CI', () => {
   expect(queued.queue).toEqual({ state: 'queued' })
   // merged: a successful queue check is also not CI.
   expect(splitMergify([r('Mergify Merge Queue', 'completed', 'success')]).ci).toEqual([])
-  // dequeued: a failed queue check STAYS in the CI list so the PR reads red, and the state is reported.
+  // dequeued: the failed queue check is reported as queue state (dequeueReason wakes once); it is not also a CI failure.
   const dropped = splitMergify([r('lint', 'completed', 'success'), r('Mergify Merge Queue', 'completed', 'failure')])
-  expect(dropped.ci.map(x => x.name)).toEqual(['lint', 'Mergify Merge Queue'])
+  expect(dropped.ci.map(x => x.name)).toEqual(['lint'])
   expect(dropped.queue).toEqual({ state: 'failure' })
   // no Mergify checks at all (tier 0): untouched.
   expect(splitMergify([r('lint', 'completed', 'success')])).toEqual({ ci: [r('lint', 'completed', 'success')] })
@@ -189,5 +189,70 @@ test('LCH-614: with no live queue run, the NEWEST finished one decides, whatever
   }
   const bad = splitMergify([r('success', 1), r('failure', 2)])
   expect(bad.queue).toEqual({ state: 'failure' })
-  expect(bad.ci.length).toBe(1)
+  expect(bad.ci.length).toBe(0) // the dequeue is queue state, reported by dequeueReason
+})
+
+// LCH-614 (LCH-645): twice in the week of 2026-11-09 a session was not woken when Mergify dequeued its PR.
+const DQ = { ...W, greenAt: T0 + 5 * MIN }
+test('LCH-614: the dequeued label wakes once, naming Mergify, and keeps watching', () => {
+  const d = decide(DQ, pr({ labels: ['queue', 'dequeued'] }), T0 + 20 * MIN)
+  expect(d.done).toBe(false)
+  expect(d.wake).toMatch(/^\[mod:pr-ci-watch\] brand-bridge-media\/bbm-infrastructure#2398: Mergify dequeued: dequeued label on bb7204e/)
+  expect(d.wake).toContain('MERGE-QUEUE.md')
+  expect(d.patch?.dequeueSig).toBe(`${SHA}|dequeued label`)
+  expect('greenAt' in (d.patch ?? {}) && d.patch?.greenAt === undefined).toBe(true)
+  // The same dequeue on the next tick is not announced again.
+  const again = decide({ ...DQ, ...d.patch }, pr({ labels: ['queue', 'dequeued'] }), T0 + 22 * MIN)
+  expect(again.wake).toBeUndefined()
+})
+
+test('LCH-614: a failed Mergify Merge Queue check is the same single wake, not also a CI failure', () => {
+  const runs = splitMergify([{ name: 'lint', status: 'completed', conclusion: 'success' }, { name: 'Mergify Merge Queue', status: 'completed', conclusion: 'action_required' }])
+  const d = decide(DQ, pr({ runs: runs.ci, queue: runs.queue }), T0 + 20 * MIN)
+  expect(d.wake).toContain('Mergify dequeued: Mergify Merge Queue action_required')
+  // After that wake the PR reads green again (the queue check is not CI) and no CI-failure wake follows.
+  const next = decide({ ...DQ, ...d.patch }, pr({ runs: runs.ci, queue: runs.queue }), T0 + 22 * MIN)
+  expect(next.wake).toBeUndefined()
+  expect(next.done).toBe(false)
+  // Both signals together are named together.
+  expect(dequeueReason({ queue: { state: 'failure' }, labels: ['dequeued'] })).toBe('Mergify Merge Queue failure + dequeued label')
+})
+
+test('LCH-614: a re-queued PR, a merged PR, an old head and a PR never queued stay quiet', () => {
+  // A live queue run beats a lingering label (the PR was re-queued).
+  expect(dequeueReason({ queue: { state: 'queued' }, labels: ['dequeued'] })).toBeUndefined()
+  expect(dequeueReason({ queue: { state: 'success' }, labels: [] })).toBeUndefined()
+  expect(dequeueReason({ labels: ['queue'] })).toBeUndefined()
+  expect(dequeueReason({ queue: { state: 'neutral' } })).toBeUndefined()
+  // Reviewer finding (#3180): an unfamiliar finished non-success conclusion is still a drop.
+  expect(dequeueReason({ queue: { state: 'stale' } })).toBe('Mergify Merge Queue stale')
+  expect(dequeueReason({ queue: { state: 'unknown' } })).toBe('Mergify Merge Queue unknown')
+  expect(decide(DQ, pr({ merged: true, labels: ['dequeued'] }), T0 + 20 * MIN).wake).toContain('merged')
+  // Right after a push the PR can still show the old head: its queue state is not this push's.
+  const w = { ...DQ, sha: 'c0ffee0000000000000000000000000000000000' }
+  expect(decide(w, pr({ labels: ['dequeued'] }), T0 + 6 * MIN).wake).toBeUndefined()
+  // A new dequeue on a new head wakes again.
+  const d = decide({ ...DQ, dequeueSig: `old|dequeued label` }, pr({ labels: ['dequeued'] }), T0 + 20 * MIN)
+  expect(d.wake).toContain('Mergify dequeued')
+})
+
+test('LCH-614: an UNARMED watch is told about a dequeue too', () => {
+  const d = decide({ ...W, armed: undefined }, pr({ labels: ['dequeued'] }), T0 + 4 * MIN)
+  expect(d.wake).toContain('Mergify dequeued')
+})
+
+test('LCH-614: parsePr reads labels as strings or objects, lower-cased', () => {
+  const base = { state: 'open', head: { sha: SHA } }
+  expect(parsePr(JSON.stringify({ ...base, labels: [{ name: 'Queue' }, 'Dequeued'] }))?.labels).toEqual(['queue', 'dequeued'])
+  expect(parsePr(JSON.stringify(base))?.labels).toEqual([])
+})
+
+test('LCH-614: after a dequeue wake, no "stuck in the queue" wake follows while the PR is still dequeued (reviewer finding, #3180)', () => {
+  const first = decide(DQ, pr({ labels: ['dequeued'] }), T0 + 20 * MIN)
+  const w = { ...DQ, ...first.patch, greenAt: T0 }
+  const later = decide(w, pr({ labels: ['dequeued'] }), T0 + 3 * STUCK_MS)
+  expect(later.wake).toBeUndefined()
+  expect(later.done).toBe(false)
+  // Re-queued (live queue run): the normal merge clock applies again.
+  expect(decide(w, pr({ labels: ['dequeued'], queue: { state: 'queued' }, merge: { mergeableState: 'dirty' } }), T0 + STUCK_MS).wake).toContain('not merged after')
 })
