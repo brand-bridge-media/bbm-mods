@@ -31,7 +31,8 @@ NOT GATED. Function calls (`select registrar_fn(...)`): the sanctioned RPCs carr
 their own guards (e.g. the LC-1550 price registrar). DDL: prod-deploy-guard.
 
 TYPED OPS (LC-2076). A call to one of the schema-`ops` functions (ops.record_slot_rulings,
-ops.set_product_price, ops.swap_slot_product, ops.retire_redirect, ops.undo, ops.set_run_article_copy) is the FAST PATH
+ops.set_product_price, ops.swap_slot_product, ops.retire_redirect, ops.undo, ops.set_run_article_copy,
+ops.reorder_slots) is the FAST PATH
 for a known operation type: the function validates, caps rows, dry-runs by default, writes a
 data_change_runs ledger row and has a one-step undo, so it needs no package PR. The guard lets
 the call run and says so (additionalContext, so the transcript records WHICH op and whether it
@@ -194,12 +195,14 @@ def findings(sql: str) -> list[str]:
 # The public typed-op entry points (supabase/migrations/*_lc2076_ops_typed_writes.sql). A name not
 # listed here (ops._snap, a future helper) is NOT waved through: it reads as an ordinary call.
 OPS_FUNCTIONS = ("record_slot_rulings", "set_product_price", "swap_slot_product", "retire_redirect", "undo",
-                 "set_run_article_copy")  # LC-2107
+                 "set_run_article_copy",  # LC-2107
+                 "reorder_slots")  # LC-2114
 _OPS_CALL = re.compile(r"(?<![\w.])ops\.(" + "|".join(OPS_FUNCTIONS) + r")\s*\(")
 # Positional parameter count of each function, `dry_run` being the last one: a call with fewer
 # positional arguments than this takes the function's default, a dry run.
 OPS_ARITY = {"record_slot_rulings": 6, "set_product_price": 8, "swap_slot_product": 5,
-             "retire_redirect": 4, "undo": 4, "set_run_article_copy": 7}
+             "retire_redirect": 4, "undo": 4, "set_run_article_copy": 7,
+             "reorder_slots": 5}
 _NAMED_DRY = re.compile(r"^dry_run\s*=>\s*(.*)$", re.S)
 
 
@@ -399,6 +402,10 @@ def _selftest() -> int:
     ck(d("select ops.set_run_article_copy('r', 'top_recomendation', '<p>x</p>')") == "context", "set_run_article_copy allowed with a note")
     ck(_mode("set_run_article_copy", ["'r'", "'f'", "'x'", "'sha'", "'why'", "'ref'"]) == "dry run", "set_run_article_copy: 6 args = dry_run defaulted")
     ck(_mode("set_run_article_copy", ["'r'", "'f'", "'x'", "'sha'", "'why'", "'ref'", "false"]) == "APPLY", "set_run_article_copy: 7th arg false = APPLY")
+    # LC-2114: the re-rank op is a typed op too, and its 5th positional argument is dry_run
+    ck(d("select ops.reorder_slots('a', array['b'])") == "context", "reorder_slots allowed with a note")
+    ck(_mode("reorder_slots", ["'a'", "'b'", "'why'", "'ref'"]) == "dry run", "reorder_slots: 4 args = dry_run defaulted")
+    ck(_mode("reorder_slots", ["'a'", "'b'", "'why'", "'ref'", "false"]) == "APPLY", "reorder_slots: 5th arg false = APPLY")
     ck(d("select ops._snap('t'::regclass, 'true', array['a'])") is None, "a private ops helper is not a typed op (reads as an ordinary call)")
     ck(d("select myops.undo(1)") is None and d("select x.ops.undo(1)") is None, "only the ops schema counts")
     ck(d("select 'ops.undo(1)'") is None, "ops.undo inside a string literal is not a call")
