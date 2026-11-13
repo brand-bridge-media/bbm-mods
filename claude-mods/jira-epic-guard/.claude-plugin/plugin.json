@@ -1,0 +1,8 @@
+{
+  "name": "jira-epic-guard",
+  "version": "0.1.0",
+  "description": "Refuses to create a Jira issue in project LC without a parent epic, and lists the live epics to choose from; the epic list is data (hooks/epics.json).",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

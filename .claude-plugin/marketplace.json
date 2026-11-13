@@ -173,6 +173,11 @@
       "name": "slowness-report",
       "source": "./claude-mods/slowness-report",
       "description": "Puts a clock on every PR a session opens or arms for auto-merge; past a 30-minute budget it wakes the session once to measure where the time went, then records ONE dated occurrence comment (with the PR reference) on the ticket that owns that cause under epic LCH-600. Never creates a ticket: recurrence is the comment count per cause. /slow does the same on the operator's demand."
+    },
+    {
+      "name": "jira-epic-guard",
+      "source": "./claude-mods/jira-epic-guard",
+      "description": "Refuses to create a Jira issue in project LC without a parent epic (Epic and Sub-task exempt) and lists the live epics to choose from; a parked epic as parent is refused too. The epic list is data (hooks/epics.json). Fails open."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."

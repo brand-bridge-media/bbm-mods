@@ -1,0 +1,72 @@
+{
+  "live": [
+    {
+      "key": "LC-1074",
+      "name": "Refresh Engine",
+      "when": "the listicle-refresh pipeline and refresh agent, runs, stages and gates, roster and product cards for articles, per-article checks (alt text, titles and meta, schema fields)",
+      "children": [
+        {
+          "key": "LC-1757",
+          "name": "modular article checks"
+        },
+        {
+          "key": "LC-1513",
+          "name": "keyword research module"
+        },
+        {
+          "key": "LC-1586",
+          "name": "product attribute and tag layer"
+        }
+      ]
+    },
+    {
+      "key": "LC-429",
+      "name": "Catalog & Products",
+      "when": "products and brands tables, catalog ingest, prices, stock"
+    },
+    {
+      "key": "LC-1997",
+      "name": "Discounts",
+      "when": "finding, verifying, showing, removing and measuring brand discounts"
+    },
+    {
+      "key": "LC-258",
+      "name": "Affiliate & Links",
+      "when": "affiliate platforms, tracking links, go.livingcozy.com redirects, link health"
+    },
+    {
+      "key": "LC-290",
+      "name": "Measurement",
+      "when": "analytics: GA4, Search Console, traffic, click and revenue reporting"
+    },
+    {
+      "key": "LC-369",
+      "name": "Portals",
+      "when": "the operations portal for staff, and the future creator and brand portals"
+    },
+    {
+      "key": "LC-2014",
+      "name": "Quality & Delivery",
+      "when": "CI and deploy, guardrail gates, tests and the mutation floor, the quality engine, servers and runners"
+    },
+    {
+      "key": "LC-2141",
+      "name": "Session Tooling",
+      "when": "mods and hooks, skills, the knowledge system, the session fleet and scheduled tasks"
+    },
+    {
+      "key": "LC-1740",
+      "name": "Site Edge",
+      "when": "Cloudflare in front of the site only (cache, firewall, speed settings); finishing work, no new programs"
+    }
+  ],
+  "parked": [
+    "LC-159",
+    "LC-161",
+    "LC-164",
+    "LC-166",
+    "LC-172",
+    "LC-293",
+    "LC-1965"
+  ]
+}
