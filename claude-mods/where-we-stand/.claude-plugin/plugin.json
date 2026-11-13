@@ -1,6 +1,6 @@
 {
   "name": "where-we-stand",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "When a session starts diagnosing a recurring problem or is about to state a ticket's or article's status, looks the topic up read-only (knowledge, Jira newest comment, GitHub, production) and injects one answer card: know / state / verified | not verified | conflict. Once per topic, three per session.",
   "author": {
     "name": "Brand Bridge Media"

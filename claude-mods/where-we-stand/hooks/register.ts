@@ -181,6 +181,36 @@ async function githubSlice($: any, o: Opts, prs: number[]): Promise<unknown> {
   return (await py($, { cmd: 'parse_prs', asked: prs.slice(0, MAX_PRS), items }))?.evidence
 }
 
+// LCH-663: read-only evidence for wws_t2_order.py. Head sha + statuses from get_status, check runs from get_check_runs
+// (two pages of 100; a PR here carries ~140). Any failure becomes {error}, which the .py holds as NOT CHECKED.
+async function t2Evidence($: any, o: Opts, n: number): Promise<Record<string, unknown>> {
+  try {
+    const st = await mcpCall($, o, 'github', o.githubServer || 'github', 'pull_request_read', { method: 'get_status', ...REPO, pullNumber: n })
+    if (st.isError) return { error: 'get_status returned an error' }
+    const status = JSON.parse(textOf(st.content))
+    const runs: unknown[] = []
+    for (const page of [1, 2]) {
+      const cr = await mcpCall($, o, 'github', o.githubServer || 'github', 'pull_request_read', { method: 'get_check_runs', ...REPO, pullNumber: n, perPage: 100, page })
+      if (cr.isError) return { error: 'get_check_runs returned an error' }
+      const got = JSON.parse(textOf(cr.content))
+      runs.push(...(got?.check_runs ?? []))
+      if (runs.length >= Number(got?.total_count ?? 0) || !(got?.check_runs ?? []).length) break
+    }
+    return { sha: status?.sha, statuses: status?.statuses ?? [], check_runs: runs }
+  } catch (err) {
+    return { error: String((err as Error)?.message ?? err).slice(0, 120) }
+  }
+}
+
+async function t2Order($: any, o: Opts, e: any, blocks: number): Promise<string | undefined> {
+  const asked = await py($, { cmd: 't2_prs', ...e })
+  const prs: number[] = Array.isArray(asked?.prs) ? asked.prs : []
+  const evidence: Record<string, unknown> = {}
+  for (const n of prs) evidence[String(n)] = await t2Evidence($, o, n)
+  const v = await py($, { cmd: 't2_order', ...e, t2_evidence: evidence, moot_blocks: blocks })
+  return typeof v?.block === 'string' && v.block ? v.block : undefined
+}
+
 // The moot read has ONE success path. Once an open decision exists, anything other than well-formed evidence marked ok:true is
 // a failed read, whatever went wrong (a Python failure, undefined, {}, null, a wrong shape, a throw): it reaches the card as
 // ok:false, which is NOT CHECKED. Three review rounds found a different fail-open branch each time; this is the one rule.
@@ -389,6 +419,16 @@ export const register: Register = (on, options) => {
   // cards it checks against are in this plugin's store, and a plugin's store is private to it.
   on('classic.Stop', async ($, e, next) => {
     const s = await load($)
+    // LCH-663 (option 1): a NEEDS YOU banner that asks for the bbm-approver (T2) approval goes out only when every OTHER required
+    // check is green on that PR's head; an approval on an older head does not count, so an early ask wastes it. Runs before the
+    // broken-lookup short cut because it needs only GitHub, not the database. Same block counter as the other NEEDS YOU guard.
+    const t2 = await t2Order($, o, e, s.mootBlocks ?? 0)
+    if (t2) {
+      s.mootBlocks = (s.mootBlocks ?? 0) + 1
+      await save($, s)
+      toast($, t2)
+      return { block: t2 }
+    }
     // While the lookup is broken it cannot produce the card the gate would demand: sending a reply back for it is noise.
     if (s.broken) return next(e)
     const v = await py($, { cmd: 'gate', ...(e as any), cards: s.ledger, moot_blocks: s.mootBlocks ?? 0 })

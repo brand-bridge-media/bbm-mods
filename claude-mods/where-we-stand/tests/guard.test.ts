@@ -373,3 +373,40 @@ test('a NEEDS YOU reply naming a moot decision is blocked, prefixed and toasted;
   const gates = w.cmds.filter(c => c.cmd === 'gate')
   expect(gates.map(g => g.moot_blocks)).toEqual([0, 1])
 })
+
+// LCH-663 (option 1): a NEEDS YOU banner asking for the bbm-approver approval is held while another required check is not green.
+test('a T2 approval ask reads the PR head and its checks, and a block from wws_t2_order is returned, toasted and counted', async ($: any, on: any) => {
+  const BLOCK = '[mod:where-we-stand] NEEDS YOU guard (T2 order, LCH-663): PR #3214 BLOCK (head abc123 red: tests)'
+  const w = world(on, { t2Prs: [3214], t2Order: { block: BLOCK } })
+  on('classic.Stop', () => ({ ok: true }) as any)
+  const r: any = await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' })
+  expect(r.block).toBe(BLOCK)
+  expect(w.toasts).toContain(BLOCK)
+  const reads = w.mcp.filter(m => m.tool === 'pull_request_read').map(m => m.args.method)
+  expect(reads).toEqual(['get_status', 'get_check_runs'])
+  const order = w.cmds.find(c => c.cmd === 't2_order')
+  expect(order.t2_evidence['3214']).toEqual({ sha: 'abc123', statuses: [{ context: 'quick', state: 'pending' }], check_runs: [{ name: 'tests', status: 'completed', conclusion: 'failure', id: 1 }] })
+  expect(order.moot_blocks).toBe(0)
+  expect(w.cmds.some(c => c.cmd === 'gate')).toBe(false)
+  await $.classic.Stop({ stop_hook_active: true, transcript_path: '/t.jsonl' })
+  expect(w.cmds.filter(c => c.cmd === 't2_order')[1].moot_blocks).toBe(1)
+})
+
+test('a reply with no T2 ask makes no GitHub read for it and goes on to the gate', async ($: any, on: any) => {
+  const w = world(on, { gate: {} })
+  on('classic.Stop', () => ({ ok: true }) as any)
+  const r: any = await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' })
+  expect(r.block).toBeUndefined()
+  expect(w.mcp.some(m => m.tool === 'pull_request_read')).toBe(false)
+  expect(w.cmds.some(c => c.cmd === 'gate')).toBe(true)
+})
+
+test('the T2 order check still runs while the database lookup is broken (it needs only GitHub)', async ($: any, on: any) => {
+  const BLOCK = '[mod:where-we-stand] NEEDS YOU guard (T2 order, LCH-663): held'
+  const w = world(on, { tools: ['Bash'], servers: [], t2Prs: [12], t2Order: { block: BLOCK } })
+  on('classic.Stop', () => ({ ok: true }) as any)
+  await $.tool.call({ tool: 'mcp__where-we-stand__lookup', tickets: ['LC-1'] } as any).catch(() => undefined)
+  const r: any = await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' })
+  expect(r.block).toBe(BLOCK)
+  expect(w.cmds.find(c => c.cmd === 't2_order').t2_evidence['12'].error).toBeDefined()
+})

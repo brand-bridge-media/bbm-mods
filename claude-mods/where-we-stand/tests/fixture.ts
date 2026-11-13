@@ -21,6 +21,8 @@ export type World = {
   moot?: Record<string, unknown> // what the card's `moot` receipt summary says
   tools?: string[] // what `tool.list` answers (names, as the model sees them)
   servers?: string[] // the only MCP server names that exist: any other `mcp.call` throws, as the engine does
+  t2Prs?: number[] // what `t2_prs` finds (LCH-663)
+  t2Order?: Record<string, unknown> // what `t2_order` answers
 }
 
 const env = (rows: unknown[]) => ({ isError: false, content: [{ type: 'text', text: 'Below...\n<untrusted-data-x>\n' + JSON.stringify(rows) + '\n</untrusted-data-x>' }] })
@@ -55,6 +57,8 @@ export function world(on: any, w: World = {}) {
       branch_ticket: { tickets: w.ownTicket ? [w.ownTicket] : [] },
       moot_refs: w.mootRefsBroken ? {} : { needed: !!w.mootNeeded, tickets: ['LC-1755'], runs: ['f312eb7b'], slugs: ['best-kid-pet-friendly-sofas'] },
       gate: w.gate ?? {},
+      t2_prs: { prs: w.t2Prs ?? [] },
+      t2_order: w.t2Order ?? {},
       render: w.noCard || (p.cmd === 'render' && fail.noCardOnce && !(fail.noCardOnce = false)) ? {} : { card: 'WHERE WE STAND — x (as of 2026-10-22)\nVERDICT: CONFLICT\nline', ...(w.moot ? { moot: w.moot } : {}) },
     }
     return { value: { exitCode: 0, stdout: JSON.stringify(out[p.cmd] ?? {}), stderr: '' } } as any
@@ -66,6 +70,8 @@ export function world(on: any, w: World = {}) {
     if (w.servers && !w.servers.includes(e.server)) throw new Error(`$.mcp.call: no connected MCP tool "${e.tool}" on a server named "${e.server}"`)
     const q = String(e.args?.query ?? '')
     if (e.tool === 'execute_sql' && w.failSql && q.includes(w.failSql)) return { value: { isError: true, content: [{ type: 'text', text: 'boom' }] } } as any
+    if (e.tool === 'pull_request_read' && e.args?.method === 'get_status') return { value: { isError: false, content: [{ type: 'text', text: '{"sha":"abc123","statuses":[{"context":"quick","state":"pending"}]}' }] } } as any
+    if (e.tool === 'pull_request_read' && e.args?.method === 'get_check_runs') return { value: { isError: false, content: [{ type: 'text', text: '{"total_count":1,"check_runs":[{"name":"tests","status":"completed","conclusion":"failure","id":1}]}' }] } } as any
     if (e.tool === 'pull_request_read') return { value: { isError: false, content: [{ type: 'text', text: '{"state":"closed","merged":true}' }] } } as any
     if (e.tool === 'list_edge_functions') return { value: env([{ slug: 'catalog-ingest', version: 3, updated_at: 1 }]) } as any
     if (q === 'SQL:fire') return { value: env([{ k: 'LC-1', kind: 'c', req: 7 }, { k: 'LC-1', kind: 'i', req: 8 }]) } as any

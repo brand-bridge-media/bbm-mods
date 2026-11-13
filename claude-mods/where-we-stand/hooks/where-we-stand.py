@@ -32,6 +32,8 @@ Protocol: `python3 -I where-we-stand.py` reads ONE JSON object from stdin,
   normalize        {tickets?, terms?, kind?}                 -> {kind, topic, tickets, terms}  (on-demand tool)
   branch_ticket    {branch}                                  -> {tickets}  (the session's own ticket)
   gate             {transcript_path, stop_hook_active, cards} -> {block?}   (wws_gate, then wws_needs_you)
+  t2_prs           {transcript_path}                         -> {prs}     (PRs a NEEDS YOU banner asks T2 approval for)
+  t2_order         {transcript_path, t2_evidence, moot_blocks} -> {block?} (wws_t2_order, LCH-663)
 
 Every identifier that reaches SQL is shape-checked first (ticket key, lowercase slug-like term,
 14-digit version, integer id); anything else is dropped, never quoted.
@@ -52,6 +54,7 @@ import wws_checks  # noqa: E402
 import wws_gate  # noqa: E402
 import wws_moot  # noqa: E402
 import wws_needs_you  # noqa: E402
+import wws_t2_order  # noqa: E402
 import wws_trigger  # noqa: E402
 
 TICKET = wws_trigger.TICKET
@@ -408,6 +411,11 @@ def handle(p: dict) -> dict:
     if cmd == "gate":
         why = wws_gate.evaluate(p) or wws_needs_you.evaluate(p)
         return {"block": why} if why else {}
+    if cmd == "t2_prs":
+        return {"prs": wws_t2_order.asked_prs(wws_t2_order.reply_of(p))}
+    if cmd == "t2_order":
+        why = wws_t2_order.evaluate(p)
+        return {"block": why} if why else {}
     return {"error": f"unknown cmd {cmd!r}"}
 
 
@@ -563,6 +571,9 @@ def _selftest() -> int:
     rows = [{"type": "user", "message": {"role": "user", "content": "go"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "> **NEEDS YOU:** LC-1755 — ruling needed on the heading."}]}}]
     g = handle({"cmd": "gate", "transcript_rows": rows, "cards": [{"tickets": ["LC-1755"], "at": None, "moot": {"verdict": "BLOCK", "tickets": {"LC-1755": "open decision on LC-1755 may be moot: x"}}}]})
     ck("block" in g and "may be moot" in g["block"], "cmd gate: the NEEDS YOU guard runs after the status gate")
+    t2rows = [{"type": "user", "message": {"role": "user", "content": "go"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "> **NEEDS YOU:** LC-1934 · PR #3214 needs your bbm-approver approval."}]}}]
+    ck(handle({"cmd": "t2_prs", "transcript_rows": t2rows}) == {"prs": [3214]}, "cmd t2_prs")
+    ck("T2 order" in handle({"cmd": "t2_order", "transcript_rows": t2rows, "t2_evidence": {}}).get("block", ""), "cmd t2_order: no evidence is held")
 
     ck(handle({"cmd": "trigger", "tool_name": "mcp__a__getJiraIssue", "tool_input": {"issueIdOrKey": "LC-1"}})["kind"] == "ticket-status", "cmd trigger")
     ck("sql" in handle({"cmd": "sql_knowledge", "terms": ["abc"], "tickets": []}), "cmd sql_knowledge")
