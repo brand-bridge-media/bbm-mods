@@ -199,6 +199,29 @@ and each failure cost a full round, though the check takes seconds locally.
 Tests: `claude plugin test claude-mods/ci-preflight` (decision logic and hooks) and `bash scripts/ci/preflight.selftest.sh` (the script,
 against a throwaway git repo; wired into `claude-mods.yml`).
 
+### t2-evidence-fill (LC-2156)
+
+Why: LC-2153 has the operator approve T2 PRs (money and config) from a `## Evidence` section instead of the diff, and its
+step 3 says the section must cost the operator nothing. This mod is the session side: the session that opens the PR fills it.
+
+- **Capture** (`tool.call` on Bash, after the command): a successful test run (selftest, `mutate.py`, `preflight.sh`, pytest,
+  `claude plugin test`) leaves its last count line, number-first (`killed 31` becomes `31 killed`, `cases=12` becomes `12 cases`,
+  the shape the judge's `counts` rule accepts). The newest per script are kept for six hours in the mod's store.
+- **Fill** (`create_pull_request` / `update_pull_request` on `github` and `GitHub_Custom`): only when the session has a checkout of
+  the PR's repo carrying `scripts/ci/t2_evidence.py`, so every other repo is untouched. The tier is computed from the head branch
+  against `origin/main` with `scripts/ci/tier_label.py`; a tier other than T2 is left alone, an unreadable one is filled but never
+  refused. It inserts `t2_evidence.py template` after "What this PR does" when the section is missing, writes the captured counts
+  into the empty `counts` slot (never over the session's own words), checks the result with `t2_evidence.py body --file`, sends
+  the call with the rewritten body and tells the model which slots are still empty.
+- **Refuse**: a call that would make a T2 PR ready for review (create without `draft: true`, or `draft: false` on a draft) while a
+  slot is still empty is refused with the gaps and how to fill each. `n/a: <reason>` always satisfies a slot, so it cannot trap a
+  session. A body edit on a draft is never refused.
+- Slots, headings and rules are data in `scripts/ci/t2_evidence.json`, read at run time; nothing is copied here.
+- Logic: `hooks/t2-evidence-fill.py` (`--selftest`, mutation floor shard). Plumbing: `tests/*.test.ts`. Fails open on any error.
+  Kill switch: `claude plugin disable t2-evidence-fill`, or drop it from `CLAUDE_CODE_PLUGIN_DIRS`.
+- Known gap: project-thread sessions do not load mods (measured 2026-11-16: `CLAUDE_CODE_PLUGIN_DIRS` empty there), so they rely
+  on the PR template's section and the `github-architecture` skill line.
+
 ### Receipt guard: plain commands (run-state, LC-1711 / LC-1735 / LC-1736)
 
 Receipt code and its tests name the writer scripts constantly, so these are exempt from the guard: a

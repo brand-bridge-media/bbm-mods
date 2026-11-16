@@ -1,0 +1,8 @@
+{
+  "name": "t2-evidence-fill",
+  "version": "0.1.0",
+  "description": "When a session opens or edits a T2 pull request on bbm-infrastructure, inserts the ## Evidence section if it is missing, fills Tests from the counts of the test runs the session just did, and refuses to mark the PR ready while a slot is still empty (LC-2156). Slots and judge are read from scripts/ci/t2_evidence.*. Fails open.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

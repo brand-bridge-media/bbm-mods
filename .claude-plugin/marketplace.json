@@ -178,6 +178,11 @@
       "name": "jira-epic-guard",
       "source": "./claude-mods/jira-epic-guard",
       "description": "Refuses to create a Jira issue in project LC without a parent epic (Epic and Sub-task exempt) and lists the live epics to choose from; a parked epic as parent is refused too. The epic list is data (hooks/epics.json). Fails open."
+    },
+    {
+      "name": "t2-evidence-fill",
+      "source": "./claude-mods/t2-evidence-fill",
+      "description": "When a session opens or edits a T2 pull request on bbm-infrastructure, inserts the ## Evidence section if missing, fills Tests from the counts of the session's own test runs, and refuses to mark the PR ready while a slot is empty (LC-2156). Slots and judge are read from scripts/ci/t2_evidence.*. Fails open."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."
