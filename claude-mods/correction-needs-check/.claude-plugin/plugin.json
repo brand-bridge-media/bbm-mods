@@ -1,0 +1,8 @@
+{
+  "name": "correction-needs-check",
+  "version": "0.1.0",
+  "description": "When a session writes down a correction (a lesson or preference memory, a CLAUDE.md 'Why this rule exists' block, a skill rule, a feedback memory file), asks it to name the check that enforces it or the reason none can (LC-2151). Advisory: never denies.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
