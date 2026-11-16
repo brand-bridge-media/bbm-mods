@@ -1,0 +1,4 @@
+{
+  "mode": "shadow",
+  "_why": "LC-2167 owner rule: off | shadow | enforce. Ships in shadow (principle 15 step 4): it toasts and logs what it would block and never blocks. Switch to enforce in a one-line PR only after the operator has read real receipts (the `SHADOW owner rule would block` toasts, listed by session-close at close-out)."
+}

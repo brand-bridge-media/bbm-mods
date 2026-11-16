@@ -19,7 +19,11 @@ const calls = atom({ plugin: 'idle-backstop-guard', key: 'calls' } as const, [] 
 const blocks = atom({ plugin: 'idle-backstop-guard', key: 'blocks' } as const, 0)
 const receipt = atom({ plugin: 'idle-backstop-guard', key: 'receipt' } as const, null as Receipt | null)
 
-type Verdict = { verdict: 'PASS' | 'BLOCK' | 'NOT CHECKED'; reason: string; block: string | null; released?: boolean }
+// owner / shadow (LC-2167): the owner rule's own verdict, and the "would block" line it toasts while in shadow mode.
+type Verdict = {
+  verdict: 'PASS' | 'BLOCK' | 'NOT CHECKED'; reason: string; block: string | null; released?: boolean
+  owner?: { verdict: string; reason: string }; shadow?: string
+}
 
 // --- $ helpers: they live here because the plugin validator follows $ only into functions
 // declared in the hook's own file.
@@ -59,7 +63,7 @@ async function ask($: any, payload: unknown): Promise<Verdict | null> {
   } catch { return null }
 }
 
-async function judgeTurnEnd($: any): Promise<Verdict> {
+async function judgeTurnEnd($: any, e: any): Promise<Verdict> {
   const now = await $.clock.now()
   const watchers: Record<string, string | null> = {}
   for (const w of WATCHERS) watchers[w] = await readTool($, `mcp__${w}__watching`)
@@ -70,14 +74,19 @@ async function judgeTurnEnd($: any): Promise<Verdict> {
     watchers,
     session: await readSession($),
     blocks: await read($, blocks),
+    // LC-2167 owner rule: the check reads the final reply and the PRs this session opened from the transcript.
+    transcript_path: typeof e?.transcript_path === 'string' && e.transcript_path !== '' ? e.transcript_path : null,
   }
   return (await ask($, payload)) ?? { verdict: 'NOT CHECKED', reason: 'the check did not answer; not blocking', block: null }
 }
 
 async function settle($: any, v: Verdict): Promise<void> {
   const now = await $.clock.now()
-  await update($, receipt, () => ({ at: now, verdict: v.verdict, reason: v.reason }))
-  try { $.ui.log(`${OWN} receipt: ${v.verdict}: ${v.reason}`, { to: 'debug' }) } catch { /* best effort */ }
+  const owner = v.owner ? `${v.owner.verdict}: ${v.owner.reason}` : 'NOT CHECKED: no answer'
+  await update($, receipt, () => ({ at: now, verdict: v.verdict, reason: v.reason, owner }))
+  try { $.ui.log(`${OWN} receipt: ${v.verdict}: ${v.reason} | owner rule ${owner}`, { to: 'debug' }) } catch { /* best effort */ }
+  // Shadow mode (principle 15 step 4): say what the owner rule WOULD have blocked, so a person can read it; never block.
+  if (typeof v.shadow === 'string' && v.shadow !== '') toast($, v.shadow)
   if (v.verdict === 'BLOCK') await update($, blocks, n => n + 1)
   // PASS, or a release after MAX_BLOCKS refusals: re-arm, so the next turn end is judged afresh (CI review, LC-2043).
   else if (v.verdict === 'PASS' || v.released === true) await update($, blocks, () => 0)
@@ -102,7 +111,7 @@ export const register: Register = on => {
 
   on('classic.Stop', async ($, e, next) => {
     let v: Verdict
-    try { v = await judgeTurnEnd($) } catch { v = { verdict: 'NOT CHECKED', reason: 'the guard crashed; not blocking', block: null } }
+    try { v = await judgeTurnEnd($, e) } catch { v = { verdict: 'NOT CHECKED', reason: 'the guard crashed; not blocking', block: null } }
     try { await settle($, v) } catch { /* a receipt failure never changes the verdict */ }
     return v.verdict === 'BLOCK' && v.block ? { block: v.block } : next(e)
   // Fail open: a bug here must never trap a session.

@@ -125,3 +125,32 @@ test('other tools are not recorded as check-ins', async ($: any, on: any) => {
   await $.classic.Stop({ stop_hook_active: false })
   expect(w.runs[0]!.payload.calls).toEqual([])
 })
+
+// LC-2167 owner rule plumbing. The rule itself is pinned by the Python selftest; these pin what the mod does with it.
+test('the transcript path reaches the check (the owner rule reads the final reply from it)', async ($: any, on: any) => {
+  const w = world(on)
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/tmp/t.jsonl' })
+  expect(w.runs[0]!.payload.transcript_path).toBe('/tmp/t.jsonl')
+  await $.classic.Stop({ stop_hook_active: false })
+  expect(w.runs[1]!.payload.transcript_path).toBeNull()
+})
+
+test('shadow mode: a would-block is toasted and logged, and the turn still ends', async ($: any, on: any) => {
+  const shadow = '[mod:idle-backstop-guard] SHADOW owner rule would block: 1 open deliverable(s) and the final reply names no next owner'
+  const w = world(on, { out: { exitCode: 0, stdout: JSON.stringify({ verdict: 'PASS', reason: 'no open', block: null,
+    owner: { verdict: 'MISS', reason: '1 open' }, shadow }) } })
+  expect((await $.classic.Stop({ stop_hook_active: false })).block).toBeUndefined()
+  expect(w.toasts).toEqual([shadow])
+  expect(w.logs.join(' ')).toContain('owner rule MISS: 1 open')
+  expect(w.runs.length).toBe(1)
+  await $.classic.Stop({ stop_hook_active: false })
+  expect(w.runs[1]!.payload.blocks).toBe(0) // a shadow miss is never a refusal
+})
+
+test('an owner-rule BLOCK in enforce mode blocks with its own text', async ($: any, on: any) => {
+  const block = '[mod:idle-backstop-guard] Owner rule (LC-2167): this session leaves 1 open deliverable(s)'
+  const w = world(on, { out: { exitCode: 0, stdout: JSON.stringify({ verdict: 'BLOCK', reason: 'owner rule: 1 open', block,
+    owner: { verdict: 'MISS', reason: '1 open' } }) } })
+  expect((await $.classic.Stop({ stop_hook_active: false })).block).toBe(block)
+  expect(w.toasts).toEqual([block])
+})

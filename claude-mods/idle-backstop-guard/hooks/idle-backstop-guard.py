@@ -31,14 +31,36 @@ Input (stdin JSON): now_ms, calls[{tool,input,result,at_ms}], children (text|nul
 watchers{name: text|null}, session (get_session text|null), blocks (int, refusals in a row).
 Output (stdout JSON): {verdict, reason, block}. `block` is the text that stops the turn, or null.
 
+OWNER RULE (LC-2167, operator decision 2026-11-16: no deliverable goes stale; the only exit is the operator abandoning it in
+writing). A second question, asked at the same turn end: "does this session leave an open deliverable without saying who
+moves it next?" An open deliverable is an open fleet child, an active watcher item, or a PR this session opened that it has
+not seen merged or closed. The turn's final reply must then carry ONE of:
+  * a line `Next owner: <who and when>` (e.g. `Next owner: this session, check-in 17:45Z` or `Next owner: the operator,
+    bbm-approver on PR #3530`), or
+  * the operator's written abandon: a line starting `ABANDONED BY OPERATOR` plus a `> quote` of the operator's words.
+The check-in half of the brief is the LC-2043 rule above, unchanged. In-progress Jira tickets are NOT read here (a Jira call
+per turn end is too slow for a Stop hook); scripts/ci/stale_stories.py covers them server-side twice a day (LCH-703).
+
+The rule's MODE is data, owner-rule.json beside this file: off | shadow | enforce. It ships in SHADOW (principle 15,
+step 4: a new check runs on real sessions and a person reads its receipts before it may block). In shadow, a miss is a
+toast `[mod:idle-backstop-guard] SHADOW owner rule would block: ...` (session-close lists it at close-out) and a
+receipt line; the turn always ends. Going live is a one-line PR to owner-rule.json after the operator has read them.
+Escape paths in enforce: the abandon quote; MAX_BLOCKS refusals in a row release the turn (shared with the check-in rule);
+a child session is never blocked; an unreadable reply is NOT CHECKED. So an unattended run is never trapped (LC-1910,
+LC-1968: unattended runs hang on anything that waits for a person).
+
 Self-test: python3 idle-backstop-guard.py --selftest
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` does not add the script directory
+import transcript_reader as tr  # noqa: E402
 
 OWN = "[mod:idle-backstop-guard]"
 WINDOW_MS = 35 * 60_000   # a check-in must fire inside this to count
@@ -46,6 +68,8 @@ DELAY_MIN = 30            # what the block tells the session to schedule (5 min 
 MAX_BLOCKS = 3            # refusals in a row, then the turn may end (toasted): a guard bug cannot trap a session
 DONE_BUCKETS = ("COMPLETED", "ARCHIVED")
 WATCHERS = ("pr-ci-watch", "dispatch-watch", "workflow-run-watch")
+MODE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "owner-rule.json")
+MODES = ("off", "shadow", "enforce")
 
 
 # ---- fire times -------------------------------------------------------------------------------
@@ -180,6 +204,103 @@ def signal_of(text: object) -> str:
     return "child" if isinstance(p, str) else "unreadable"
 
 
+# ---- owner rule (LC-2167) ---------------------------------------------------------------------
+
+_MARKUP = re.compile(r"^[\s>*_`#-]+")
+OWNER_LINE = re.compile(r"^next owner\s*[:\-]\s*(.+)$", re.IGNORECASE)
+NOT_AN_OWNER = {"none", "nobody", "n/a", "na", "tbd", "unknown", "?", "-", "no one", "noone"}
+FAILED = re.compile(r"\berror\b|\bfailed\b|not mergeable|\b40[0-9]\b|\b422\b", re.IGNORECASE)
+PR_URL = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)")
+
+
+def next_owner(reply: str) -> str | None:
+    """The owner named on a `Next owner:` line of the reply, or None. A placeholder (none, TBD, ?) names nobody."""
+    for ln in (reply or "").splitlines():
+        m = OWNER_LINE.match(_MARKUP.sub("", ln).strip())
+        if m:
+            who = re.sub(r"[*_`]", "", m.group(1)).strip().rstrip(".")
+            if len(who) >= 3 and who.lower() not in NOT_AN_OWNER:
+                return who
+    return None
+
+
+def abandoned(reply: str) -> bool:
+    """The operator's written abandon: an `ABANDONED BY OPERATOR` line AND a non-empty `> quote` (same marker as LCH-703)."""
+    lines = (reply or "").splitlines()
+    head = any(_MARKUP.sub("", ln).strip().upper().startswith("ABANDONED BY OPERATOR") for ln in lines)
+    quote = any(ln.lstrip().startswith(">") and len(re.sub(r"[\s>*_`\"]", "", ln)) >= 3 for ln in lines)
+    return head and quote
+
+
+def session_prs(rows: list[dict]) -> list[str]:
+    """`pr:<owner>/<repo>#<n>` for every PR this session opened and has not itself merged or closed."""
+    opened: list[str] = []
+    gone: set[str] = set()
+    for name, inp, text in tr.tool_calls_with_results(rows):
+        short = name.split("__")[-1]
+        if short == "create_pull_request":
+            m = PR_URL.search(text or "")
+            if m and f"pr:{m.group(1)}#{m.group(2)}" not in opened:
+                opened.append(f"pr:{m.group(1)}#{m.group(2)}")
+        elif short in ("merge_pull_request", "update_pull_request"):
+            if short == "update_pull_request" and str(inp.get("state", "")).lower() != "closed":
+                continue
+            if FAILED.search(text or ""):
+                continue  # a refused merge or close leaves the PR open
+            # A call missing owner/repo/number yields a key like `pr:None/r#7` that matches no opened PR: harmless.
+            gone.add(f"pr:{inp.get('owner')}/{inp.get('repo')}#{inp.get('pullNumber', inp.get('pull_number'))}")
+    return [k for k in opened if k not in gone]
+
+
+def finished_watches(text: object) -> set[str]:
+    v = _json_in(text)
+    return {str(k) for k in v.get("finished", [])} if isinstance(v, dict) and isinstance(v.get("finished"), list) else set()
+
+
+def read_mode(path: str = MODE_FILE) -> str | None:
+    """off | shadow | enforce, or None when the file is unreadable (the rule is then NOT CHECKED, never enforced)."""
+    try:
+        with open(path) as fh:
+            m = json.load(fh).get("mode")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return m if m in MODES else None
+
+
+def owner_check(p: dict, items: list[str], mode: str | None) -> dict:
+    """{verdict: PASS|MISS|NOT CHECKED|OFF, reason}. MISS is the enforce-mode refusal, or the shadow-mode 'would block'."""
+    if mode == "off":
+        return {"verdict": "OFF", "reason": "owner rule off"}
+    if mode is None:
+        return {"verdict": "NOT CHECKED", "reason": "owner-rule.json unreadable"}
+    rows = tr.rows_for(p)
+    if not rows:
+        return {"verdict": "NOT CHECKED", "reason": "no transcript"}
+    watchers = p.get("watchers") if isinstance(p.get("watchers"), dict) else {}
+    done = finished_watches(watchers.get("pr-ci-watch"))
+    listed = set(items)
+    prs = [f"open PR {k}" for k in session_prs(rows) if k not in done and f"pr-ci-watch {k}" not in listed]
+    open_ = items + prs
+    if not open_:
+        return {"verdict": "PASS", "reason": "no open deliverable"}
+    reply = tr.final_reply_text(rows)
+    if abandoned(reply):
+        return {"verdict": "PASS", "reason": f"{len(open_)} open; abandoned by the operator in writing"}
+    who = next_owner(reply)
+    if who:
+        return {"verdict": "PASS", "reason": f"{len(open_)} open; next owner: {who[:80]}"}
+    return {"verdict": "MISS", "reason": f"{len(open_)} open deliverable(s) and the final reply names no next owner",
+            "items": open_}
+
+
+def owner_block_text(items: list[str]) -> str:
+    return (f"{OWN} Owner rule (LC-2167): this session leaves {len(items)} open deliverable(s) and the final reply does "
+            "not say who moves them next.\n" + "\n".join(f"- {i}" for i in items)
+            + "\nRe-send the final reply with a line `Next owner: <who, and when they act>` (this session with its "
+              "scheduled check-in, the operator with the one action they take, or a named thread/ticket). Only the "
+              "operator can drop it: a line `ABANDONED BY OPERATOR` plus a `> quote` of their words.")
+
+
 # ---- the verdict ------------------------------------------------------------------------------
 
 def hhmm(ms: int) -> str:
@@ -205,15 +326,10 @@ def block_text(items: list[str], now_ms: int, later: int | None) -> str:
     )
 
 
-def decide(p: dict) -> dict:
-    """The whole decision. Returns {verdict, reason, block}; never raises on odd input shapes."""
-    now = p.get("now_ms")
-    if not isinstance(now, (int, float)) or isinstance(now, bool):
-        return {"verdict": "NOT CHECKED", "reason": "no clock", "block": None}
-    now = int(now)
+def open_items(p: dict) -> tuple[list[str], list[str]]:
+    """(open items, unreadable sources) from the fleet tracker and the watchers."""
     items: list[str] = []
     unreadable: list[str] = []
-
     kids = open_children(p.get("children"))
     if kids is None:
         unreadable.append("fleet-tracker")
@@ -226,6 +342,51 @@ def decide(p: dict) -> dict:
             unreadable.append(w)
         else:
             items += [f"{w} {k}" for k in a]
+    return items, unreadable
+
+
+def decide(p: dict, mode: str | None = "__file__") -> dict:
+    """Both rules. The LC-2043 check-in verdict is unchanged; the LC-2167 owner rule is added per its mode.
+
+    Returns {verdict, reason, block, owner: {verdict, reason}, shadow?: text}. `shadow` is set only when the owner rule
+    would have blocked in shadow mode: the mod toasts it and the turn still ends."""
+    v = decide_checkin(p)
+    if mode == "__file__":
+        mode = read_mode()
+    try:
+        items, _ = open_items(p)
+        o = owner_check(p, items, mode)
+    except Exception as e:  # noqa: BLE001 - the new rule must never break the live one
+        o = {"verdict": "NOT CHECKED", "reason": f"owner rule crashed: {type(e).__name__}"}
+    v["owner"] = {"verdict": o["verdict"], "reason": o["reason"]}
+    if o["verdict"] == "MISS" and v["verdict"] != "BLOCK":
+        if mode == "shadow":
+            v["shadow"] = f"{OWN} SHADOW owner rule would block: {o['reason']}"
+        elif mode == "enforce":
+            if signal_of(p.get("session")) != "top":  # a child (or an unreadable session) is never blocked
+                v["owner"]["verdict"] = "NOT CHECKED"
+                v["owner"]["reason"] += "; not a readable top-level session, not blocking"
+            elif _blocks(p) >= MAX_BLOCKS:
+                v["owner"]["verdict"] = "NOT CHECKED"
+                v["owner"]["reason"] += f"; released after {MAX_BLOCKS} refusals"
+                v["released"] = True
+            else:
+                return {**v, "verdict": "BLOCK", "reason": "owner rule: " + o["reason"], "block": owner_block_text(o["items"])}
+    return v
+
+
+def _blocks(p: dict) -> int:
+    b = p.get("blocks")
+    return b if isinstance(b, int) and not isinstance(b, bool) else 0
+
+
+def decide_checkin(p: dict) -> dict:
+    """The LC-2043 decision. Returns {verdict, reason, block}; never raises on odd input shapes."""
+    now = p.get("now_ms")
+    if not isinstance(now, (int, float)) or isinstance(now, bool):
+        return {"verdict": "NOT CHECKED", "reason": "no clock", "block": None}
+    now = int(now)
+    items, unreadable = open_items(p)
 
     if not items:
         if unreadable:
@@ -241,8 +402,7 @@ def decide(p: dict) -> dict:
         return {"verdict": "NOT CHECKED", "reason": f"{len(items)} open, no check-in; get_session unreadable so not blocking", "block": None}
     if who == "child":
         return {"verdict": "NOT CHECKED", "reason": f"{len(items)} open, no check-in; child session, not enforced (the parent's tracker polls it)", "block": None}
-    blocks = p.get("blocks") if isinstance(p.get("blocks"), int) and not isinstance(p.get("blocks"), bool) else 0
-    if blocks >= MAX_BLOCKS:
+    if _blocks(p) >= MAX_BLOCKS:
         # released: true tells the mod to re-arm (reset its count) so the next turn end is judged afresh.
         return {"verdict": "NOT CHECKED", "reason": f"{len(items)} open, no check-in; released after {MAX_BLOCKS} refusals", "block": None, "released": True}
     return {"verdict": "BLOCK", "reason": f"{len(items)} open, no server-side check-in within {WINDOW_MS // 60_000} min",
@@ -388,6 +548,99 @@ def _selftest() -> int:
     ck(D(children=kids, calls="junk")["verdict"] == "BLOCK", "junk calls do not cover")
     ck(D(children=kids, watchers="junk")["verdict"] == "BLOCK", "junk watchers field is unreadable, child still blocks")
     ck(hhmm(NOW) == "22:00Z", "hhmm")
+
+    # ---- owner rule (LC-2167) ----
+    ck(next_owner("done\n\nNext owner: the operator, bbm-approver on PR #3530") == "the operator, bbm-approver on PR #3530", "owner line read")
+    ck(next_owner("**Next owner:** this session, check-in 17:45Z.") == "this session, check-in 17:45Z", "markup and trailing dot stripped")
+    ck(next_owner("- next owner - LC-2141 thread") == "LC-2141 thread", "dash separator and list bullet")
+    for bad in ("Next owner: none", "Next owner: TBD", "Next owner: ?", "Next owner: ab", "next owner", "The next owner is me", ""):
+        ck(next_owner(bad) is None, f"no owner in {bad!r}")
+    ck(abandoned("ABANDONED BY OPERATOR (2026-11-16)\n> drop it, not worth it"), "abandon heading + quote")
+    ck(abandoned("**Abandoned by operator**\n\n>   kill it"), "case and markup tolerated")
+    ck(not abandoned("ABANDONED BY OPERATOR"), "heading without the quote is not an abandon")
+    ck(not abandoned("> drop it"), "quote without the heading is not an abandon")
+    ck(not abandoned("ABANDONED BY OPERATOR\n>  "), "empty quote is not an abandon")
+
+    def row_use(tid, name, inp):
+        return {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}}
+
+    def row_res(tid, text):
+        return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": text}]}}
+
+    def row_prompt(t="go"):
+        return {"type": "user", "message": {"content": t}}
+
+    def row_reply(t):
+        return {"type": "assistant", "message": {"content": [{"type": "text", "text": t}]}}
+
+    CPR, MPR, UPR = "mcp__github__create_pull_request", "mcp__github__merge_pull_request", "mcp__github__update_pull_request"
+    pr_rows = [row_prompt(), row_use("a", CPR, {"title": "x"}), row_res("a", '{"html_url":"https://github.com/o/r/pull/7"}'),
+               row_use("b", CPR, {}), row_res("b", "created https://github.com/o/r/pull/8 ok"),
+               row_use("c", CPR, {}), row_res("c", "error: validation failed"),
+               row_use("d", MPR, {"owner": "o", "repo": "r", "pullNumber": 8}), row_res("d", '{"merged":true}'),
+               row_use("f", MPR, {"owner": "o", "repo": "r", "pullNumber": 7}), row_res("f", "Error: 405 Pull Request is not mergeable")]
+    ck(session_prs(pr_rows) == ["pr:o/r#7"], "opened PRs minus the one merged; a failed create opens nothing")
+    ck(session_prs(pr_rows + [row_use("e", UPR, {"owner": "o", "repo": "r", "pullNumber": 7, "state": "closed"}), row_res("e", "{}")]) == [], "closed in session")
+    ck(session_prs(pr_rows + [row_use("e", UPR, {"owner": "o", "repo": "r", "pullNumber": 7, "title": "t"}), row_res("e", "{}")]) == ["pr:o/r#7"], "an edit is not a close")
+    ck(session_prs(pr_rows + [row_use("e", UPR, {"owner": "o", "repo": "r", "pull_number": 7, "state": "CLOSED"}), row_res("e", "{}")]) == [], "pull_number spelling, any case")
+    ck(session_prs(pr_rows + [row_use("g", CPR, {}), row_res("g", "https://github.com/o/r/pull/7 again")]) == ["pr:o/r#7"], "a PR listed once")
+    ck(session_prs([row_use("h", CPR, {}), row_res("h", "no url here")]) == [], "a create with no PR url opens nothing")
+    ck(finished_watches('{"active":[],"finished":["pr:o/r#7"]}') == {"pr:o/r#7"} and finished_watches(None) == set(), "finished watches")
+    with __import__("tempfile").TemporaryDirectory() as d:
+        mp = os.path.join(d, "m.json")
+        for body, want in (('{"mode":"enforce"}', "enforce"), ('{"mode":"shadow"}', "shadow"), ('{"mode":"off"}', "off"),
+                           ('{"mode":"live"}', None), ("{x", None), ("[]", None)):
+            with open(mp, "w") as fh:
+                fh.write(body)
+            ck(read_mode(mp) == want, f"mode file {body!r}")
+        ck(read_mode(os.path.join(d, "missing.json")) is None, "missing mode file")
+    ck(read_mode() == "shadow", "the shipped mode is shadow (principle 15 step 4)")
+
+    def O(mode, reply, extra=(), **kw):
+        rows = [row_prompt(), *pr_rows[1:3], *extra, row_reply(reply)]
+        base = {"now_ms": NOW, "calls": [], "children": H + "0", "session": ses(None), "blocks": 0,
+                "watchers": {w_: '{"active":[],"finished":[]}' for w_ in WATCHERS}, "transcript_rows": rows}
+        base.update(kw)
+        return decide(base, mode)
+
+    r = O("enforce", "done")
+    ck(r["verdict"] == "BLOCK" and "Owner rule (LC-2167)" in r["block"] and "open PR pr:o/r#7" in r["block"], "enforce: open PR, no owner -> BLOCK")
+    ck(r["block"].startswith(OWN), "owner block starts with the mod's name")
+    ck(O("enforce", "done\nNext owner: the operator, merge approval")["verdict"] == "PASS", "enforce: owner named -> PASS")
+    ck(O("enforce", "ABANDONED BY OPERATOR\n> stop this one")["verdict"] == "PASS", "enforce: written abandon -> PASS")
+    ck(O("enforce", "done", session=ses("session_p"))["verdict"] == "PASS", "enforce: child never blocked")
+    ck(O("enforce", "done", session=ses("session_p"))["owner"]["verdict"] == "NOT CHECKED", "enforce: child owner verdict NOT CHECKED")
+    r = O("enforce", "done", blocks=3)
+    ck(r["verdict"] != "BLOCK" and r.get("released") is True and "released" in r["owner"]["reason"], "enforce: released after MAX_BLOCKS")
+    ck(O("enforce", "done", blocks=2)["verdict"] == "BLOCK", "enforce: second refusal still blocks")
+    r = O("shadow", "done")
+    ck(r["verdict"] == "PASS" and r["block"] is None and r["shadow"].startswith(f"{OWN} SHADOW owner rule would block"), "shadow: never blocks, says it would")
+    ck(r["owner"]["verdict"] == "MISS", "shadow: receipt records the miss")
+    ck("shadow" not in O("shadow", "Next owner: this session, check-in 18:05Z"), "shadow: no toast when an owner is named")
+    r = O("off", "done")
+    ck(r["verdict"] == "PASS" and r["owner"]["verdict"] == "OFF" and "shadow" not in r, "off: nothing")
+    r = O(None, "done")
+    ck(r["verdict"] == "PASS" and r["owner"]["verdict"] == "NOT CHECKED", "unreadable mode: NOT CHECKED, never blocks")
+    r = O("enforce", "done", extra=[row_use("m", MPR, {"owner": "o", "repo": "r", "pullNumber": 7}), row_res("m", '{"merged":true}')])
+    ck(r["verdict"] == "PASS" and r["owner"]["reason"] == "no open deliverable", "enforce: merged in session -> nothing open")
+    r = O("enforce", "done", watchers={**{w_: '{"active":[],"finished":[]}' for w_ in WATCHERS}, "pr-ci-watch": '{"active":[],"finished":["pr:o/r#7"]}'})
+    ck(r["verdict"] == "PASS", "enforce: pr-ci-watch saw it finish -> not open")
+    r = O("enforce", "done", watchers={**{w_: '{"active":[],"finished":[]}' for w_ in WATCHERS}, "pr-ci-watch": '{"active":["pr:o/r#7"],"finished":[]}'},
+          calls=[c(SL, {"delay_minutes": 30})])
+    ck(r["verdict"] == "BLOCK" and r["block"].count("pr:o/r#7") == 1, "enforce: a watched PR is listed once; check-in alone is not an owner")
+    r = O("enforce", "done", children=kids)
+    ck(r["verdict"] == "BLOCK" and "Idle backstop" in r["block"] and "owner" in r, "the live check-in rule still blocks first")
+    r = decide({"now_ms": NOW, "calls": [], "children": H + "0", "session": ses(None), "blocks": 0,
+                "watchers": {w_: '{"active":[],"finished":[]}' for w_ in WATCHERS}}, "enforce")
+    ck(r["verdict"] == "PASS" and r["owner"]["verdict"] == "NOT CHECKED", "no transcript: owner NOT CHECKED, live PASS kept")
+    r = decide({"now_ms": NOW, "calls": [], "children": H + "0", "session": ses(None), "blocks": 0, "transcript_rows": [row_prompt(), row_reply("hi")],
+                "watchers": {w_: '{"active":[],"finished":[]}' for w_ in WATCHERS}}, "enforce")
+    ck(r["owner"]["verdict"] == "PASS" and r["owner"]["reason"] == "no open deliverable", "nothing open, no owner needed")
+    r = decide({"now_ms": NOW, "calls": [], "children": H + "0", "session": ses(None), "blocks": 0,
+                "transcript_rows": [row_prompt(), *pr_rows[1:3], row_reply("done")],
+                "watchers": {w_: '{"active":[],"finished":[]}' for w_ in WATCHERS}})
+    ck(r["verdict"] == "PASS" and "would block" in r.get("shadow", ""), "default mode comes from the shipped file (shadow)")
+    ck(owner_check({"transcript_rows": "junk"}, [], "enforce")["verdict"] == "NOT CHECKED", "junk rows: NOT CHECKED")
 
     import subprocess
     me = [sys.executable, "-I", __file__]
