@@ -357,6 +357,11 @@ def _selftest() -> int:
 
 
 def main() -> int:
+    # LC-1877 equivalent mutants (guard-off / `in` -> `not in` on the next line): mutate.py judges only the exit code of
+    # `python3 reply-footer-check.py --selftest`. With this dispatch broken that command skips the selftest, reads an
+    # empty stdin, evaluates {} -> no block -> exit 0, the same code a passing selftest gives, and the selftest itself
+    # never runs so it cannot assert on it. claude-mods.yml reads the "selftest: N/N checks passed" count line, so CI
+    # fails there. Proposed waivers: main|guard-off|if '--selftest' in sys.argv -> if False and main|cmp-flip|in -> not in.
     if "--selftest" in sys.argv:
         return _selftest()
     try:
