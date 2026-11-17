@@ -145,7 +145,8 @@ async function poll($: any): Promise<FleetRow[]> {
           // A manual needs-you note sticks until cleared; a bucket flag tracks the bucket.
           needsYou: NEEDS_OPERATOR.has(bucket) || (row.needsYou && row.note !== ''),
         }
-        const { wake, holdPrevBucket } = decideWake(lastWoken, row.sessionId, row.bucket, bucket, fresh.summary)
+        const { wake, holdPrevBucket } = decideWake(lastWoken, row.sessionId, row.bucket, bucket, fresh.summary,
+          row.trackedAt !== undefined ? now - row.trackedAt : undefined)
         if (holdPrevBucket) fresh.bucket = row.bucket
         if (wake) {
           const entry = `${row.ticket} (${row.label}) ${row.bucket || 'NEW'} -> ${bucket}: ${fresh.summary}`
@@ -340,9 +341,9 @@ async function isArchived($: any, id: string): Promise<boolean> {
   }
 }
 
-function blankRow(sessionId: string, ticket: string, label: string): FleetRow {
+function blankRow(sessionId: string, ticket: string, label: string, trackedAt: number): FleetRow {
   return {
-    sessionId, ticket, label, bucket: '', status: '', summary: '', costUsd: 0,
+    trackedAt, sessionId, ticket, label, bucket: '', status: '', summary: '', costUsd: 0,
     updatedAt: '', checkedAt: 0, note: '', needsYou: false, error: '',
   }
 }
@@ -480,10 +481,11 @@ export const register: Register = on => {
       const ticket = ticketOf(e.title, e.prompt)
       const label = String(e.title || e.prompt || 'auto-tracked').replace(/\s+/g, ' ').slice(0, 60)
       let added = false
+      const at = await $.clock.now()
       await mutate($, cur => {
         if (cur.some(r => r.sessionId === id)) return cur
         added = true
-        return [...cur, blankRow(id, ticket, label)]
+        return [...cur, blankRow(id, ticket, label, at)]
       })
       if (!added) return res
       void poll($)
@@ -495,10 +497,12 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e)) // replay-safe: never re-runs create_session, never refuses it
 
   on('tool.call', { tool: 'mcp__fleet-tracker__track' }, async ($, e: any) => {
+    const at = await $.clock.now()
     await mutate($, list => {
     const existing = list.find(r => r.sessionId === e.session_id)
     const row: FleetRow = {
       ...existing,
+      trackedAt: existing?.trackedAt ?? at,
       sessionId: e.session_id,
       ticket: e.ticket,
       label: e.label,

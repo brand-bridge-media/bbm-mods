@@ -14,6 +14,8 @@ const CHECK_INS = /^mcp__.*__(send_later|create_trigger)$/
 const WATCHERS = ['pr-ci-watch', 'dispatch-watch', 'workflow-run-watch']
 const MAX_CALLS = 50
 const MAX_TEXT = 4_000
+// LC-2061: pages of the server's scheduled-task list read before a BLOCK stands (100 tasks a page, newest first).
+const MAX_TRIGGER_PAGES = 3
 
 const calls = atom({ plugin: 'idle-backstop-guard', key: 'calls' } as const, [] as Call[])
 const blocks = atom({ plugin: 'idle-backstop-guard', key: 'blocks' } as const, 0)
@@ -50,6 +52,23 @@ async function readSession($: any): Promise<string | null> {
   try { return textOf(await $.mcp.call(SERVER, 'get_session', {})) } catch { return null }
 }
 
+// LC-2061: the server's own list of enabled scheduled tasks. The `calls` atom only holds check-ins this process saw
+// being made, and session state is emptied by a restart, so a check-in armed earlier was invisible and the guard asked
+// for a duplicate. null when the first page cannot be read: the check then relies on `calls` alone, as before.
+async function readTriggers($: any): Promise<string[] | null> {
+  const pages: string[] = []
+  let cursor: string | undefined
+  for (let i = 0; i < MAX_TRIGGER_PAGES; i++) {
+    let text: string | null
+    try { text = textOf(await $.mcp.call(SERVER, 'list_triggers', { enabled: true, limit: 100, ...(cursor ? { cursor } : {}) })) } catch { text = null }
+    if (text === null) break
+    pages.push(text)
+    try { cursor = JSON.parse(text)?.next_cursor || undefined } catch { cursor = undefined }
+    if (!cursor) break
+  }
+  return pages.length ? pages : null
+}
+
 async function ask($: any, payload: unknown): Promise<Verdict | null> {
   try {
     const r = await $.process.run(['python3', '-I', `${$.plugin.root}/hooks/idle-backstop-guard.py`],
@@ -77,7 +96,14 @@ async function judgeTurnEnd($: any, e: any): Promise<Verdict> {
     // LC-2167 owner rule: the check reads the final reply and the PRs this session opened from the transcript.
     transcript_path: typeof e?.transcript_path === 'string' && e.transcript_path !== '' ? e.transcript_path : null,
   }
-  return (await ask($, payload)) ?? { verdict: 'NOT CHECKED', reason: 'the check did not answer; not blocking', block: null }
+  const first = await ask($, payload)
+  // LC-2061: before a BLOCK stands, ask the server which check-ins are already pending for this session. Read only
+  // then, so a turn end with nothing open (or already covered) costs no extra call.
+  if (first?.verdict === 'BLOCK') {
+    const triggers = await readTriggers($)
+    if (triggers) return (await ask($, { ...payload, triggers })) ?? first
+  }
+  return first ?? { verdict: 'NOT CHECKED', reason: 'the check did not answer; not blocking', block: null }
 }
 
 async function settle($: any, v: Verdict): Promise<void> {

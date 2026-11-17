@@ -1,6 +1,6 @@
 import { expect, mock } from 'claude-code/testing'
 import { test } from './slow'
-import { decideWake, NEEDS_OPERATOR } from '../hooks/logic'
+import { decideWake, NEEDS_OPERATOR, STARTUP_MS } from '../hooks/logic'
 
 // Transition gate: which bucket changes wake the orchestrator, which flag the operator,
 // and which are suppressed. A broken gate would otherwise stay green (LC-1711 review).
@@ -252,4 +252,49 @@ test('NEEDS_OPERATOR is the single shared set', () => {
 test('PROTOCOL accepts NEEDS YOU: and the legacy NEEDS STAN: (LC-1917)', () => {
   expect(decideWake(new Map(), 's', 'WORKING', 'COMPLETED', 'NEEDS YOU: waiting on CI to pass').wake).toBe(true)
   expect(decideWake(new Map(), 's', 'WORKING', 'COMPLETED', 'NEEDS STAN: waiting on CI to pass').wake).toBe(true)
+})
+
+// LC-1796 (2026-10-13): the first poll already saw WORKING, then a minute later REVIEW_READY with an empty summary.
+// The track call polls at once (WORKING); a status poll 91 s later sees the blip. Only the second reply differs.
+async function workingThenReady($: any, on: any, summary: string, waitMs: number) {
+  mock.store(on)
+  const clock = mock.clock(on, { now: Date.parse('2026-10-13T12:00:00Z') })
+  const prompts: string[] = []
+  on('prompt.submit', (_$: any, e: any) => { prompts.push(e.text); return { text: e.text } as any })
+  on('ui.toast', () => ({ value: undefined }) as any)
+  on('turn.complete', () => ({ text: 'done' }) as any)
+  let bucket = 'WORKING'
+  on('mcp.call', () => ({ value: { isError: false, content: [{ type: 'text', text: JSON.stringify({ ccr: {
+    status_bucket: `SESSION_STATUS_BUCKET_${bucket}`, session_status: 'SESSION_STATUS_RUNNING',
+    ...(bucket !== 'WORKING' && summary ? { task_summary: summary } : {}), updated_at: '2026-10-13T11:59:00Z' } }) }] } }) as any)
+  await $.tool.call({ tool: 'mcp__fleet-tracker__track', session_id: 'session_s2', ticket: 'LC-3', label: 's2' } as any)
+  for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 5))
+  bucket = 'REVIEW_READY'
+  await clock.advance(waitMs)
+  // `status` forces a fresh poll (the harness timer is not armed without session.start).
+  await $.tool.call({ tool: 'mcp__fleet-tracker__status' } as any)
+  // A wake found inside a tool call is delivered when the turn ends.
+  await ($ as any).turn.complete({ reason: 'answer', answer: 'done' })
+  for (let i = 0; i < 20 && prompts.length === 0; i++) await new Promise(r => setTimeout(r, 10))
+  return prompts
+}
+
+test('LC-1796: WORKING -> empty REVIEW_READY a minute after tracking is a startup blip', async ($, on) => {
+  expect((await workingThenReady($, on, '', 91_000)).length).toBe(0)
+})
+
+test('LC-1796 control: the same flip with a summary wakes', async ($, on) => {
+  expect((await workingThenReady($, on, 'draft ready', 91_000)).length).toBe(1)
+})
+
+test('LC-1796: the blip window is bounded, an empty finish after STARTUP_MS wakes', () => {
+  expect(decideWake(new Map(), 's', 'WORKING', 'REVIEW_READY', '', 60_000)).toEqual({ wake: false, holdPrevBucket: true })
+  expect(decideWake(new Map(), 's', 'WORKING', 'COMPLETED', '', STARTUP_MS - 1).wake).toBe(false)
+  expect(decideWake(new Map(), 's', 'WORKING', 'REVIEW_READY', '', STARTUP_MS).wake).toBe(true)
+  // A row saved before trackedAt existed keeps the old behaviour.
+  expect(decideWake(new Map(), 's', 'WORKING', 'REVIEW_READY', '', undefined).wake).toBe(true)
+  // Only from WORKING: another previous bucket is a real transition.
+  expect(decideWake(new Map(), 's', 'BLOCKED', 'REVIEW_READY', '', 60_000).wake).toBe(true)
+  // BLOCKED/FAILED always wake, however young.
+  expect(decideWake(new Map(), 's', 'WORKING', 'BLOCKED', '', 60_000).wake).toBe(true)
 })

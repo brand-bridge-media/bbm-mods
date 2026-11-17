@@ -32,12 +32,17 @@ function justWaitingOn(summary: string): boolean {
   return WAIT_PHRASE.test(summary.trim())
 }
 
+// How long after tracking an empty-summary finish from WORKING still counts as a startup blip (LC-1796).
+export const STARTUP_MS = 5 * 60_000
+
 export function decideWake(
   lastWoken: Map<string, string>,
   sessionId: string,
   prevBucket: string,
   bucket: string,
   summary: string,
+  // ms since the row was first tracked; undefined for rows saved before LC-1796 (no trackedAt).
+  ageMs?: number,
 ): { wake: boolean; holdPrevBucket: boolean } {
   // Two polls can overlap (timer + a status/track call) and both see the old
   // bucket; the memory covers only that overlap. Leaving the bucket clears it,
@@ -49,7 +54,12 @@ export function decideWake(
   const alreadyWoken = lastWoken.get(sessionId) === bucket
   // A just-created session briefly reports REVIEW_READY/COMPLETED with an
   // empty summary before its first turn ends (seen 2026-10-07); not a signal.
-  const startupBlip = prevBucket === '' && !summary.trim() && !NEEDS_OPERATOR.has(bucket)
+  // LC-1796 (2026-10-13): the first poll can already see WORKING, so the blip then arrives as
+  // WORKING -> REVIEW_READY with an empty summary about a minute after create_session. Within
+  // STARTUP_MS of tracking that is a blip too; the bucket is held, so a real finish wakes on the
+  // next poll that carries a summary, or on the first poll after STARTUP_MS.
+  const young = prevBucket === 'WORKING' && ageMs !== undefined && ageMs < STARTUP_MS
+  const startupBlip = (prevBucket === '' || young) && !summary.trim() && !NEEDS_OPERATOR.has(bucket)
   // A suppressed wake must not record the new bucket on the row: otherwise the
   // next poll (now with a real summary) sees no transition and the wake is lost.
   // Hold the PREVIOUS bucket (not ''): '' would make a later empty-summary poll

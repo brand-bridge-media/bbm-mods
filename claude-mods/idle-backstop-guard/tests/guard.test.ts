@@ -7,18 +7,25 @@ const T0 = Date.parse('2026-11-03T22:00:00Z')
 const ses = (parent?: string) => ({ content: [{ type: 'text', text: JSON.stringify({ ccr: { id: 's1', ...(parent ? { parent_session_id: parent } : {}) } }) }] })
 const BLOCKING = JSON.stringify({ verdict: 'BLOCK', reason: '1 open', block: '[mod:idle-backstop-guard] schedule a check-in\nsecond line' })
 
-function world(on: any, o: { out?: any; throws?: boolean; session?: any; children?: string; watching?: Record<string, string> } = {}) {
+function world(on: any, o: { out?: any; outs?: any[]; throws?: boolean; session?: any; children?: string; watching?: Record<string, string>; triggers?: string[] } = {}) {
+  const listed: any[] = []
   const runs: { argv: string[]; payload: any }[] = []
   const toasts: string[] = []
   const logs: string[] = []
   on('clock.now', () => ({ value: T0 }) as any)
   on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
   on('ui.log', (_$: any, e: any) => { logs.push(e.text ?? e.message ?? JSON.stringify(e)); return { value: undefined } as any })
-  on('mcp.call', () => ({ value: o.session ?? ses() }) as any)
+  on('mcp.call', (_$: any, e: any) => {
+    if (e.tool !== 'list_triggers') return { value: o.session ?? ses() } as any
+    listed.push(e.args)
+    const page = o.triggers?.[listed.length - 1]
+    return { value: page === undefined ? { isError: true, content: [{ type: 'text', text: 'no' }] } : { content: [{ type: 'text', text: page }] } } as any
+  })
   on('process.run', (_$: any, e: any) => {
     runs.push({ argv: [...e.argv], payload: JSON.parse(String(e.init?.stdin ?? '{}')) })
     if (o.throws) throw new Error('spawn failed')
-    return { value: o.out ?? { exitCode: 0, stdout: BLOCKING, stderr: '' } } as any
+    const scripted = o.outs?.[runs.length - 1]
+    return { value: scripted ?? o.out ?? { exitCode: 0, stdout: BLOCKING, stderr: '' } } as any
   })
   on('tool.call', (_$: any, e: any) => {
     if (e.tool === 'mcp__fleet-tracker__open_children') return o.children === undefined ? { isError: true, result: 'no such tool' } : { result: o.children }
@@ -27,7 +34,7 @@ function world(on: any, o: { out?: any; throws?: boolean; session?: any; childre
     return { result: 'ok' }
   })
   on('classic.Stop', () => ({}))
-  return { runs, toasts, logs }
+  return { runs, toasts, logs, listed }
 }
 
 test('Stop sends the check what it needs and a BLOCK ends in a block with the check\'s text', async ($: any, on: any) => {
@@ -153,4 +160,48 @@ test('an owner-rule BLOCK in enforce mode blocks with its own text', async ($: a
     owner: { verdict: 'MISS', reason: '1 open' } }) } })
   expect((await $.classic.Stop({ stop_hook_active: false })).block).toBe(block)
   expect(w.toasts).toEqual([block])
+})
+
+// LC-2061: a check-in armed before a restart (or in an earlier turn) is not in `calls`; the server's list has it.
+const PASSING = { exitCode: 0, stdout: JSON.stringify({ verdict: 'PASS', reason: '1 open; server-side check-in fires 22:25Z (25 min)', block: null }), stderr: '' }
+const pageOf = (rows: unknown[], next?: string) => JSON.stringify({ data: rows, ...(next ? { next_cursor: next } : {}) })
+
+test('a BLOCK is re-asked with the server\'s scheduled tasks, and that answer stands', async ($: any, on: any) => {
+  const w = world(on, { outs: [{ exitCode: 0, stdout: BLOCKING, stderr: '' }, PASSING], triggers: [pageOf([{ id: 't1' }])] })
+  const s: any = await $.classic.Stop({ stop_hook_active: false })
+  expect(s.block).toBeUndefined()
+  expect(w.runs.length).toBe(2)
+  expect(w.runs[0]!.payload.triggers).toBeUndefined()
+  expect(w.runs[1]!.payload.triggers).toEqual([pageOf([{ id: 't1' }])])
+  expect(w.listed[0]).toEqual({ enabled: true, limit: 100 })
+})
+
+test('the task list is read page by page, following next_cursor, up to three pages', async ($: any, on: any) => {
+  const w = world(on, { outs: [{ exitCode: 0, stdout: BLOCKING, stderr: '' }, PASSING],
+    triggers: [pageOf([{ id: 'a' }], 'c1'), pageOf([{ id: 'b' }], 'c2'), pageOf([{ id: 'c' }], 'c3'), pageOf([{ id: 'd' }])] })
+  await $.classic.Stop({ stop_hook_active: false })
+  expect(w.listed.map((a: any) => a.cursor)).toEqual([undefined, 'c1', 'c2'])
+  expect(w.runs[1]!.payload.triggers.length).toBe(3)
+})
+
+test('a PASS costs no task-list read', async ($: any, on: any) => {
+  const w = world(on, { out: PASSING, triggers: [pageOf([])] })
+  await $.classic.Stop({ stop_hook_active: false })
+  expect(w.listed).toEqual([])
+  expect(w.runs.length).toBe(1)
+})
+
+test('an unreadable task list leaves the first BLOCK standing', async ($: any, on: any) => {
+  const w = world(on, {})
+  const s: any = await $.classic.Stop({ stop_hook_active: false })
+  expect(s.block).toContain('[mod:idle-backstop-guard] schedule a check-in')
+  expect(w.listed.length).toBe(1)
+  expect(w.runs.length).toBe(1)
+})
+
+test('a re-ask that does not answer keeps the first BLOCK', async ($: any, on: any) => {
+  const w = world(on, { outs: [{ exitCode: 0, stdout: BLOCKING, stderr: '' }, { exitCode: 1, stdout: '', stderr: 'x' }], triggers: [pageOf([])] })
+  const s: any = await $.classic.Stop({ stop_hook_active: false })
+  expect(s.block).toContain('schedule a check-in')
+  expect(w.runs.length).toBe(2)
 })

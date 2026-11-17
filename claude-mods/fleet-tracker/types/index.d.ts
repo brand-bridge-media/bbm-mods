@@ -46,6 +46,8 @@ export type FleetRow = {
   // announced, and the transcript version (updated_at) they were last read from.
   awaits?: Await[]
   awaitsScannedAt?: string
+  // When the row was first tracked (LC-1796; optional so older rows load): bounds the startup-blip filter.
+  trackedAt?: number
 }
 
 declare module 'claude-code' {

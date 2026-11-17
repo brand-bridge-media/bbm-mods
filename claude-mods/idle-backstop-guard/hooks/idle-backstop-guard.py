@@ -7,7 +7,8 @@ in-process timer stops, what brings it back?" It BLOCKS the turn's end when all 
   1. something is open: a fleet child (fleet-tracker row not COMPLETED/ARCHIVED), or an item a
      watcher mod (pr-ci-watch, dispatch-watch, workflow-run-watch) still lists as active;
   2. no SERVER-SIDE check-in will fire within WINDOW_MS (35 min): a `send_later` or `create_trigger`
-     this session made, whose fire time is still ahead;
+     this session made, whose fire time is still ahead, OR (LC-2061) an enabled scheduled task the server
+     lists (`list_triggers`) as firing into this session inside the window;
   3. a person is present to answer it (a top-level session; see CHILD below).
 
 It never blocks when nothing is open, when a check-in covers it, or after MAX_BLOCKS refusals in a row.
@@ -28,7 +29,8 @@ receipt NOT CHECKED, the mod toasts. A bug here must never trap a session.
 RECEIPT. Every run prints one line: `PASS|BLOCK|NOT CHECKED: <reason>`. NOT CHECKED is never a pass.
 
 Input (stdin JSON): now_ms, calls[{tool,input,result,at_ms}], children (text|null),
-watchers{name: text|null}, session (get_session text|null), blocks (int, refusals in a row).
+watchers{name: text|null}, session (get_session text|null), blocks (int, refusals in a row),
+triggers (list of list_triggers reply texts | null; LC-2061).
 Output (stdout JSON): {verdict, reason, block}. `block` is the text that stops the turn, or null.
 
 OWNER RULE (LC-2167, operator decision 2026-11-16: no deliverable goes stale; the only exit is the operator abandoning it in
@@ -153,6 +155,49 @@ def check_in(calls: object, now_ms: int) -> tuple[int | None, int | None]:
         else:
             later = f if later is None else min(later, f)
     return soon, later
+
+
+def session_id(text: object) -> str | None:
+    """This session's id from the get_session (no id) reply, else None."""
+    v = _json_in(text)
+    ccr = v.get("ccr") if isinstance(v, dict) else None
+    sid = ccr.get("id") if isinstance(ccr, dict) else None
+    return sid if isinstance(sid, str) and sid else None
+
+
+def server_check_in(triggers: object, session: object, now_ms: int) -> tuple[int | None, int | None]:
+    """(soonest fire inside the window, soonest beyond it) from the server's own list of scheduled tasks (LC-2061).
+
+    The `calls` list only holds check-ins this process saw being made. It lives in session state, so a check-in armed
+    before a container restart or a mod reload was invisible and the guard demanded a duplicate (five refusals on
+    2026-11-04 with check-ins already pending; again 2026-11-11, LC-2112). The server's list survives both. Only an
+    enabled task bound to THIS session (persistent_session_id) counts; one that starts a fresh session does not wake us.
+    Unreadable pages or session id: nothing counted from here (the calls list still applies)."""
+    sid = session_id(session)
+    if sid is None:
+        return None, None
+    pages = triggers if isinstance(triggers, list) else []
+    soon, later = None, None
+    for page in pages:
+        v = _json_in(page)
+        rows = v.get("data") if isinstance(v, dict) else None
+        for t in rows if isinstance(rows, list) else []:
+            if not isinstance(t, dict) or t.get("enabled") is not True:
+                continue
+            if t.get("persistent_session_id") != sid or t.get("persist_session") is False:
+                continue
+            f = parse_ts(t.get("next_run_at"))
+            if f is None or f <= now_ms:
+                continue
+            if f <= now_ms + WINDOW_MS:
+                soon = f if soon is None else min(soon, f)
+            else:
+                later = f if later is None else min(later, f)
+    return soon, later
+
+
+def _earliest(a: int | None, b: int | None) -> int | None:
+    return a if b is None else b if a is None else min(a, b)
 
 
 # ---- what is open -----------------------------------------------------------------------------
@@ -446,6 +491,8 @@ def decide_checkin(p: dict) -> dict:
         return {"verdict": "PASS", "reason": "no open fleet children or watches", "block": None}
 
     soon, later = check_in(p.get("calls"), now)
+    s_soon, s_later = server_check_in(p.get("triggers"), p.get("session"), now)
+    soon, later = _earliest(soon, s_soon), _earliest(later, s_later)
     if soon is not None:
         return {"verdict": "PASS", "reason": f"{len(items)} open; server-side check-in fires {hhmm(soon)} ({round((soon - now) / 60_000)} min)", "block": None}
 
@@ -785,6 +832,33 @@ def _selftest() -> int:
     for bad in ("", "[1]", "{}", '{"calls": []}'):
         r = subprocess.run(me, capture_output=True, text=True, input=bad)
         ck(r.returncode == 1 and r.stdout == "", f"main(): {bad!r} is not a payload: fails open and visible")
+
+    # LC-2061: check-ins the SERVER lists for this session count, even when this process never saw them made
+    iso = lambda ms: datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    trig = lambda mins, **kw: {"id": "trig_x", "enabled": True, "persist_session": True, "persistent_session_id": "session_1",
+                               "next_run_at": iso(NOW + mins * MIN), **kw}
+    page = lambda *rows: json.dumps({"data": list(rows), "has_more": False})
+    ck(session_id(ses(None)) == "session_1" and session_id("x") is None and session_id(None) is None, "session id read from get_session")
+    ck(server_check_in([page(trig(20))], ses(None), NOW) == (NOW + 20 * MIN, None), "a pending task bound to this session counts")
+    ck(server_check_in([page(trig(90))], ses(None), NOW) == (None, NOW + 90 * MIN), "a task beyond the window is reported as late")
+    ck(server_check_in([page(trig(20, persistent_session_id="session_other"))], ses(None), NOW) == (None, None), "another session's task does not count")
+    ck(server_check_in([page(trig(20, enabled=False))], ses(None), NOW) == (None, None), "a disabled task does not count")
+    ck(server_check_in([page(trig(20, persist_session=False))], ses(None), NOW) == (None, None), "a task that starts a fresh session does not count")
+    ck(server_check_in([page(trig(-5))], ses(None), NOW) == (None, None) and server_check_in([page(trig(0))], ses(None), NOW) == (None, None), "a task due now or past is spent")
+    ck(server_check_in([page(trig(35))], ses(None), NOW) == (NOW + 35 * MIN, None), "exactly at the window edge counts")
+    ck(server_check_in([page(trig(50), trig(30)), page(trig(10), trig(70))], ses(None), NOW) == (NOW + 10 * MIN, NOW + 50 * MIN), "soonest of each, across pages")
+    ck(server_check_in([page(trig(20))], "unreadable", NOW) == (None, None), "no session id: nothing counted")
+    ck(session_id(json.dumps({"ccr": {"id": ""}})) is None and session_id(json.dumps({"ccr": {"id": 7}})) is None, "an empty or non-string id is no id")
+    ck(server_check_in([page(trig(20, persistent_session_id=None))], "unreadable", NOW) == (None, None), "no session id never matches an unbound task")
+    ck(server_check_in(None, ses(None), NOW) == (None, None) and server_check_in(["junk", 3, '{"data": "x"}', page("x", 4)], ses(None), NOW) == (None, None), "junk pages")
+    r = D(children=kids, triggers=[page(trig(25))])
+    ck(r["verdict"] == "PASS" and "22:25Z" in r["reason"], "a server-listed check-in armed in an earlier turn -> PASS (LC-2061)")
+    r = D(children=kids, triggers=[page(trig(25, persistent_session_id="session_other"))])
+    ck(r["verdict"] == "BLOCK", "another session's check-in still BLOCKs")
+    r = D(children=kids, calls=[c(SL, {"delay_minutes": 30})], triggers=[page(trig(12))])
+    ck(r["verdict"] == "PASS" and "22:12Z" in r["reason"], "the soonest of recorded calls and server tasks is named")
+    r = D(children=kids, triggers=[page(trig(80))], calls=[c(SL, {"delay_minutes": 90})])
+    ck(r["verdict"] == "BLOCK" and "fires at 23:20Z (80 min away)" in r["block"], "the soonest late check-in from either source is named")
 
     print(f"idle-backstop-guard selftest: {checks - fails}/{checks} checks passed")
     return 1 if fails else 0
