@@ -196,13 +196,14 @@ def findings(sql: str) -> list[str]:
 # listed here (ops._snap, a future helper) is NOT waved through: it reads as an ordinary call.
 OPS_FUNCTIONS = ("record_slot_rulings", "set_product_price", "swap_slot_product", "retire_redirect", "undo",
                  "set_run_article_copy",  # LC-2107
-                 "reorder_slots")  # LC-2114
+                 "reorder_slots",  # LC-2114
+                 "retire_slots")  # LC-2188
 _OPS_CALL = re.compile(r"(?<![\w.])ops\.(" + "|".join(OPS_FUNCTIONS) + r")\s*\(")
 # Positional parameter count of each function, `dry_run` being the last one: a call with fewer
 # positional arguments than this takes the function's default, a dry run.
 OPS_ARITY = {"record_slot_rulings": 6, "set_product_price": 8, "swap_slot_product": 5,
              "retire_redirect": 4, "undo": 4, "set_run_article_copy": 7,
-             "reorder_slots": 5}
+             "reorder_slots": 5, "retire_slots": 5}
 _NAMED_DRY = re.compile(r"^dry_run\s*=>\s*(.*)$", re.S)
 
 
