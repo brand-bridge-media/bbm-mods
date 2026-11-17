@@ -713,7 +713,7 @@ def _selftest() -> int:
                 fh.write(body)
             ck(read_mode(mp) == want, f"mode file {body!r}")
         ck(read_mode(os.path.join(d, "missing.json")) is None, "missing mode file")
-    ck(read_mode() == "shadow", "the shipped mode is shadow (principle 15 step 4)")
+    ck(read_mode() == "enforce", "the shipped mode is enforce (operator decision 2026-11-17, LC-2167)")
 
     def O(mode, reply, extra=(), **kw):
         rows = [row_prompt(), *pr_rows[1:3], *extra, row_reply(reply)]
@@ -758,7 +758,7 @@ def _selftest() -> int:
     r = decide({"now_ms": NOW, "calls": [], "children": H + "0", "session": ses(None), "blocks": 0,
                 "transcript_rows": [row_prompt(), *pr_rows[1:3], row_reply("done")],
                 "watchers": {w_: '{"active":[],"finished":[]}' for w_ in WATCHERS}})
-    ck(r["verdict"] == "PASS" and "would block" in r.get("shadow", ""), "default mode comes from the shipped file (shadow)")
+    ck(r["verdict"] == "BLOCK" and "Owner rule (LC-2167)" in r["block"], "default mode comes from the shipped file (enforce)")
     ck(owner_check({"transcript_rows": "junk"}, [], "enforce")["verdict"] == "NOT CHECKED", "junk rows: NOT CHECKED")
     # Project threads (LC-2200): the person reads only the post_message text, never a trailing assistant line.
     PM = "mcp__hearthbot__post_message"
