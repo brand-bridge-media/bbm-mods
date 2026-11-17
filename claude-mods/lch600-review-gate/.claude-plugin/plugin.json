@@ -1,0 +1,9 @@
+{
+  "name": "lch600-review-gate",
+  "version": "0.1.0",
+  "description": "Refuses to open a PR that changes CI, CD, deploy or test-runner files until the session has asked LCH-600 (Deploy and CI speed) for review in Jira, read its feedback and answered it, or recorded a skip with a reason (LC-2207).",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

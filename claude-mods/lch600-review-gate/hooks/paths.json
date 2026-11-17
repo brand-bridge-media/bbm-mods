@@ -1,0 +1,128 @@
+{
+  "_why": "Files whose change alters how code is tested, merged or deployed (LC-2207). A PR that changes one needs an LCH-600 review first. Globs are fnmatch: * also matches /. Edit this file, not the hook. `gate`: a change here needs review. `new_ok`: a brand-new file here passes when its rule holds (dispatch_only: the workflow's `on:` has only workflow_dispatch / workflow_call). `append_ok`: a changed file here passes when its rule holds (lines: only added lines; selftest_block: only comments, blanks and `run_one <name> \\` blocks; json_grow: each `grow` list (dotted path) only gained entries and every other key is unchanged, so tier0, max_files and the rest stay frozen). `derived`: a generated file passes when its generator is unchanged (its inputs are judged on their own, and `quick` refuses a hand edit). Rules shaped by LCH-600 review on LC-2207.",
+  "_mode": "shadow = warn and toast `SHADOW would-deny`, never block. enforce = deny. Shadow ends on shadow_until: the selftest fails after that date while mode is still shadow, so the decision cannot be forgotten. Enforce bar: in the week's replay (python3 lch600-review-gate.py --replay --since 2026-11-17), at most 1 would-deny that a reviewer judges a false alarm.",
+  "mode": "shadow",
+  "shadow_until": "2026-11-24",
+  "repos": {
+    "brand-bridge-media/bbm-infrastructure": {
+      "gate": [
+        ".github/workflows/*",
+        ".github/actions/*",
+        ".github/scripts/*",
+        ".mergify.yml",
+        ".trunk/*",
+        "scripts/ci/*",
+        "scripts/run_selftests.sh",
+        "scripts/quality/expected_required_checks.json",
+        "infra/egress/*",
+        "infra/servers.json",
+        "infra/mac-runner/*",
+        "infra/gate-ledger.json",
+        "infra/ops-lane.json",
+        "infra/incident-lane.json",
+        "cloudflare-workers/*/wrangler.toml",
+        "supabase/config.toml",
+        "supabase/github_schedules.json",
+        ".claude/settings.json",
+        "claude-mods/lch600-review-gate/*",
+        "claude-mods/idle-backstop-guard/*",
+        "claude-mods/t2-evidence-fill/*"
+      ],
+      "new_ok": {
+        ".github/workflows/test-*.yml": {
+          "rule": "dispatch_only"
+        },
+        ".github/workflows/run-*.yml": {
+          "rule": "dispatch_only"
+        }
+      },
+      "append_ok": {
+        "scripts/run_selftests.sh": {
+          "rule": "selftest_block"
+        },
+        "scripts/ci/risk_tiers.json": {
+          "rule": "json_grow",
+          "grow": [
+            "tier2",
+            "tier1_pin",
+            "label_tiers.t1_strict",
+            "label_tiers.t2"
+          ]
+        },
+        "scripts/ci/tests_suites.config.json": {
+          "rule": "json_grow",
+          "grow": [
+            "trimmed_pr_paths"
+          ]
+        }
+      },
+      "derived": {
+        ".github/workflows/tests.yml": {
+          "generator": "scripts/ci/tests_suites.py"
+        },
+        "scripts/ci/tests_suites.json": {
+          "generator": "scripts/ci/tests_suites.py"
+        }
+      },
+      "ask_seconds": [
+        "scripts/ci/quick_checks.d/*"
+      ]
+    },
+    "brand-bridge-media/bbm-guardrails": {
+      "gate": [
+        ".github/workflows/*",
+        ".github/actions/*",
+        ".mergify.yml",
+        ".trunk/*",
+        "review_policy.json",
+        "REVIEWER-CHARTER.md",
+        "*/review_policy.json",
+        "*/REVIEWER-CHARTER.md"
+      ],
+      "new_ok": {},
+      "append_ok": {},
+      "derived": {},
+      "ask_seconds": []
+    },
+    "brand-bridge-media/bbm-refresh-agent": {
+      "gate": [
+        ".github/workflows/*",
+        ".github/actions/*",
+        ".mergify.yml",
+        ".trunk/*",
+        "budget_gate.py",
+        "*/budget_gate.py"
+      ],
+      "new_ok": {
+        ".github/workflows/test-*.yml": {
+          "rule": "dispatch_only"
+        },
+        ".github/workflows/run-*.yml": {
+          "rule": "dispatch_only"
+        }
+      },
+      "append_ok": {},
+      "derived": {},
+      "ask_seconds": []
+    }
+  },
+  "default": {
+    "gate": [
+      ".github/workflows/*",
+      ".github/actions/*",
+      ".mergify.yml",
+      ".trunk/*"
+    ],
+    "new_ok": {
+      ".github/workflows/test-*.yml": {
+        "rule": "dispatch_only"
+      },
+      ".github/workflows/run-*.yml": {
+        "rule": "dispatch_only"
+      }
+    },
+    "append_ok": {},
+    "derived": {},
+    "ask_seconds": []
+  }
+}

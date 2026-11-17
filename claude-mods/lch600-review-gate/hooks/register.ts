@@ -1,0 +1,118 @@
+import { atom, read, update } from 'claude-code'
+import type { Register } from 'claude-code'
+
+import type { Row } from '../types'
+import type { HookOut } from './py'
+import { blockReason, contextOf, decisionOf, parseOut, resultText, runArgs, toastText, toolPayload } from './py'
+
+// Why (LC-2207, operator decision 2026-11-17; reworked after LCH-600's review, Jira comment 192938): every change to how code is tested, merged or deployed is
+// reviewed by LCH-600 (Deploy and CI speed) before a session opens its PR. The trigger is the files a PR
+// changes, not the project the session runs in, so stray chats are covered too. The review happens in Jira
+// comments; a PreToolUse hook gets no transcript, so this mod records the Jira calls the check needs (comment
+// reads that carry the [LCH-600 feedback] marker, and every comment this session writes) and hands them over
+// as transcript rows. A PR taken out of draft is checked too (the PR's head, title, body and files are read
+// through the GitHub connector, so it works without a local clone). Logic, rules and selftest:
+// ./lch600-review-gate.py, ./paths.json.
+const RECORD = /^mcp__Atlassian\w*__(getJiraIssue|listJiraIssueComments|searchJiraIssuesUsingJql|executeRead|addCommentToJiraIssue|addOrEditJiraIssueComment|executeWrite)$/
+const WRITE = /__(addCommentToJiraIssue|addOrEditJiraIssueComment|executeWrite)$/
+// Jira's markdown export escapes the brackets: \[LCH-600 feedback\].
+const FEEDBACK = /\\?\[LCH-600 feedback\\?\]/
+const MAX_ROWS = 200
+const MAX_TEXT = 100_000
+const rows = atom({ plugin: 'lch600-review-gate', key: 'rows' } as const, [] as Row[])
+
+// --- $ helpers. They live in this file because the plugin validator follows $ only into functions
+// declared in the hook's own file (claude-code 2.1.292); ./py.ts stays pure.
+async function runCheck($: any, script: string, payload: unknown): Promise<HookOut | undefined> {
+  try {
+    const { argv, init } = runArgs($.plugin.root, script, payload)
+    return parseOut(await $.process.run(argv, init))
+  } catch {
+    return undefined
+  }
+}
+
+function toast($: any, text: string): void {
+  try { $.ui.toast(toastText(text)) } catch { /* a toast never changes a verdict */ }
+}
+
+// Deny and ask are toasted for the operator; a warning is not.
+function preToolUse($: any, v: HookOut | undefined) {
+  const d = decisionOf(v)
+  if (d && 'deny' in d) toast($, d.deny)
+  if (d && 'ask' in d) toast($, d.ask)
+  return d
+}
+
+function blockOf($: any, v: HookOut | undefined): string | undefined {
+  const r = blockReason(v)
+  if (r) toast($, r)
+  return r
+}
+
+function textOf(r: { content?: readonly unknown[] }): string {
+  return (r?.content ?? []).map(c => String((c as { text?: unknown }).text ?? '')).join('')
+}
+
+/** The PR as it stands plus its changed files, for an update call that takes it out of draft. */
+async function readPr($: any, server: string, e: any): Promise<Record<string, unknown> | undefined> {
+  try {
+    const where = { owner: e.owner, repo: e.repo, pullNumber: e.pullNumber }
+    const g = await $.mcp.call(server, 'pull_request_read', { method: 'get', ...where })
+    const f = await $.mcp.call(server, 'pull_request_read', { method: 'get_files', ...where, perPage: 100 })
+    if (g.isError || f.isError) return undefined
+    const pr = JSON.parse(textOf(g)) as { head?: { ref?: unknown }; title?: unknown; body?: unknown; draft?: unknown }
+    const files = JSON.parse(textOf(f))
+    if (pr?.draft !== true || !Array.isArray(files)) return undefined // only the draft -> ready move is gated
+    return {
+      head: String(pr?.head?.ref ?? ''), title: typeof e.title === 'string' ? e.title : String(pr.title ?? ''),
+      body: typeof e.body === 'string' ? e.body : String(pr.body ?? ''), files,
+    }
+  } catch { return undefined }
+}
+
+// Shadow mode answers with a note, not a decision; toast it so session-close's mod actions log counts it.
+function shadowToast($: any, v: HookOut | undefined): void {
+  const c = contextOf(v)
+  if (c && c.includes('SHADOW would-deny')) toast($, c)
+}
+
+export const register: Register = on => {
+  on('tool.call', { tool: RECORD }, async ($, e, next) => {
+    const ran = await next(e)
+    if (ran.deny !== undefined || ran.isError) return ran
+    const { tool_name, tool_input } = toolPayload(e as any)
+    const text = resultText(ran)
+    // Keep only what the check can use: writes (comments), and reads that carry the feedback marker.
+    if (!WRITE.test(tool_name) && !FEEDBACK.test(text)) return ran
+    const id = String((e as any).tool_use_id ?? '')
+    await update($, rows, l => [...l,
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: tool_name, input: tool_input }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: text.slice(0, MAX_TEXT) }] } },
+    ].slice(-MAX_ROWS))
+    return ran
+  // A recording failure must never change the call's outcome.
+  }).catch(($, e, next) => next(e))
+
+  on('classic.PreToolUse', { tool: /^mcp__(github|GitHub_Custom)__create_pull_request$/ }, async ($, e, next) => {
+    const v = await runCheck($, 'lch600-review-gate.py', { ...toolPayload(e as any), transcript_rows: await read($, rows) })
+    shadowToast($, v)
+    return preToolUse($, v) ?? next(e)
+  // Fail open: a bug in the mod must never stop a tool call or a turn (runCheck already fails open).
+  }).catch(($, e, next) => next(e))
+
+  on('classic.PreToolUse', { tool: /^mcp__(github|GitHub_Custom)__update_pull_request$/ }, async ($, e, next) => {
+    const ev = e as any
+    if (ev.draft !== false) return next(e) // only leaving draft is a move toward live
+    const server = String(ev.tool).split('__')[1] ?? 'github'
+    const pr = await readPr($, server, ev)
+    if (!pr) return next(e)
+    const { tool_name, tool_input } = toolPayload(ev)
+    const v = await runCheck($, 'lch600-review-gate.py', {
+      tool_name, tool_input: { ...tool_input, head: pr.head, title: pr.title, body: pr.body },
+      pr_files: pr.files, transcript_rows: await read($, rows),
+    })
+    shadowToast($, v)
+    return preToolUse($, v) ?? next(e)
+  }).catch(($, e, next) => next(e))
+}

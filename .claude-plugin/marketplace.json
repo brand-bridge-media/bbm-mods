@@ -190,6 +190,11 @@
       "description": "When a session opens or edits a T2 pull request on bbm-infrastructure, inserts the ## Evidence section if missing, fills Tests from the counts of the session's own test runs, and refuses to mark the PR ready while a slot is empty (LC-2156). Slots and judge are read from scripts/ci/t2_evidence.*. Fails open."
     },
     {
+      "name": "lch600-review-gate",
+      "source": "./claude-mods/lch600-review-gate",
+      "description": "Refuses to open a PR that changes CI, CD, deploy or test-runner files (path list is data: hooks/paths.json) until the session has asked LCH-600 for review in Jira, read its [LCH-600 feedback] comment and answered it, or recorded a skip with a reason. LCH tickets are exempt. Fails open."
+    },
+    {
       "name": "pipeline-change-nudge",
       "source": "./claude-mods/pipeline-change-nudge",
       "description": "Advisory only: on the first edit in a session to a bbm-infrastructure pipeline file, asks for the PR's Pipeline change statement and a check that no other pipeline change is in flight (LCH-676)."
