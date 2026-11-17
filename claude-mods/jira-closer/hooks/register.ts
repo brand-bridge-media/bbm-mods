@@ -21,8 +21,14 @@ const MERGE = /__(merge_pull_request|enable_pr_auto_merge)$/
 // no tool call to hook), but the PR is NOT merged yet: never ask for Done on it (LC-1884).
 const QUEUE = /__enable_pr_auto_merge$/
 const CREATE_PR = /__create_pull_request$/
+// LC-2203: since the Mergify cutover (LCH-614, 2026-11-10) most PRs never see a merge or an auto-merge
+// call. A session hands a finished PR over by marking it ready (or opening it ready); the router labels
+// it `route:queue` + `queue` or `route:fast` + `merge-train`, and Mergify or the tick merges it with no
+// tool call here. So those hand-offs count as QUEUED too: a ready PR, or a session adding a merge label.
+const HANDOFF = /__(update_pull_request|issue_write|update_issue)$/
+const MERGE_LABEL = /^(queue|merge-train)$/i
 const JIRA_TOUCH = /__(transitionJiraIssue|addCommentToJiraIssue|editJiraIssue)$/
-const WATCHED = /^mcp__[^_].*__(merge_pull_request|enable_pr_auto_merge|create_pull_request|transitionJiraIssue|addCommentToJiraIssue|editJiraIssue)$/
+const WATCHED = /^mcp__[^_].*__(merge_pull_request|enable_pr_auto_merge|create_pull_request|update_pull_request|issue_write|update_issue|transitionJiraIssue|addCommentToJiraIssue|editJiraIssue)$/
 
 const pending = atom({ plugin: 'jira-closer', key: 'pending' } as const, [] as PendingTicket[])
 const titles = atom({ plugin: 'jira-closer', key: 'titles' } as const, {} as Record<string, string>)
@@ -34,8 +40,21 @@ function say($: any, text: string): string {
   return msg
 }
 
+function prNumber(e: Record<string, unknown>): unknown {
+  return e.pullNumber ?? e.pull_number ?? e.issue_number ?? e.issueNumber
+}
+
 function prId(e: Record<string, unknown>, num?: unknown): string {
-  return `${String(e.owner ?? '')}/${String(e.repo ?? '')}#${String(num ?? e.pullNumber ?? e.pull_number ?? '')}`
+  return `${String(e.owner ?? '')}/${String(e.repo ?? '')}#${String(num ?? prNumber(e) ?? '')}`
+}
+
+/** How this call hands a PR to the merge queue or the tick, or undefined when it does not (LC-2203). */
+function handoff(tool: string, e: Record<string, unknown>): string | undefined {
+  if (!HANDOFF.test(tool)) return undefined
+  if (/__update_pull_request$/.test(tool) && e.draft === false) return 'marked ready; the router queues it'
+  const labels = Array.isArray(e.labels) ? e.labels.map(l => String((l as { name?: unknown })?.name ?? l)) : []
+  const hit = labels.find(l => MERGE_LABEL.test(l.trim()))
+  return hit ? `\`${hit.trim()}\` label added` : undefined
 }
 
 function keysIn(s: string): string[] {
@@ -81,9 +100,11 @@ export const register: Register = on => {
       return ran
     }
 
-    if (MERGE.test(tool)) {
+    const handedOff = handoff(tool, e)
+    if (MERGE.test(tool) || handedOff) {
       const id = prId(e)
-      const queued = QUEUE.test(tool)
+      const queued = QUEUE.test(tool) || handedOff !== undefined
+      const how = handedOff ?? 'auto-merge armed'
       let source = (await read($, titles))[id] ?? String(e.commit_title ?? '')
       let unread = false
       if (keysIn(source).length === 0) {
@@ -92,7 +113,7 @@ export const register: Register = on => {
         try {
           const server = tool.split('__')[1] ?? 'github'
           const r = await $.mcp.call(server, 'pull_request_read', {
-            method: 'get', owner: e.owner, repo: e.repo, pullNumber: e.pullNumber,
+            method: 'get', owner: e.owner, repo: e.repo, pullNumber: Number(prNumber(e)),
           })
           const text = (r.content ?? []).map(c => textOf((c as { text?: unknown }).text ?? c)).join(' ')
           const pr = prFields(text)
@@ -120,9 +141,9 @@ export const register: Register = on => {
       ])
       waitingStatus($, await read($, pending))
       const ask = queued
-        ? `${id} is QUEUED to merge (auto-merge armed), not merged, and references ${keys.join(', ')}. Before ` +
-          `this turn ends, post a one-line state comment on each (PR ready, auto-merge armed, what remains). ` +
-          `Do not transition to Done until the merge lands: the train can still evict the PR.`
+        ? `${id} is QUEUED to merge (${how}), not merged, and references ${keys.join(', ')}. Before ` +
+          `this turn ends, post a one-line state comment on each (PR ready and queued, what remains). ` +
+          `Do not transition to Done until the merge lands: the queue can still evict the PR.`
         : `${id} references ${keys.join(', ')}. Before this turn ends, for each: read the ticket's ` +
           `NEWEST comment and its done-criteria, check live state, then either transition it to Done ` +
           `(this PR finished it) or post a one-line state comment (what shipped, what remains).`
@@ -152,7 +173,7 @@ export const register: Register = on => {
     const parts = [
       merged.length ? `merged PR(s) left these Jira tickets untouched: ${list(merged)}. Read each newest ` +
         `comment, then transition to Done or post a state comment.` : '',
-      queued.length ? `PR(s) queued to merge (auto-merge armed, NOT merged yet) left these Jira tickets ` +
+      queued.length ? `PR(s) queued to merge (NOT merged yet) left these Jira tickets ` +
         `untouched: ${list(queued)}. Post a state comment on each; Done only after the merge lands.` : '',
     ]
     return { block: say($, parts.filter(Boolean).join(' ')) }

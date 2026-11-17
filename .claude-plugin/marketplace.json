@@ -42,7 +42,7 @@
     {
       "name": "jira-closer",
       "source": "./claude-mods/jira-closer",
-      "description": "When a session merges a PR or arms auto-merge, makes it update the PR's Jira ticket (Done, or a state comment); blocks the turn's end once while a ticket is untouched."
+      "description": "When a session merges a PR, arms auto-merge or hands it to the merge queue (marks it ready or adds the queue / merge-train label), makes it update the PR's Jira ticket (Done after a merge, a state comment while queued); blocks the turn's end once while a ticket is untouched."
     },
     {
       "name": "pillar-brief-guard",

@@ -139,3 +139,42 @@ test('a PR this session opened keeps its Closes lines for the merge', async ($: 
   expect(ctx).toContain('LC-2')
   expect(ctx).not.toContain('LC-3')
 })
+
+// LC-2203: since the Mergify cutover most PRs are handed over without a merge or auto-merge call.
+test('marking a PR ready counts as queued (the router queues it), never as merged', async ($: any, on: any) => {
+  on('tool.call', () => ({ result: { number: 5 } }))
+  on('classic.Stop', () => ({}))
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', owner: 'o', repo: 'r', title: 'LC-2203 closer', head: 'b', draft: true })
+  const r = await $.tool.call({ tool: 'mcp__github__update_pull_request', owner: 'o', repo: 'r', pullNumber: 5, draft: false })
+  const ctx = String(r.context ?? '')
+  expect(ctx).toContain('QUEUED to merge (marked ready')
+  expect(ctx).toContain('LC-2203')
+  const block = String((await $.classic.Stop({ stop_hook_active: false })).block ?? '')
+  expect(block).toContain('NOT merged yet')
+  expect(block).toContain('LC-2203 (o/r#5)')
+})
+
+for (const label of ['queue', 'merge-train', { name: 'Queue' }]) {
+  test(`adding the ${JSON.stringify(label)} label counts as queued`, async ($: any, on: any) => {
+    on('tool.call', () => ({ result: { content: [] } }))
+    on('mcp.call', () => ({ value: prJson({ title: 'LCH-700 fix', head: { ref: 'b' }, body: '' }) }))
+    on('classic.Stop', () => ({}))
+    const r = await $.tool.call({ tool: 'mcp__github__issue_write', method: 'update', owner: 'o', repo: 'r', issue_number: 8, labels: ['route:queue', label] })
+    expect(String(r.context ?? '')).toContain('label added')
+    const block = String((await $.classic.Stop({ stop_hook_active: false })).block ?? '')
+    expect(block).toContain('LCH-700 (o/r#8)')
+  })
+}
+
+test('other labels, or an update that keeps the PR a draft, change nothing', async ($: any, on: any) => {
+  on('tool.call', () => ({ result: { content: [] } }))
+  on('mcp.call', () => ({ value: prJson({ title: 'LC-9 x', head: { ref: 'b' }, body: '' }) }))
+  on('classic.Stop', () => ({}))
+  const a = await $.tool.call({ tool: 'mcp__github__issue_write', method: 'update', owner: 'o', repo: 'r', issue_number: 9, labels: ['needs-operator', 'route:queue'] })
+  const b = await $.tool.call({ tool: 'mcp__github__update_pull_request', owner: 'o', repo: 'r', pullNumber: 9, title: 'LC-9 renamed' })
+  const c = await $.tool.call({ tool: 'mcp__github__update_pull_request', owner: 'o', repo: 'r', pullNumber: 9, draft: true })
+  expect(a.context).toBeUndefined()
+  expect(b.context).toBeUndefined()
+  expect(c.context).toBeUndefined()
+  expect((await $.classic.Stop({ stop_hook_active: false })).block).toBeUndefined()
+})

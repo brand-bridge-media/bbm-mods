@@ -194,6 +194,22 @@ def _selftest() -> int:
     ck(all(f"  {k} " not in msg for k in epics["parked"]), "parked epics are not offered")
     ck(d(CJ2, base) == msg, "the other Atlassian server name matches the same way")
 
+    # LC-2202: the track list lives in two data files, and on 2026-11-17 this one had missed the
+    # 2026-11-15 split (LC-2170, LCC, absent; old track names) while infra/track-epics.json was
+    # current. Where both files exist (bbm-infrastructure, not the bbm-mods mirror), every LC epic
+    # in the registry must be offered here, so the next track change cannot leave this list behind.
+    registry = os.path.join(os.path.dirname(EPICS_FILE), "..", "..", "..", "infra", "track-epics.json")
+    if os.path.exists(registry):
+        try:
+            reg = [r.get("epic") for r in json.load(open(registry, encoding="utf-8")).get("epics", [])]
+        except (ValueError, OSError, AttributeError):
+            reg = None
+        ck(isinstance(reg, list) and len(reg) > 0, "infra/track-epics.json readable")
+        offered = {e["key"] for e in epics["live"]} | {k["key"] for e in epics["live"] for k in e.get("children") or []}
+        for key in reg or []:
+            if isinstance(key, str) and key.startswith(PROJECT + "-"):
+                ck(key in offered, f"track epic {key} (infra/track-epics.json) is offered here")
+
     # Everything above ran on the SHIPPED epics.json, which proves the real file renders. The logic
     # checks below run on a fixture, so un-parking an epic or closing a track (a data edit) cannot
     # break them.

@@ -21,7 +21,7 @@
     },
     {
       "key": "LC-429",
-      "name": "Catalog & Products",
+      "name": "Catalog & Prices",
       "when": "products and brands tables, catalog ingest, prices, stock"
     },
     {
@@ -36,13 +36,13 @@
     },
     {
       "key": "LC-290",
-      "name": "Measurement",
-      "when": "analytics: GA4, Search Console, traffic, click and revenue reporting"
+      "name": "Analytics",
+      "when": "traffic, click and revenue reporting; GA4, Search Console; the analytics platform"
     },
     {
       "key": "LC-369",
       "name": "Web Apps",
-      "when": "the operations portal for staff, and the future creator and brand portals"
+      "when": "the staff operations portal (creator and brand portals later), and Webflow design and CMS work on livingcozy.com: page templates, the Designer, CMS structure, site custom code, page speed"
     },
     {
       "key": "LC-2014",
@@ -51,12 +51,17 @@
     },
     {
       "key": "LC-2141",
-      "name": "Session Tooling",
-      "when": "mods and hooks, skills, the knowledge system, the session fleet and scheduled tasks"
+      "name": "Tools & Services",
+      "when": "every tool and service itself: mods, hooks, skills, the knowledge system, the session fleet, and vendor accounts, plans, bills, outages, API limits, connectors and logins (Cloudflare, Supabase, GitHub, Jira, Webflow platform, Claude ...)"
+    },
+    {
+      "key": "LC-2170",
+      "name": "LCC (Living Cozy Content)",
+      "when": "keeping published dynamic-template articles earning: dead or replaced products, brands that stop paying, ranking drops that call for a refresh (label lcc-backlog until the lcc_issues table exists)"
     },
     {
       "key": "LC-1740",
-      "name": "Site Edge",
+      "name": "Cloudflare edge (no project)",
       "when": "Cloudflare in front of the site only (cache, firewall, speed settings); finishing work, no new programs"
     }
   ],
