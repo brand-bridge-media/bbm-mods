@@ -46,6 +46,25 @@ A mod reaches sessions in other repos only after the operator adds two things to
 Order: merge, wait for `mirror-claude-mods.yml` to publish, then save the environment. An install
 before the mirror has the mod fails (the setup log, `~/.bbm-mods-setup.log`, shows `rc_<mod>=1`).
 
+### Project threads: the account-level marketplace (LC-2200, 2026-11-17)
+
+claude.ai project threads have no environment, so the two lines above never reach them. They load every plugin
+on the operator's claude.ai account instead: at container start the thread downloads them into
+`~/.claude/plugins/synced/` and their hooks run. bbm-mods is on the account as a marketplace (claude.ai >
+Customize > Plugins > Add > Add marketplace > Add from a repository), so every mod in the mirror reaches every
+new project thread with no install step. Measured: 37 of 37 synced, `jira-epic-guard` denied a parentless LC create.
+
+- A marketplace added from a Mac's Claude Code shows on the same page under "On this computer" and does NOT sync.
+- Sync runs only when a container starts; a thread open across a mirror push keeps the old copy (`mod-freshness`).
+- Regular cloud sessions sync the account copies too, but a `CLAUDE_CODE_PLUGIN_DIRS` copy wins: the debug log
+  says `Synced plugin "<mod>" shadowed by local copy <mod>@inline`. No double firing; the environment lines stay.
+- The account sync reaches every session on the account. Sessions for the operator's other business turn it off
+  with a setup script in their own environment that writes `"syncClaudeAiPlugins": false` into `~/.claude/settings.json`
+  (measured: zero synced plugins load). What does NOT work: `CLAUDE_CODE_SYNC_PLUGINS=0` in the environment box (the
+  platform launches sessions with its own `=1`, which wins), a project `.claude/settings.json`, and a generic in-mod gate
+  (the validator refuses a wrapped `on()`; a `plugin.register` gate cannot judge mods synced in its own batch).
+- Every mod's plugin.json carries `"author": { "name": "Brand Bridge Media" }`.
+
 ## Layout
 
 ```
@@ -220,8 +239,8 @@ step 3 says the section must cost the operator nothing. This mod is the session 
 - Slots, headings and rules are data in `scripts/ci/t2_evidence.json`, read at run time; nothing is copied here.
 - Logic: `hooks/t2-evidence-fill.py` (`--selftest`, mutation floor shard). Plumbing: `tests/*.test.ts`. Fails open on any error.
   Kill switch: `claude plugin disable t2-evidence-fill`, or drop it from `CLAUDE_CODE_PLUGIN_DIRS`.
-- Known gap: project-thread sessions do not load mods (measured 2026-11-16: `CLAUDE_CODE_PLUGIN_DIRS` empty there), so they rely
-  on the PR template's section and the `github-architecture` skill line.
+- Project threads load it through the account-level marketplace since 2026-11-17 (LC-2200); the PR template's section and
+  the `github-architecture` skill line stay as the fallback.
 
 ### Receipt guard: plain commands (run-state, LC-1711 / LC-1735 / LC-1736)
 
