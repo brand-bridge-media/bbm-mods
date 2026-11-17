@@ -1,19 +1,37 @@
 #!/usr/bin/env python3
-"""Stop hook — every reply ends with the "Noted separately" line, and its keys are real (LCH-528).
+"""Stop hook — every reply ends with the tracker footer, and its keys are real (LCH-528, LC-2172).
 
 WHAT IT DOES. When a turn ends, reads the final reply from the transcript and
 blocks the stop ONCE (the model gets one more pass) when:
 
-  * the last non-empty line is not `Noted separately: <KEY, KEY>` /
-    `Noted separately: Nothing` / `Nothing`, or
-  * a key in that line was never touched by an Atlassian tool call this session
-    (not created, read, commented or transitioned) — a footer naming a ticket
-    nobody filed is worse than no footer, because the operator trusts it.
+  * the reply does not end with one of the three tracker footers from the operator's
+    preferences (2026-11-16, LC-2172):
 
-WHY. The operator's preference: adjacent findings go to Jira silently, and the last line of
-every reply says which. As a preference it was followed when remembered. The second
-check is the reason this is a hook and not a regex in a skill: only the transcript
-knows whether the ticket exists.
+        Noted separately: nothing found.
+        Noted separately: nothing filed (<N> minor, below the bar: <a few words>).
+        Noted separately:
+        - <KEY or lcc_issues row> (<short name>) · <epic> · now | this week | someday · <why>
+        - Deferred: <KEY> until <trigger>
+
+    The third is MULTI-LINE: a bare `Noted separately:` header, then only bullet lines
+    to the end of the reply. Every bullet needs an urgency word; every Deferred line
+    needs `until <trigger>`.
+  * a Jira key the footer names (bullet or Deferred line) was never touched by an
+    Atlassian tool call this session — a footer naming a ticket nobody filed is worse
+    than no footer, because the operator trusts it. An `lcc_issues` row reference is
+    taken as written (no Jira lookup; its exact form is LC-2171's to settle).
+
+THE OLD ONE-LINE FOOTER (`Noted separately: Nothing` / `Noted separately: LC-1, LC-2` /
+bare `Nothing`) is still accepted until LEGACY_UNTIL (the 14-day transition, LC-2172), so
+sessions that started before the preference changed are not blocked. After that date it
+is refused, EXCEPT in Stature sessions: the operator's Stature section defines no footer
+of its own, so Stature keeps the old one-liner indefinitely and is never asked for the
+BBM format. A session is Stature when its working directory names `stature`.
+
+WHY. The operator's preference: adjacent findings go to the tracker, and the end of
+every reply says which. As a preference it was followed when remembered. The key check
+is the reason this is a hook and not a regex in a skill: only the transcript knows
+whether the ticket exists.
 
 WHY IT CANNOT LOOP. Claude Code sets `stop_hook_active` on the stop that follows a
 block; this hook always passes then. Worst case is one extra model pass per turn.
@@ -22,6 +40,7 @@ Self-test: python3 reply-footer-check.py --selftest
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -31,23 +50,98 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import transcript_reader as tr  # noqa: E402
 
 KEY = r"[A-Z][A-Z0-9]+-\d+"
-FOOTER = re.compile(rf"^(?:noted separately:\s*)?(nothing|{KEY}(?:\s*,\s*{KEY})*)\s*\.?$",
-                    re.IGNORECASE)
+# LC-2172: the old one-line footer is accepted through this date (14 days from the
+# preference change on 2026-11-16), then refused outside Stature. Delete LEGACY_FOOTER
+# and this constant once the date has passed and nobody has asked for an extension.
+LEGACY_UNTIL = dt.date(2026, 11, 30)
+LEGACY_FOOTER = re.compile(rf"^(?:noted separately:\s*)?(nothing|{KEY}(?:\s*,\s*{KEY})*)\s*\.?$",
+                           re.IGNORECASE)
+HEADER = re.compile(r"^noted separately:\s*(.*)$", re.IGNORECASE)
+NOTHING_FOUND = re.compile(r"^nothing found\s*\.?$", re.IGNORECASE)
+NOTHING_FILED = re.compile(r"^nothing filed\s*\(\s*\d+\s+minor\s*,\s*below the bar\s*:\s*\S.*\)\s*\.?$",
+                           re.IGNORECASE)
+SEP = r"\s*[·•|]\s*"
+LCC_ROW = r"lcc_issues(?:\s*(?:row)?\s*[#:/]?\s*[\w-]+)"
+BULLET = re.compile(rf"^(?P<ref>{KEY}|{LCC_ROW})\s*\((?P<name>[^)]*\S[^)]*)\){SEP}(?P<epic>[^·•|]*\S[^·•|]*?)"
+                    rf"{SEP}(?P<urgency>now|this week|someday){SEP}(?P<why>\S.*)$", re.IGNORECASE)
+DEFERRED = re.compile(rf"^deferred:\s*(?P<ref>{KEY})\s+until\s+\S", re.IGNORECASE)
+_BULLET_MARK = re.compile(r"^\s*[-*•]\s+")
 _MARKUP = re.compile(r"[*_`>]")
+_INLINE = re.compile(r"\*\*|`")  # bullets keep `_` (lcc_issues) but lose bold and code ticks
+
+FORMS = ("`Noted separately: nothing found.` / `Noted separately: nothing filed (<N> minor, below "
+         "the bar: <a few words>).` / `Noted separately:` followed by bullet lines `- <KEY or "
+         "lcc_issues row> (<short name>) · <epic> · now | this week | someday · <why>` and "
+         "`- Deferred: <KEY> until <trigger>`")
 
 
-def footer_keys(reply: str) -> list[str] | None:
-    """Keys in the footer ([] for Nothing), or None when there is no footer."""
+def _header_line(line: str) -> str:
+    return _MARKUP.sub("", line).strip()
+
+
+def parse_footer(reply: str, legacy_ok: bool) -> tuple[list[str] | None, str | None]:
+    """(Jira keys to verify, problem). keys is None when there is no acceptable footer;
+    problem then says what is wrong, or is None when there is no footer at all."""
     lines = [ln for ln in (reply or "").splitlines() if ln.strip()]
     if not lines:
-        return None
-    last = _MARKUP.sub("", lines[-1]).strip()
-    m = FOOTER.match(last)
-    if not m:
-        return None
-    if not last.lower().startswith("noted separately") and m.group(1).lower() != "nothing":
-        return None  # a bare "LC-12" line is a sentence, not the footer
-    return [] if m.group(1).lower() == "nothing" else re.findall(KEY, m.group(1).upper())
+        return None, None
+    last = _header_line(lines[-1])
+    if legacy_ok:
+        m = LEGACY_FOOTER.match(last)
+        if m and (last.lower().startswith("noted separately") or m.group(1).lower() == "nothing"):
+            # a bare "LC-12" line is a sentence, not the footer
+            return ([] if m.group(1).lower() == "nothing" else re.findall(KEY, m.group(1).upper())), None
+    m = HEADER.match(last)
+    if m:
+        rest = m.group(1).strip()
+        if NOTHING_FOUND.match(rest) or NOTHING_FILED.match(rest):
+            return [], None
+        return None, (f"`{last}` is not a footer form" if rest else
+                      "`Noted separately:` is the last line but no bullet follows it")
+    # Multi-line form: walk back over bullets to the header.
+    i = len(lines) - 1
+    while i >= 0 and _BULLET_MARK.match(lines[i]):
+        i -= 1
+    bullets = lines[i + 1:]
+    # No guard needed for "no bullets" (lines[i] is then the last line, already known not to be
+    # a header) or "all bullets" (i == -1 reads the last bullet, which is not a header either):
+    # both fall through to `not hm`. A guard here was an equivalent mutant (mutate.py, LC-2172).
+    hm = HEADER.match(_header_line(lines[i]))
+    if not hm:
+        return None, None
+    if hm.group(1).strip():
+        return None, "a `Noted separately:` header followed by bullets must have nothing after the colon"
+    keys: list[str] = []
+    for raw in bullets:
+        body = _INLINE.sub("", _BULLET_MARK.sub("", raw, count=1)).strip()
+        d = DEFERRED.match(body)
+        if d:
+            keys.append(d.group("ref").upper())
+            continue
+        if body.lower().startswith("deferred"):
+            return None, f"Deferred line `{body}` needs `Deferred: <KEY> until <trigger>`"
+        b = BULLET.match(body)
+        if not b:
+            return None, (f"bullet `{body}` needs `<KEY or lcc_issues row> (<short name>) · <epic> · "
+                          "now | this week | someday · <why>`")
+        if not b.group("ref").lower().startswith("lcc_issues"):
+            keys.append(b.group("ref").upper())
+    return keys, None
+
+
+def footer_keys(reply: str, legacy_ok: bool = True) -> list[str] | None:
+    """Keys in the footer ([] for none), or None when there is no acceptable footer."""
+    return parse_footer(reply, legacy_ok)[0]
+
+
+def is_stature(payload: dict, rows: list[dict]) -> bool:
+    """Stature sessions keep the old footer (their preferences define none)."""
+    cwds = [payload.get("cwd")] + [r.get("cwd") for r in rows if isinstance(r, dict)]
+    return any(isinstance(c, str) and "stature" in c.lower() for c in cwds)
+
+
+def legacy_allowed(payload: dict, rows: list[dict], today: dt.date | None = None) -> bool:
+    return is_stature(payload, rows) or (today or dt.date.today()) <= LEGACY_UNTIL
 
 
 def touched_keys(rows: list[dict]) -> set[str]:
@@ -61,7 +155,7 @@ def touched_keys(rows: list[dict]) -> set[str]:
     return seen
 
 
-def evaluate(payload: dict) -> str | None:
+def evaluate(payload: dict, today: dt.date | None = None) -> str | None:
     """Block reason, or None to let the turn end."""
     if payload.get("stop_hook_active"):
         return None
@@ -69,11 +163,15 @@ def evaluate(payload: dict) -> str | None:
     reply = tr.final_reply_text(rows)
     if not reply.strip():
         return None  # no prose this turn (tool-only or empty); nothing to footer
-    keys = footer_keys(reply)
+    legacy = legacy_allowed(payload, rows, today)
+    keys, problem = parse_footer(reply, legacy)
     if keys is None:
-        return ("[mod:reply-footer-check] The reply's last line must be `Noted separately: "
-                "<KEY, KEY>` or `Noted separately: Nothing` (operator preference: adjacent findings "
-                "go to Jira silently, the footer says which). Re-send the reply with that line.")
+        old = (" The old one-line `Noted separately: Nothing` / `<KEY, KEY>` is accepted until "
+               f"{LEGACY_UNTIL.isoformat()} (LC-2172)." if legacy else "")
+        why = f" Problem: {problem}." if problem else ""
+        return ("[mod:reply-footer-check] The reply must end with the tracker footer, one of: "
+                f"{FORMS} (operator preference: adjacent findings go to the tracker, the footer says "
+                f"which).{old}{why} Re-send the reply with the footer.")
     missing = [k for k in keys if k not in touched_keys(rows)]
     if missing:
         return (f"[mod:reply-footer-check] The footer names {', '.join(missing)}, but no Jira "
@@ -93,6 +191,7 @@ def _selftest() -> int:
             fails += 1
             sys.stderr.write(f"  FAIL: {label}\n")
 
+    # Old one-line footer, accepted while legacy_ok (transition / Stature).
     for txt, want in (("done\n\nNoted separately: Nothing", []),
                       ("done\nNothing", []), ("done\n`Noted separately: LC-12, LCH-3`", ["LC-12", "LCH-3"]),
                       ("done\n**Noted separately:** lc-1.", ["LC-1"]), ("x\nNoted separately: Nothing\n\n", []),
@@ -100,6 +199,72 @@ def _selftest() -> int:
                       ("see LC-12", None), ("x\nLC-12", None), ("", None),
                       ("x\nNoted separately: soon", None)):
         ck(footer_keys(txt) == want, f"footer_keys({txt!r}) == {want}")
+    # ... and refused once legacy_ok is off.
+    for txt in ("done\nNoted separately: Nothing", "done\nNothing", "done\nNoted separately: LC-12"):
+        ck(footer_keys(txt, legacy_ok=False) is None, f"legacy off: {txt!r} refused")
+
+    B1 = "- LC-77 (fix widget) · LC-2141 · now · breaks the publish"
+    B2 = "- lcc_issues#a1b2 (dead sofa link) · LC-2170 · this week · link 404s"
+    B3 = "- **LCH-9** (slow cron) | LC-2014 | someday | worth keeping"
+    D1 = "- Deferred: LC-88 until LC-2171 closes"
+    new_forms = (
+        ("done\n\nNoted separately: nothing found.", []),
+        ("done\nNoted separately: nothing found", []),
+        ("done\n**Noted separately:** nothing found.", []),
+        ("done\nNoted separately: nothing filed (3 minor, below the bar: typos, a stale alt).", []),
+        ("done\nNoted separately: nothing filed (0 minor, below the bar: none)", []),
+        (f"done\nNoted separately:\n{B1}", ["LC-77"]),
+        (f"done\n**Noted separately:**\n{B1}\n{B2}\n{B3}\n{D1}\n", ["LC-77", "LCH-9", "LC-88"]),
+        (f"done\nNoted separately:\n{B2}", []),
+        (f"done\nNoted separately:\n* `LC-77` (fix) · LC-2141 · THIS WEEK · why", ["LC-77"]),
+        (f"done\nNoted separately:\n- LC-77 (fix) • LC-2141 • someday • why", ["LC-77"]),
+        (f"done\nNoted separately:\n{D1}", ["LC-88"]),
+        # failures
+        ("done\nNoted separately:", None),
+        ("done\nNoted separately: nothing filed", None),
+        ("done\nNoted separately: nothing filed (some minor, below the bar: x).", None),
+        ("done\nNoted separately: nothing filed (2 minor, below the bar: ).", None),
+        ("done\nNoted separately: found nothing.", None),
+        ("done\nNoted separately:\n- LC-77 (fix widget) · LC-2141 · breaks the publish", None),
+        ("done\nNoted separately:\n- LC-77 (fix widget) · LC-2141 · soon · why", None),
+        ("done\nNoted separately:\n- LC-77 (fix widget) · LC-2141 · now ·", None),
+        ("done\nNoted separately:\n- LC-77 · LC-2141 · now · why", None),
+        ("done\nNoted separately:\n- LC-77 () · LC-2141 · now · why", None),
+        ("done\nNoted separately:\n- LC-77 (fix) ·  · now · why", None),
+        ("done\nNoted separately:\n- widget (fix) · LC-2141 · now · why", None),
+        ("done\nNoted separately:\n- Deferred: LC-88", None),
+        ("done\nNoted separately:\n- Deferred: LC-88 until", None),
+        ("done\nNoted separately:\n- Deferred: until Friday", None),
+        (f"done\nNoted separately:\n{B1}\nmore prose after", None),
+        (f"done\nNoted separately: LC-1\n{B1}", None),
+        (f"done\n{B1}", None),
+        (f"done\nsome list:\n{B1}", None),
+        (f"{B1}", None),
+    )
+    for txt, want in new_forms:
+        for legacy in (True, False):
+            ck(footer_keys(txt, legacy_ok=legacy) == want, f"footer_keys({txt!r}, {legacy}) == {want}")
+    ck("no bullet" in (parse_footer("x\nNoted separately:", False)[1] or ""), "bare header: says no bullet")
+    ck("now | this week" in (parse_footer(
+        "x\nNoted separately:\n- LC-1 (a) · LC-2 · soon · b", False)[1] or ""), "bad bullet: quotes the form")
+    ck("until" in (parse_footer("x\nNoted separately:\n- Deferred: LC-8", False)[1] or ""),
+       "bad Deferred: quotes until")
+    ck("nothing after the colon" in (parse_footer(f"x\nNoted separately: LC-1\n{B1}", False)[1] or ""),
+       "header with text + bullets: says so")
+    ck("not a footer form" in (parse_footer("x\nNoted separately: soon", False)[1] or ""),
+       "unknown one-liner: says so")
+    ck(parse_footer("x\nplain end", False) == (None, None), "no footer: no specific problem")
+    ck(parse_footer("", False) == (None, None), "empty: no footer")
+
+    # The transition window and Stature scope.
+    ck(legacy_allowed({}, [], dt.date(2026, 11, 30)), "legacy accepted on LEGACY_UNTIL")
+    ck(not legacy_allowed({}, [], dt.date(2026, 12, 1)), "legacy refused the day after")
+    ck(legacy_allowed({"cwd": "/home/u/Stature"}, [], dt.date(2027, 6, 1)), "Stature payload cwd: always legacy")
+    ck(legacy_allowed({}, [{"cwd": "/x/stature-llc/stature"}], dt.date(2027, 6, 1)),
+       "Stature transcript cwd: always legacy")
+    ck(not legacy_allowed({"cwd": "/home/claude/bbm-infrastructure"}, [{"cwd": 5}, "junk"],
+                          dt.date(2027, 6, 1)), "BBM cwd after window: legacy refused")
+    ck(legacy_allowed({}, []) == (dt.date.today() <= LEGACY_UNTIL), "default today is the real date")
 
     def transcript(reply: str, jira: list[tuple[str, dict, str]]) -> str:
         rows = [{"type": "user", "message": {"content": "go"}}]
@@ -115,31 +280,61 @@ def _selftest() -> int:
         return fh.name
 
     CREATE = "mcp__Atlassian__createJiraIssue"
+    COMMENT = "mcp__Atlassian__addCommentToJiraIssue"
+    IN, OUT = dt.date(2026, 11, 20), dt.date(2026, 12, 15)
     cases = (
-        ("ok\nNoted separately: Nothing", [], None),
-        ("ok", [], "must be"),
-        ("ok\nNoted separately: LC-77", [(CREATE, {"projectKey": "LC"}, '{"key":"LC-77"}')], None),
-        ("ok\nNoted separately: LC-77", [("mcp__Atlassian__addCommentToJiraIssue",
-                                          {"issueIdOrKey": "LC-77"}, "ok")], None),
-        ("ok\nNoted separately: LC-77", [], "LC-77"),
-        ("ok\nNoted separately: LC-77", [("mcp__Atlassian__addCommentToJiraIssue",
-                                          {"issueIdOrKey": "lc-77"}, "ok")], None),
-        ("ok\nNoted separately: LC-77", [(CREATE, {}, '{"key":"lc-77"}')], None),
+        ("ok\nNoted separately: Nothing", [], None, IN),
+        ("ok", [], "must end with the tracker footer", IN),
+        ("ok\nNoted separately: LC-77", [(CREATE, {"projectKey": "LC"}, '{"key":"LC-77"}')], None, IN),
+        ("ok\nNoted separately: LC-77", [(COMMENT, {"issueIdOrKey": "LC-77"}, "ok")], None, IN),
+        ("ok\nNoted separately: LC-77", [], "LC-77", IN),
+        ("ok\nNoted separately: LC-77", [(COMMENT, {"issueIdOrKey": "lc-77"}, "ok")], None, IN),
+        ("ok\nNoted separately: LC-77", [(CREATE, {}, '{"key":"lc-77"}')], None, IN),
         ("ok\nNoted separately: LC-77", [("mcp__Supabase__execute_sql", {"q": "LC-77"}, "LC-77")],
-         "LC-77"),
+         "LC-77", IN),
         ("ok\nNoted separately: LC-77", [("mcp__Atlassian__searchJiraIssuesUsingJql", {"jql": "x"},
-                                          "LC-77")], "LC-77"),
+                                          "LC-77")], "LC-77", IN),
+        # after the window the old footer is refused, the new ones pass
+        ("ok\nNoted separately: Nothing", [], "must end with the tracker footer", OUT),
+        ("ok\nNothing", [], "must end with the tracker footer", OUT),
+        ("ok\nNoted separately: nothing found.", [], None, OUT),
+        ("ok\nNoted separately: nothing filed (2 minor, below the bar: typos).", [], None, OUT),
+        ("ok\nNoted separately:\n- LC-77 (fix) · LC-2141 · now · why",
+         [(CREATE, {}, '{"key":"LC-77"}')], None, OUT),
+        ("ok\nNoted separately:\n- LC-77 (fix) · LC-2141 · now · why", [], "LC-77", OUT),  # fake key
+        ("ok\nNoted separately:\n- LC-77 (fix) · LC-2141 · why", [(CREATE, {}, '{"key":"LC-77"}')],
+         "now | this week", OUT),  # no urgency
+        ("ok\nNoted separately:\n- lcc_issues#9 (dead link) · LC-2170 · now · 404", [], None, OUT),
+        ("ok\nNoted separately:\n- Deferred: LC-88 until 2026-12-01", [], "LC-88", OUT),
+        ("ok\nNoted separately:\n- Deferred: LC-88 until 2026-12-01", [(COMMENT, {"issueIdOrKey": "LC-88"},
+                                                                      "ok")], None, OUT),
+        ("ok\nNoted separately:", [], "no bullet", OUT),
     )
-    for reply, jira, want in cases:
+    for reply, jira, want, today in cases:
         p = transcript(reply, jira)
         try:
-            r = evaluate({"transcript_path": p})
-            ck((r is None) if want is None else (r is not None and want in r),
-               f"evaluate({reply!r}, {[j[0][-20:] for j in jira]}) -> {want}")
-            ck(evaluate({"transcript_path": p, "stop_hook_active": True}) is None,
+            r = evaluate({"transcript_path": p}, today)
+            ck((r is None) if want is None else (r is not None and want in r), f"evaluate({reply!r}, {[j[0][-20:] for j in jira]}, {today}) -> {want}")
+            ck(evaluate({"transcript_path": p, "stop_hook_active": True}, today) is None,
                "stop_hook_active always passes (cannot loop)")
         finally:
             os.unlink(p)
+    p = transcript("ok\nNoted separately: Nothing", [])
+    try:
+        ck(evaluate({"transcript_path": p, "cwd": "/w/stature"}, OUT) is None,
+           "Stature session: old footer passes after the window")
+        ck(evaluate({"transcript_path": p, "cwd": "/w/bbm-infrastructure"}, OUT) is not None,
+           "BBM session: old footer refused after the window")
+    finally:
+        os.unlink(p)
+    p = transcript("no footer", [])
+    try:
+        ck("until 2026-11-30" in (evaluate({"transcript_path": p}, IN) or ""),
+           "in the window the reason mentions the old form's end date")
+        ck("until 2026-11-30" not in (evaluate({"transcript_path": p}, OUT) or "x"),
+           "after the window the reason does not offer the old form")
+    finally:
+        os.unlink(p)
     ck(evaluate({}) is None, "no transcript -> pass")
     ck("[mod:reply-footer-check]" in (evaluate({"transcript_path": transcript("x", [])}) or ""),
        "reason carries the mod callout")

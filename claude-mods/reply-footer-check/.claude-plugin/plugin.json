@@ -1,7 +1,7 @@
 {
   "name": "reply-footer-check",
-  "version": "0.1.0",
-  "description": "Blocks a turn's end once when the reply's last line is not `Noted separately: <keys>` / `Nothing`, or names a ticket no Jira call touched.",
+  "version": "0.2.0",
+  "description": "Blocks a turn's end once when the reply does not end with a tracker footer (nothing found / nothing filed (N minor...) / bulleted list with urgency; the old one-liner until 2026-11-30, and always in Stature), or names a ticket no Jira call touched.",
   "author": {
     "name": "Brand Bridge Media"
   }

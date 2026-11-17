@@ -39,3 +39,12 @@ for (const [label, answer] of [['silence', { stdout: '' }], ['a non-zero exit', 
     expect(r.block).toBeUndefined()
   })
 }
+
+// LC-2172: Stature sessions keep the old footer, and the check tells them apart by the stop payload's
+// cwd. If the mod ever rebuilt the payload instead of forwarding it, that scope would silently vanish.
+test('the stop payload is forwarded whole, cwd included', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' })
+  on('classic.Stop', () => ({}))
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl', cwd: '/home/u/stature' })
+  expect(JSON.parse(w.runs[0]!.stdin).cwd).toBe('/home/u/stature')
+})
