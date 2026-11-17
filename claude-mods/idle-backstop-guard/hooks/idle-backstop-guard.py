@@ -211,6 +211,7 @@ OWNER_LINE = re.compile(r"^next owner\s*[:\-]\s*(.+)$", re.IGNORECASE)
 NOT_AN_OWNER = {"none", "nobody", "n/a", "na", "tbd", "unknown", "?", "-", "no one", "noone"}
 FAILED = re.compile(r"\berror\b|\bfailed\b|not mergeable|\b40[0-9]\b|\b422\b", re.IGNORECASE)
 PR_URL = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/(\d+)")
+PR_DONE = re.compile(r'"outcome"\s*:\s*"(?:merged|closed)"\s*,\s*"pr"\s*:\s*"([\w.-]+/[\w.-]+)#(\d+)"')
 
 
 def next_owner(reply: str) -> str | None:
@@ -222,6 +223,44 @@ def next_owner(reply: str) -> str | None:
             if len(who) >= 3 and who.lower() not in NOT_AN_OWNER:
                 return who
     return None
+
+
+THREAD_REPLY_TOOL = "hearthbot__post_message"
+SILENT_TOOL = "hearthbot__no_reply_needed"
+
+
+def final_reply(rows: list[dict]) -> str:
+    """The reply the person actually reads at this turn end.
+
+    In a project thread (where mods load since LC-2200) the person never sees plain assistant text: only a
+    `mcp__hearthbot__post_message` call reaches them, and a session often adds a trailing text line after it. So when the
+    turn holds a post_message, its LAST text is the reply; otherwise the last assistant text is (a terminal session)."""
+    last = max((i for i, r in enumerate(rows) if tr._is_prompt(r)), default=-1)
+    posted = _posts(rows[last + 1:])
+    return posted[-1] if posted else tr.final_reply_text(rows)
+
+
+def _posts(rows: list[dict]) -> list[str]:
+    return [b["input"]["text"] for r in rows
+            if r.get("type") == "assistant" and not r.get("isSidechain")
+            for b in tr._blocks(r)
+            if b.get("type") == "tool_use" and str(b.get("name") or "").endswith(THREAD_REPLY_TOOL)
+            and isinstance(b.get("input"), dict) and isinstance(b["input"].get("text"), str)]
+
+
+def silent_turn(rows: list[dict]) -> bool:
+    """This turn ended a thread wake deliberately silent: a hearthbot no_reply_needed call and no post_message."""
+    last = max((i for i, r in enumerate(rows) if tr._is_prompt(r)), default=-1)
+    names = [str(b.get("name") or "") for r in rows[last + 1:]
+             if r.get("type") == "assistant" and not r.get("isSidechain")
+             for b in tr._blocks(r) if b.get("type") == "tool_use"]
+    return any(n.endswith(SILENT_TOOL) for n in names) and not any(n.endswith(THREAD_REPLY_TOOL) for n in names)
+
+
+def last_posted(rows: list[dict]) -> str:
+    """The last reply the person saw in this thread, from any earlier turn."""
+    p = _posts(rows)
+    return p[-1] if p else ""
 
 
 def abandoned(reply: str) -> bool:
@@ -249,6 +288,14 @@ def session_prs(rows: list[dict]) -> list[str]:
                 continue  # a refused merge or close leaves the PR open
             # A call missing owner/repo/number yields a key like `pr:None/r#7` that matches no opened PR: harmless.
             gone.add(f"pr:{inp.get('owner')}/{inp.get('repo')}#{inp.get('pullNumber', inp.get('pull_number'))}")
+    # The merge queue merges a PR outside the session; the session learns it from a GitHub event (a ReadNotifications
+    # result or a wake), never from its own merge call. Found by replaying a real thread (2026-11-17): without this a PR
+    # merged by Mergify stayed "open" for every later turn. A forged line in a PR comment could only relax a reminder.
+    texts = [t for _, _, t in tr.tool_calls_with_results(rows)]
+    texts += [b.get("text") or "" for r in rows if tr._is_prompt(r) for b in tr._blocks(r) if b.get("type") == "text"]
+    for t in texts:
+        for m in PR_DONE.finditer(t or ""):
+            gone.add(f"pr:{m.group(1)}#{m.group(2)}")
     return [k for k in opened if k not in gone]
 
 
@@ -283,7 +330,12 @@ def owner_check(p: dict, items: list[str], mode: str | None) -> dict:
     open_ = items + prs
     if not open_:
         return {"verdict": "PASS", "reason": "no open deliverable"}
-    reply = tr.final_reply_text(rows)
+    reply = final_reply(rows)
+    if silent_turn(rows):
+        # A thread turn that answers a bot event with no reply (no_reply_needed) adds nothing for the person to act on;
+        # the owner named in the last reply the person saw still stands. Demanding a new line here would force a
+        # reply on every CI or queue notification (2026-11-17 replay: 14 of 21 turn ends were such events).
+        reply = last_posted(rows)
     if abandoned(reply):
         return {"verdict": "PASS", "reason": f"{len(open_)} open; abandoned by the operator in writing"}
     who = next_owner(reply)
@@ -409,9 +461,29 @@ def decide_checkin(p: dict) -> dict:
             "block": block_text(items, now, later)}
 
 
+def replay(rows: list[dict]) -> list[str]:
+    """The owner rule's receipt at every past turn end of a real transcript (LC-2167: the evidence read before enforce).
+
+    A turn end is the row before each prompt, plus the end. A compaction summary is not a stop (no Stop hook fires
+    there), so the turn it cuts is skipped. Fleet children and watchers are not in a transcript, so only PRs count here."""
+    ends = [i for i, r in enumerate(rows) if tr._is_prompt(r) and not r.get("isCompactSummary")][1:] + [len(rows)]
+    out = []
+    for e in ends:
+        o = owner_check({"transcript_rows": rows[:e]}, [], "shadow")
+        if o["reason"] != "no open deliverable":
+            ts = next((str(r["timestamp"]) for r in reversed(rows[:e]) if r.get("timestamp")), "?")
+            out.append(f"{ts[:16]}  {o['verdict']}: {o['reason']}")
+    return out
+
+
 def main() -> int:
     if "--selftest" in sys.argv:
         return _selftest()
+    if len(sys.argv) == 3 and sys.argv[1] == "--replay":
+        lines = replay(tr.rows_for({"transcript_path": sys.argv[2]}))
+        print("\n".join(lines) if lines else "no turn end left an open deliverable")
+        print(f"turn ends with an open deliverable: {len(lines)}; would block: {sum(' MISS:' in ln for ln in lines)}")
+        return 0
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw)  # empty input is a ValueError too: the mod always sends a payload
@@ -641,6 +713,55 @@ def _selftest() -> int:
                 "watchers": {w_: '{"active":[],"finished":[]}' for w_ in WATCHERS}})
     ck(r["verdict"] == "PASS" and "would block" in r.get("shadow", ""), "default mode comes from the shipped file (shadow)")
     ck(owner_check({"transcript_rows": "junk"}, [], "enforce")["verdict"] == "NOT CHECKED", "junk rows: NOT CHECKED")
+    # Project threads (LC-2200): the person reads only the post_message text, never a trailing assistant line.
+    PM = "mcp__hearthbot__post_message"
+    post = lambda i, t: row_use(i, PM, {"text": t})  # noqa: E731
+    r = O("enforce", "Posted.", extra=[post("p1", "Merged.\n\nNext owner: the operator, enforce decision"), row_res("p1", "{}")])
+    ck(r["verdict"] == "PASS" and "the operator" in r["owner"]["reason"], "thread: owner line in post_message counts, trailing text ignored")
+    r = O("enforce", "Next owner: this session", extra=[post("p1", "Merged."), row_res("p1", "{}")])
+    ck(r["verdict"] == "BLOCK", "thread: an owner only in the unseen trailing text does not count")
+    r = O("enforce", "x", extra=[post("p1", "Next owner: me, 17:00"), row_res("p1", "{}"), post("p2", "Merged."), row_res("p2", "{}")])
+    ck(r["verdict"] == "BLOCK", "thread: the LAST post_message is the reply")
+    r = O("enforce", "x", extra=[post("p1", "ABANDONED BY OPERATOR\n> drop it"), row_res("p1", "{}")])
+    ck(r["verdict"] == "PASS", "thread: written abandon in post_message")
+    old = [row_prompt(), row_use("q", PM, {"text": "Next owner: stale turn"}), row_res("q", "{}"), row_prompt(), row_reply("plain")]
+    ck(final_reply(old) == "plain", "a post_message from an earlier turn is not this turn's reply")
+    ck(final_reply([row_prompt(), row_use("q", PM, {"text": 5}), row_reply("plain")]) == "plain", "non-text post_message input ignored")
+    ck(final_reply([row_prompt(), row_use("q", "mcp__other__post", {"text": "no"}), row_reply("plain")]) == "plain", "only the thread reply tool counts")
+    # A PR the merge queue merged outside the session (2026-11-17 replay of a real thread).
+    note = '{"outcome":"merged","pr":"o/r#7"}'
+    ck(session_prs(pr_rows + [row_use("n", "ReadNotifications", {}), row_res("n", "event " + note)]) == [], "queue merge seen in a notification")
+    ck(session_prs(pr_rows + [{"type": "user", "message": {"content": "wake " + note}}]) == [], "queue merge seen in a wake")
+    ck(session_prs(pr_rows + [row_use("n", "ReadNotifications", {}), row_res("n", '{"outcome": "closed", "pr": "o/r#7"}')]) == [], "closed, spaced JSON")
+    ck(session_prs(pr_rows + [row_use("n", "ReadNotifications", {}), row_res("n", '{"outcome":"merged","pr":"o/r#77"}')]) == ["pr:o/r#7"], "another PR's merge leaves this one open")
+    ck(session_prs(pr_rows + [row_use("n", "ReadNotifications", {}), row_res("n", '{"outcome":"opened","pr":"o/r#7"}')]) == ["pr:o/r#7"], "only merged/closed end a PR")
+    # A deliberately silent thread turn keeps the owner from the last reply the person saw.
+    NR = "mcp__hearthbot__no_reply_needed"
+    said = [post("p1", "Queued.\nNext owner: this thread, watching the queue"), row_res("p1", "{}")]
+    quiet = [row_prompt(), row_use("z", NR, {}), row_res("z", "ok"), row_reply("nothing to do")]
+    r = O("enforce", "x", extra=said + quiet)
+    ck(r["verdict"] == "PASS" and "watching the queue" in r["owner"]["reason"], "silent turn: last reply's owner stands")
+    ck(O("enforce", "x", extra=quiet)["verdict"] == "BLOCK", "silent turn with no earlier owner still blocks")
+    r = O("enforce", "x", extra=said + [row_prompt(), row_use("z", NR, {}), row_res("z", "ok"), post("p2", "Merged."), row_res("p2", "{}")])
+    ck(r["verdict"] == "BLOCK", "a turn that posts is not silent: its own reply must name the owner")
+    ck(not silent_turn([row_prompt(), row_reply("hi")]), "a plain terminal turn is not silent")
+    ck(not silent_turn([row_use("z", NR, {}), row_prompt(), row_reply("hi")]), "an earlier turn's no_reply_needed does not count")
+    ck(not silent_turn([row_prompt(), {**row_use("z", NR, {}), "isSidechain": True}]), "a subagent's no_reply_needed does not count")
+    ck(last_posted([row_prompt(), row_reply("x")]) == "", "no post: empty")
+    # --replay: one receipt per real turn end that left something open.
+    t = lambda ts: {"timestamp": ts}  # noqa: E731
+    rp = [{**row_prompt(), **t("2026-11-17T10:00:00Z")}, *pr_rows[1:3], {**row_reply("done"), **t("2026-11-17T10:01:00Z")},
+          {**row_prompt(), **t("2026-11-17T10:02:00Z")}, {**row_reply("cut by compaction"), **t("2026-11-17T10:03:00Z")},
+          {**row_prompt(), "isCompactSummary": True}, {**row_reply("Next owner: the operator"), **t("2026-11-17T10:05:00Z")},
+          row_prompt(), row_reply("hi")]
+    got = replay(rp)
+    ck(len(got) == 3, "replay: three real turn ends with the PR open")
+    ck(got[0] == "2026-11-17T10:01  MISS: 1 open deliverable(s) and the final reply names no next owner", "replay: first end MISS with time")
+    ck(got[1].startswith("2026-11-17T10:05  PASS: 1 open; next owner: the operator"), "replay: the turn cut by compaction is skipped")
+    ck(replay([row_prompt(), row_reply("hi"), row_prompt(), row_reply("x")]) == [], "replay: nothing open, no lines")
+    ck(replay([row_prompt(), *pr_rows[1:3], row_reply("x")])[0].startswith("?  MISS"), "replay: no timestamp shows ?")
+    side = {**row_use("s", PM, {"text": "Next owner: a subagent"}), "isSidechain": True}
+    ck(final_reply([row_prompt(), side, row_reply("plain")]) == "plain", "a subagent's post_message is not the reply")
 
     import subprocess
     me = [sys.executable, "-I", __file__]
@@ -650,6 +771,17 @@ def _selftest() -> int:
     ck(r.returncode == 0 and json.loads(r.stdout)["verdict"] == "BLOCK", "main(): emits BLOCK")
     r = subprocess.run(me, capture_output=True, text=True, input="{x")
     ck(r.returncode == 1 and r.stdout == "", "main(): junk input fails open and visible")
+    with __import__("tempfile").TemporaryDirectory() as d:
+        tp = os.path.join(d, "t.jsonl")
+        with open(tp, "w") as fh:
+            fh.write("\n".join(json.dumps(x) for x in rp))
+        r = subprocess.run(me + ["--replay", tp], capture_output=True, text=True)
+        ck(r.returncode == 0 and r.stdout.rstrip().endswith("turn ends with an open deliverable: 3; would block: 2")
+           and "10:05  PASS" in r.stdout, "main(): --replay prints receipts and the tally")
+        with open(tp, "w") as fh:
+            fh.write(json.dumps(row_prompt()) + "\n" + json.dumps(row_reply("hi")))
+        r = subprocess.run(me + ["--replay", tp], capture_output=True, text=True)
+        ck(r.stdout.startswith("no turn end left an open deliverable") and "would block: 0" in r.stdout, "main(): --replay, nothing open")
     for bad in ("", "[1]", "{}", '{"calls": []}'):
         r = subprocess.run(me, capture_output=True, text=True, input=bad)
         ck(r.returncode == 1 and r.stdout == "", f"main(): {bad!r} is not a payload: fails open and visible")

@@ -1,6 +1,6 @@
 {
   "name": "idle-backstop-guard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Refuses to end a turn while the session has open fleet children or watcher items and no server-side check-in (send_later / create_trigger) will fire within 35 minutes: the in-process timers that watch them stop while the session idles (LC-2043). Also (LC-2167, shadow mode first) asks that a session leaving an open deliverable (fleet child, watch, or a PR it opened) names its next owner in the final reply, or carries the operator's written abandon. Fails open; child sessions get a toast only.",
   "types": "./types/index.d.ts",
   "author": {
