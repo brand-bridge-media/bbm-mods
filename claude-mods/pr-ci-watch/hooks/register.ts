@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, findPr, mergeFactsDue, prNumberFrom, parseCheckRuns, parsePr, parsePushes, parseRemote, parseTrainComment, parseTrainStatus, POLL_MS, splitMergify, stampWake, watchKey } from './logic'
+import { decide, findPr, mergeFactsDue, prNumberFrom, parseCheckRuns, parsePr, parsePushes, parseRemote, parseTrainComment, parseTrainStatus, POLL_MS, splitMergify, stampWake, watchKey, restorable } from './logic'
 import type { Observation, PushCmd, Wake } from './logic'
 
 // Why (LC-1896): a session must not depend on GitHub's PR events alone to learn its CI finished.
@@ -17,6 +17,44 @@ const finished = atom({ plugin: 'pr-ci-watch', key: 'finished' } as const, [] as
 const pendingWakes: Wake[] = []
 let ticking = false
 let busy = false
+
+// LC-2043: the list is saved to $.store (which outlives $.state) with this session's id after every change, and
+// restored on session.start. Before this, a restart emptied the list and nothing ever polled again.
+const STORE_KEY = 'saved'
+
+// '' when the id cannot be read; an empty id never matches on restore.
+async function sessionIdOf($: any): Promise<string> {
+  try { return String((await $.session.id()) ?? '') } catch { return '' }
+}
+
+async function persist($: any): Promise<void> {
+  try {
+    // No readable id: keep the last good save rather than overwrite it with one no restart can claim.
+    const sessionId = await sessionIdOf($)
+    if (!sessionId) return
+    await $.store.set(STORE_KEY, { sessionId, watches: await read($, watches), finished: await read($, finished) })
+  } catch { /* saving is a convenience: the live list still works */ }
+}
+
+async function restore($: any): Promise<void> {
+  try {
+    if ((await read($, watches)).length > 0) return
+    const back = restorable(await $.store.get(STORE_KEY), await sessionIdOf($))
+    if (!back) return
+    // Ended watches come back too, even with nothing still open: unwatched-job-guard reads them through `watching`.
+    if (back.watches.length > 0) await update($, watches, () => back.watches)
+    await update($, finished, l => [...new Set([...l, ...back.finished])].slice(-50))
+  } catch { /* nothing restored */ }
+}
+
+// The poll timer belongs to one module instance: a reload cancels it and resets `ticking`, and before LC-2043 only a
+// NEW watch restarted it, so watches already on the list were never polled again. Started from session.start, every
+// turn end and every new watch, whenever there is something to watch.
+function ensureTicking($: any, hasWatches: boolean) {
+  if (ticking || !hasWatches) return
+  ticking = true
+  $.clock.every(POLL_MS, () => { void tick($) })
+}
 
 function textOf(r: { content?: readonly unknown[] }): string {
   return (r.content ?? []).map(c => String((c as { text?: unknown }).text ?? '')).join('')
@@ -86,6 +124,7 @@ async function tick($: any) {
       await update($, watches, l => (d.done ? l.filter(x => !same(x)) : l.map(x => (same(x) ? { ...x, ...d.patch } : x))))
       if (d.done) await update($, finished, l => [...l.filter(k => k !== watchKey(w)), watchKey(w)].slice(-50))
     }
+    await persist($)
   } catch { /* a failed tick is retried by the next one */ } finally {
     busy = false
   }
@@ -99,10 +138,8 @@ async function watch($: any, w: Omit<Watch, 'startedAt'>): Promise<string> {
   const armed = !!w.armed || (await read($, watches)).some(x => samePr(x) && x.armed)
   await update($, watches, l => [...l.filter(x => !samePr(x)), { ...w, armed: armed || undefined, startedAt }])
   await update($, finished, l => l.filter(k => k !== watchKey(w)))
-  if (!ticking) {
-    ticking = true
-    $.clock.every(POLL_MS, () => { void tick($) })
-  }
+  await persist($)
+  ensureTicking($, true)
   if (armed) {
     return `[mod:pr-ci-watch] Watching ${w.owner}/${w.repo}#${w.number} until it merges: checked every 2 minutes; this session is ` +
       'woken when it merges, when CI fails, or if it is green but not merged within 30 minutes (with the reason). No check-in needed for it.'
@@ -127,6 +164,10 @@ async function fromPush($: any, p: PushCmd): Promise<string | undefined> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    // LC-2043: bring back this session's watches after a restart and poll them at once: an event missed while the
+    // process was down is delivered now, stamped with its real time, not after a full interval.
+    await restore($)
+    if ((await read($, watches)).length > 0) { ensureTicking($, true); void tick($) }
     await $.tool.register({
       name: 'watch_pr',
       description: 'Watch an existing PR\'s CI and be woken when it finishes. Pushes, create_pull_request and enable_pr_auto_merge are watched automatically; use this for a PR this session did not just push. armed: true = auto-merge is on, keep watching until it merges.',
@@ -189,6 +230,7 @@ export const register: Register = on => {
     // Already watching this head: arm it in place so a green picture already seen is not thrown away.
     if (prior) {
       await update($, watches, l => l.map(x => (x === prior || (x.owner === prior.owner && x.repo === prior.repo && x.number === prior.number) ? { ...x, armed: true } : x)))
+      await persist($)
       return { ...ran, context: [...(ran.context ?? []), `[mod:pr-ci-watch] ${a.owner}/${a.repo}#${number} is armed: watching it until it merges; ` +
         'woken on merge, on a CI failure, or if green but not merged within 30 minutes (with the reason). No check-in needed.'] }
     }
@@ -209,6 +251,7 @@ export const register: Register = on => {
     const prior = (await read($, watches)).find(x => x.owner === a.owner && x.repo === a.repo && x.number === number)
     if (prior) {
       await update($, watches, l => l.map(x => (x.owner === prior.owner && x.repo === prior.repo && x.number === prior.number ? { ...x, armed: true } : x)))
+      await persist($)
       return { ...ran, context: [...(ran.context ?? []), `[mod:pr-ci-watch] ${a.owner}/${a.repo}#${number} carries the queue label: watching it until it merges; ` +
         'woken on merge, on a CI failure, a dequeue, or if green but not merged within 30 minutes (with the reason).'] }
     }
@@ -224,6 +267,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const res = await next(e)
     flush($)
+    try { ensureTicking($, (await read($, watches)).length > 0) } catch { /* the next turn tries again */ }
     return res
   })
 }

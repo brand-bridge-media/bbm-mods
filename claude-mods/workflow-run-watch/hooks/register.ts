@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, parseRuns, parseStart, POLL_MS, stampWake, watchKey } from './logic'
+import { decide, parseRuns, parseStart, POLL_MS, stampWake, watchKey, restorable } from './logic'
 import type { Wake } from './logic'
 import type { Observation } from './logic'
 
@@ -15,6 +15,44 @@ const finished = atom({ plugin: 'workflow-run-watch', key: 'finished' } as const
 const pendingWakes: Wake[] = []
 let ticking = false
 let busy = false
+
+// LC-2043: the list is saved to $.store (which outlives $.state) with this session's id after every change, and
+// restored on session.start. Before this, a restart emptied the list and nothing ever polled again.
+const STORE_KEY = 'saved'
+
+// '' when the id cannot be read; an empty id never matches on restore.
+async function sessionIdOf($: any): Promise<string> {
+  try { return String((await $.session.id()) ?? '') } catch { return '' }
+}
+
+async function persist($: any): Promise<void> {
+  try {
+    // No readable id: keep the last good save rather than overwrite it with one no restart can claim.
+    const sessionId = await sessionIdOf($)
+    if (!sessionId) return
+    await $.store.set(STORE_KEY, { sessionId, watches: await read($, watches), finished: await read($, finished) })
+  } catch { /* saving is a convenience: the live list still works */ }
+}
+
+async function restore($: any): Promise<void> {
+  try {
+    if ((await read($, watches)).length > 0) return
+    const back = restorable(await $.store.get(STORE_KEY), await sessionIdOf($))
+    if (!back) return
+    // Ended watches come back too, even with nothing still open: unwatched-job-guard reads them through `watching`.
+    if (back.watches.length > 0) await update($, watches, () => back.watches)
+    await update($, finished, l => [...new Set([...l, ...back.finished])].slice(-50))
+  } catch { /* nothing restored */ }
+}
+
+// The poll timer belongs to one module instance: a reload cancels it and resets `ticking`, and before LC-2043 only a
+// NEW watch restarted it, so watches already on the list were never polled again. Started from session.start, every
+// turn end and every new watch, whenever there is something to watch.
+function ensureTicking($: any, hasWatches: boolean) {
+  if (ticking || !hasWatches) return
+  ticking = true
+  $.clock.every(POLL_MS, () => { void tick($) })
+}
 
 function textOf(r: { content?: readonly unknown[] }): string {
   return (r.content ?? []).map(c => String((c as { text?: unknown }).text ?? '')).join('')
@@ -58,6 +96,7 @@ async function tick($: any) {
         : l.map(x => (x.startedAt === w.startedAt && watchKey(x) === watchKey(w) ? { ...x, ...d.patch } : x))))
       if (d.done) await update($, finished, l => [...l.filter(k => k !== watchKey(w)), watchKey(w)].slice(-50))
     }
+    await persist($)
   } catch { /* a failed tick is retried by the next one */ } finally {
     busy = false
   }
@@ -66,6 +105,10 @@ async function tick($: any) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    // LC-2043: bring back this session's watches after a restart and poll them at once: an event missed while the
+    // process was down is delivered now, stamped with its real time, not after a full interval.
+    await restore($)
+    if ((await read($, watches)).length > 0) { ensureTicking($, true); void tick($) }
     await $.tool.register({
       name: 'watching',
       description: 'What workflow-run-watch is watching now and which watches ended (JSON {active, finished} of run:owner/repo:<workflow|run id> keys). Read by unwatched-job-guard.',
@@ -90,10 +133,8 @@ export const register: Register = on => {
       ...start, since: new Date(now - 60_000).toISOString(), startedAt: now }
     await update($, watches, l => [...l.filter(x => watchKey(x) !== watchKey(w)), w])
     await update($, finished, l => l.filter(k => k !== watchKey(w)))
-    if (!ticking) {
-      ticking = true
-      $.clock.every(POLL_MS, () => { void tick($) })
-    }
+    await persist($)
+    ensureTicking($, true)
     return { ...ran, context: [...(ran.context ?? []),
       `[mod:workflow-run-watch] Watching ${w.owner}/${w.repo} ${w.workflow ?? `run ${w.runId}`}: checked every minute; this session ` +
       'is woken when it finishes (flagging a finish under 2 minutes), never registers, or runs past 90 minutes. No check-in needed.'] }
@@ -103,6 +144,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const res = await next(e)
     flush($)
+    try { ensureTicking($, (await read($, watches)).length > 0) } catch { /* the next turn tries again */ }
     return res
   })
 }

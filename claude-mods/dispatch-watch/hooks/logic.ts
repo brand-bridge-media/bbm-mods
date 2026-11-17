@@ -124,3 +124,23 @@ export function lateNote(eventAt: number, deliveredAt: number): string {
 }
 export const stampWake = (w: Wake, deliveredAt: number): string => w.text + lateNote(w.at, deliveredAt)
 // LATE-NOTE-END
+
+// LC-2043: the watch list lives in $.state, which a process or container restart empties (2026-11-05: the list was
+// found empty twice and six merges went unannounced). register.ts saves it to $.store with the session's id; this
+// decides what may come back. Only a list saved by THIS session returns: an unreadable id, another session's list
+// (a fresh session, or another session sharing the same machine) or a malformed one restores nothing.
+export type Saved = { sessionId: string; watches: Watch[]; finished: string[] }
+
+export function restorable(saved: unknown, sessionId: string): { watches: Watch[]; finished: string[] } | undefined {
+  if (!sessionId || !saved || typeof saved !== 'object') return undefined
+  const s = saved as Partial<Saved>
+  if (s.sessionId !== sessionId || !Array.isArray(s.watches)) return undefined
+  // A row needs a real start time, a server to poll through and the fields that name what it watches; anything
+  // else would poll nothing or wake on garbage.
+  const watches = s.watches.filter(w => !!w && typeof w === 'object' && Number.isFinite((w as Watch).startedAt)
+    && typeof (w as Watch).server === 'string' && (w as Watch).server !== ''
+    && typeof (w as Watch).workflow === 'string' && (w as Watch).workflow !== '' && typeof (w as Watch).projectId === 'string' && (w as Watch).projectId !== ''
+    && typeof (w as Watch).since === 'string' && (w as Watch).since !== '')
+  const finished = Array.isArray(s.finished) ? s.finished.filter((k): k is string => typeof k === 'string') : []
+  return { watches, finished }
+}
