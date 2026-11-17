@@ -4,7 +4,8 @@ import type { Register } from 'claude-code'
 import type { Clock } from '../types'
 import {
   CAUSE_TICKETS, CLOUD_ID, EPIC, OWN, POLL_MS, STAGES, causeTicketFor, clockKey, decide,
-  normalisePr, occurrenceBody, operatorAsk, parseCheckRuns, parsePr, prNumberFrom, readReport, timing,
+  normalisePr, occurrenceBody, operatorAsk, parseCheckRuns, parsePr, prNumberFrom, readReport, routeOccurrence,
+  statusCategoryFrom, timing,
 } from './logic'
 import type { Observation, Report } from './logic'
 
@@ -95,8 +96,13 @@ async function file($: any, r: Report): Promise<string> {
   if (clock?.reportedTo) {
     return `${OWN} ${key} is already recorded as one occurrence on ${clock.reportedTo}; one PR is one occurrence, so nothing was added.`
   }
-  const ticket = causeTicketFor(report)
-  const body = occurrenceBody(report, t, now)
+  // LCH-720: read the owner's status first; a closed owner sends the occurrence to the epic, with a note.
+  const owner = causeTicketFor(report)
+  const status = owner === EPIC ? undefined : statusCategoryFrom((await mcpCall($, JIRA, 'getJiraIssue',
+    { cloudId: CLOUD_ID, issueIdOrKey: owner, fields: ['status'] })).text)
+  const route = routeOccurrence(owner, status)
+  const ticket = route.ticket
+  const body = occurrenceBody(report, t, now, route.note)
   const sent = await mcpCall($, JIRA, 'addCommentToJiraIssue', { cloudId: CLOUD_ID, issueIdOrKey: ticket, commentBody: body, contentFormat: 'markdown' })
   if (sent.text === undefined) {
     return `${OWN} Jira did not take the occurrence (${JIRA}.addCommentToJiraIssue said: ${sent.error ?? 'nothing'}). ` +

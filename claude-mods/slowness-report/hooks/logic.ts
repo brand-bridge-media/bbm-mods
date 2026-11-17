@@ -20,12 +20,14 @@ export const MAX_ERRORS = 5
 // occurrence comment, with references, on the ticket that owns its CAUSE, so recurrence piles up where the
 // architectural fix lives and the comment count per cause ticket is the recurrence measure. This table is the
 // only place a stage maps to a cause ticket; a cause with no ticket yet goes to the epic itself.
+// LCH-720 (2026-11-17): LCH-603, LCH-614 and LCH-595 closed on 11-15/16 but kept receiving occurrences, so the stories
+// that now own those causes never saw their recurrence. Re-pointed at the open owners; routeOccurrence() below sends a
+// report to the epic whenever an owner turns out to be closed, so a stale entry can never hide an occurrence again.
 export const CAUSE_TICKETS = {
-  runner_queue: 'LCH-603',   // jobs waiting for a free check runner (capacity)
-  // LCH-604 and LCH-605 closed 2026-11-05, superseded by LCH-614 (vendor merge queue, operator decision D1a).
-  train_wait: 'LCH-614',     // green, waiting for the merge train / queue to form or tick
-  train_recheck: 'LCH-614',  // the train / queue re-running checks the members already passed
-  reviewer: 'LCH-595',       // AI reviewer slow, timed out or red
+  runner_queue: 'LCH-618',   // jobs waiting for a free check runner (capacity; was LCH-603, closed 2026-11-16)
+  train_wait: 'LCH-697',     // green, waiting for the merge queue (Trunk) to form or tick (was LCH-614, closed 2026-11-16)
+  train_recheck: 'LCH-697',  // the queue re-running checks or rejecting a batch member (was LCH-614)
+  reviewer: EPIC,            // AI reviewer slow, timed out or red (LCH-595 closed 2026-11-15; no open reviewer story)
   failed_check: EPIC,        // a red check, eviction or retry round
   deploy: EPIC,              // merged, waiting on the deploy
   human: EPIC,               // waiting on a person
@@ -185,8 +187,33 @@ export function causeTicketFor(r: Report): string {
   return r.causeTicket ?? CAUSE_TICKETS[r.stage]
 }
 
+export type Route = { ticket: string; note?: string }
+
+/**
+ * LCH-720: where the occurrence is actually written, given the owner's Jira status category ('new', 'indeterminate',
+ * 'done'; undefined = could not read it). A closed owner sends it to the epic with a note naming the closed ticket, so
+ * the occurrence stays where someone reads it and the stale table entry is visible. An unreadable status keeps the
+ * owner (fail open: a Jira hiccup must not move every report) and says the status was NOT CHECKED.
+ */
+export function routeOccurrence(owner: string, statusCategory: string | undefined): Route {
+  if (owner === EPIC) return { ticket: EPIC }
+  if (statusCategory === undefined) return { ticket: owner, note: `owner status NOT CHECKED (Jira status unreadable)` }
+  if (statusCategory.toLowerCase() === 'done') {
+    return { ticket: EPIC, note: `cause owner ${owner} is closed, so this was recorded on ${EPIC} instead; point CAUSE_TICKETS (claude-mods/slowness-report/hooks/logic.ts) or cause_ticket at an open story (LCH-720)` }
+  }
+  return { ticket: owner }
+}
+
+/** Jira getJiraIssue text -> the status category key, or undefined when it cannot be read. */
+export function statusCategoryFrom(text: string | undefined): string | undefined {
+  const v = text === undefined ? undefined : json(text) as any
+  const issue = v?.issues?.nodes?.[0] ?? v
+  const key = issue?.fields?.status?.statusCategory?.key
+  return typeof key === 'string' && key ? key : undefined
+}
+
 /** One occurrence, as one comment. Its first line is fixed-format so occurrences can be counted and grepped. */
-export function occurrenceBody(r: Report, t: ReturnType<typeof timing>, now: number): string {
+export function occurrenceBody(r: Report, t: ReturnType<typeof timing>, now: number, routeNote?: string): string {
   const by = r.source === 'auto' ? 'auto: PR passed its time budget' : r.source === 'operator' ? 'operator ran /slow' : 'session report'
   return [
     `SLOWNESS OCCURRENCE ${iso(now)} | stage ${r.stage} | waited ${t.waited !== undefined ? `${t.waited} min` : 'NOT CHECKED'} (budget ${mins(BUDGET_MS)}) | ${r.pr ?? 'no PR'} | ${by}`,
@@ -196,6 +223,7 @@ export function occurrenceBody(r: Report, t: ReturnType<typeof timing>, now: num
     `- Cause: ${r.cause}`,
     `- Evidence: ${r.evidence}`,
     `- Fix / note: ${r.fix}`,
+    ...(routeNote ? [`- Routing: ${routeNote}`] : []),
     '',
     `Recorded by the slowness-report mod (epic ${EPIC}). One comment per occurrence; the count of these comments is this cause's recurrence.`,
   ].join('\n')

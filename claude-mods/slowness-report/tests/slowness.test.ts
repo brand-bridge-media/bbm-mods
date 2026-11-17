@@ -2,7 +2,7 @@ import { test, expect } from 'claude-code/testing'
 
 import {
   BUDGET_MS, CAUSE_TICKETS, EPIC, OWN, STAGES, WAKE_AT_MS, causeTicketFor, decide, normalisePr, occurrenceBody, operatorAsk,
-  parseCheckRuns, parsePr, prNumberFrom, readReport, summariseRuns, timing,
+  parseCheckRuns, parsePr, prNumberFrom, readReport, routeOccurrence, statusCategoryFrom, summariseRuns, timing,
 } from '../hooks/logic'
 
 const MIN = 60_000
@@ -81,12 +81,15 @@ test('PR references of every shape resolve to one key', () => {
 
 test('every stage maps to a cause ticket; the measured clock beats the reported numbers', () => {
   for (const st of STAGES) expect(CAUSE_TICKETS[st]).toMatch(/^(LCH|LC)-\d+$/)
-  expect(CAUSE_TICKETS.runner_queue).toBe('LCH-603')
-  expect(CAUSE_TICKETS.train_wait).toBe('LCH-614')
-  expect(CAUSE_TICKETS.train_recheck).toBe('LCH-614')
+  // LCH-720: the open owners since LCH-603, LCH-614 and LCH-595 closed (2026-11-15/16).
+  expect(CAUSE_TICKETS.runner_queue).toBe('LCH-618')
+  expect(CAUSE_TICKETS.train_wait).toBe('LCH-697')
+  expect(CAUSE_TICKETS.train_recheck).toBe('LCH-697')
+  expect(CAUSE_TICKETS.reviewer).toBe(EPIC)
+  for (const closed of ['LCH-603', 'LCH-614', 'LCH-595']) expect(Object.values(CAUSE_TICKETS)).not.toContain(closed)
   expect(CAUSE_TICKETS.other).toBe(EPIC)
   const r = readReport({ subject: 'record 7 picks', stage: 'runner_queue', cause: 'queue', evidence: 'ev', fix: 'fx', waited_minutes: 5 }, 'auto') as any
-  expect(causeTicketFor(r)).toBe('LCH-603')
+  expect(causeTicketFor(r)).toBe('LCH-618')
   expect(causeTicketFor({ ...r, causeTicket: 'LC-2076' })).toBe('LC-2076')
   const now = T0 + 76 * MIN
   expect(timing(r, C, now)).toEqual({ startedAt: T0, waited: 76, measured: true })
@@ -100,4 +103,30 @@ test('/slow quotes the operator and never asks for a new ticket', () => {
   expect(operatorAsk('7 picks stuck')).toContain('"7 picks stuck"')
   expect(operatorAsk('')).toContain('not described')
   expect(operatorAsk('x')).toContain('never a new ticket')
+})
+
+test('LCH-720: a closed cause owner sends the occurrence to the epic, with a note; open or unreadable keeps the owner', () => {
+  expect(routeOccurrence('LCH-618', 'indeterminate')).toEqual({ ticket: 'LCH-618' })
+  expect(routeOccurrence('LCH-618', 'new')).toEqual({ ticket: 'LCH-618' })
+  const closed = routeOccurrence('LCH-603', 'done')
+  expect(closed.ticket).toBe(EPIC)
+  expect(closed.note).toContain('cause owner LCH-603 is closed')
+  expect(closed.note).toContain('CAUSE_TICKETS')
+  expect(routeOccurrence('LC-2076', 'DONE').ticket).toBe(EPIC)
+  const unread = routeOccurrence('LCH-618', undefined)
+  expect(unread.ticket).toBe('LCH-618')
+  expect(unread.note).toContain('NOT CHECKED')
+  expect(routeOccurrence(EPIC, undefined)).toEqual({ ticket: EPIC })
+  // The real getJiraIssue reply shape (issues.nodes[0]) and a bare issue both read; junk does not.
+  const done = { fields: { status: { statusCategory: { key: 'done' } } } }
+  expect(statusCategoryFrom(JSON.stringify({ issues: { nodes: [done] } }))).toBe('done')
+  expect(statusCategoryFrom(JSON.stringify(done))).toBe('done')
+  expect(statusCategoryFrom('not json')).toBeUndefined()
+  expect(statusCategoryFrom(undefined)).toBeUndefined()
+  expect(statusCategoryFrom('{"fields":{"status":{}}}')).toBeUndefined()
+  // The note travels in the comment; without one the body is unchanged.
+  const r = readReport({ subject: 's', stage: 'runner_queue', cause: 'c', evidence: 'e', fix: 'f' }, 'session') as any
+  const now = T0 + 40 * MIN
+  expect(occurrenceBody(r, timing(r, C, now), now, closed.note)).toContain('- Routing: cause owner LCH-603 is closed')
+  expect(occurrenceBody(r, timing(r, C, now), now)).not.toContain('Routing')
 })
