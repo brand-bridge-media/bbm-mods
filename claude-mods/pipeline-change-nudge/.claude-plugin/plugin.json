@@ -1,0 +1,9 @@
+{
+  "name": "pipeline-change-nudge",
+  "version": "0.1.0",
+  "description": "Advisory only, never denies: on the first Edit/Write in a session to a bbm-infrastructure delivery-pipeline file (workflows, scripts/ci, merge-queue config, required-check list, pipeline register), tells the session to read .github/PIPELINE.md, write the PR's Pipeline change statement (step, adds, removes, runner-minutes before/after, back-out) and check that no other pipeline change is in flight (LCH-676).",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
