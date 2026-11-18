@@ -1,0 +1,8 @@
+{
+  "name": "bbm-skills-loader",
+  "version": "1.0.0",
+  "description": "Carries the bbm-skills-loader skill to claude.ai chat, Cowork and project threads: it reads the owning Brand Bridge Media / Living Cozy skill from brand-bridge-media/claude-skills main on demand. Skill only, no hooks.",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

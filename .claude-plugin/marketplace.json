@@ -193,6 +193,11 @@
       "name": "pipeline-close-question",
       "source": "./claude-mods/pipeline-close-question",
       "description": "Advisory only: after an LCH ticket is transitioned, reminds the session that a pipeline story closes only with a comment answering whether it will recur and what prevents it now (LCH-676)."
+    },
+    {
+      "name": "bbm-skills-loader",
+      "source": "./claude-mods/bbm-skills-loader",
+      "description": "Carries the bbm-skills-loader skill (no hooks): claude.ai chat, Cowork and project threads read the owning BBM skill from brand-bridge-media/claude-skills main on demand. Replaces the hand-uploaded claude.ai card (LC-2227)."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."
