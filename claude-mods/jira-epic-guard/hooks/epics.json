@@ -40,6 +40,11 @@
       "when": "traffic, click and revenue reporting; GA4, Search Console; the analytics platform"
     },
     {
+      "key": "LC-2241",
+      "name": "SEO",
+      "when": "site-wide search visibility: Search Console opportunities, keyword ownership and cannibalization, indexing, sitemap, schema policy, internal-link strategy, backlinks, AI-answer visibility, ChatSEO/Ahrefs/DataForSEO research (never edits articles)"
+    },
+    {
       "key": "LC-369",
       "name": "Web Apps",
       "when": "the staff operations portal (creator and brand portals later), and Webflow design and CMS work on livingcozy.com: page templates, the Designer, CMS structure, site custom code, page speed"
