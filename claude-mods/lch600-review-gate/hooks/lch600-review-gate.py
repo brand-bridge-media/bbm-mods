@@ -8,7 +8,7 @@ update, the PR's own file list and patches from the connector). A change counts 
 such as a new `test-*.yml`; `append_ok`: a file that only gains lines, such as a new row in
 `risk_tiers.json`). If anything counts, the PR body must carry one line per reviewed ticket:
 
-    LCH-600-Review: <KEY> accepted | rebutted | skipped
+    LCH-600-Review: <KEY> accepted | rebutted | escalated | skipped
 
 and this session's Jira calls must show the exchange on <KEY>, read comment by comment:
   * the session wrote a comment starting `[LCH-600 review request]` on <KEY>;
@@ -17,6 +17,10 @@ and this session's Jira calls must show the exchange on <KEY>, read comment by c
   * rebutted: as accepted, plus a `[LCH-600 feedback]` comment created after the session's latest
     response (LCH-600 answered the argument);
   * skipped: the session wrote a comment starting `Skipping LCH-600 review:` plus a reason.
+  * ROUND LIMIT (operator decision 2026-11-18): at most 3 rounds of feedback and response. A 4th response
+    is a gap; still disagreeing after LCH-600's 3rd feedback goes to the operator with both positions and
+    a recommendation, whose call the session records in a comment starting `[LCH-600 operator ruling]`.
+  * escalated: 3 feedback comments after the request, then that operator-ruling comment after the 3rd.
 Quoting the marker mid-comment (a request that says "reply with [LCH-600 feedback]") never counts.
 
 WHY. Operator decision (2026-11-17): every change to how code is tested, merged or deployed is reviewed by
@@ -56,7 +60,7 @@ TAG = "[mod:lch600-review-gate]"
 PATHS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paths.json")
 EXEMPT_TITLE = re.compile(r"^\s*LCH-\d+\b", re.I)
 EXEMPT_BRANCH = re.compile(r"^lch-?\d+", re.I)
-LINE_RE = re.compile(r"^\s*LCH-600-Review:\s*([A-Z][A-Z0-9]+-\d+)\s+(accepted|rebutted|skipped)\b", re.I | re.M)
+LINE_RE = re.compile(r"^\s*LCH-600-Review:\s*([A-Z][A-Z0-9]+-\d+)\s+(accepted|rebutted|escalated|skipped)\b", re.I | re.M)
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 
 
@@ -66,6 +70,12 @@ def _marker(name: str) -> re.Pattern:
 
 
 REQUEST, FEEDBACK, RESPONSE = _marker("LCH-600 review request"), _marker("LCH-600 feedback"), _marker("LCH-600 response")
+MAX_ROUNDS = 3  # operator decision 2026-11-18: past this, the operator decides
+RULING = _marker("LCH-600 operator ruling")
+ARGUE = re.compile(RESPONSE.pattern + r"\s*ARGUE\b")  # capitals, as step 4 asks
+# Honour system: every session posts under one Jira account, so who wrote a ruling cannot be proven from Jira.
+# The quote makes it checkable by a person, and the CI side (LC-2209) is the real backstop.
+QUOTE = re.compile(r"^\s*> ?\S", re.M)
 SKIP = re.compile(r"^\s*Skipping LCH-600 review:\s*\S", re.I)
 JIRA_URL = "https://b-b-m.atlassian.net/browse/"
 STEP_TIMEOUT = 8
@@ -282,6 +292,14 @@ def review_lines(body: str) -> list[tuple[str, str]]:
     return [(k.upper(), v.lower()) for k, v in LINE_RE.findall(body or "")]
 
 
+ESC_RE = re.compile(r"^\s*LCH-600-Review:\s*([A-Z][A-Z0-9]+-\d+)\s+escalated\s+(\d+)\b", re.I | re.M)
+
+
+def escalation_ids(body: str) -> dict[str, str]:
+    """Key -> the ruling comment id an `escalated` line names (round 3, item 2a: it must match a real ruling)."""
+    return {k.upper(): v for k, v in ESC_RE.findall(body or "")}
+
+
 # ---- Jira evidence --------------------------------------------------------------------------------------------------
 
 def _op(name: str, inp: dict) -> tuple[str, dict]:
@@ -371,7 +389,7 @@ def evidence(rows: list[dict]) -> dict:
     ev: dict[str, dict] = {}
 
     def slot(key):
-        return ev.setdefault(key, {"requests": [], "responses": [], "skipped": False, "read": {}, "mine": set()})
+        return ev.setdefault(key, {"requests": [], "responses": [], "rulings": [], "skipped": False, "read": {}, "mine": set()})
 
     for name, inp, text in transcript_reader.tool_calls_with_results(rows):
         if not name.startswith("mcp__Atlassian"):
@@ -388,6 +406,8 @@ def evidence(rows: list[dict]) -> dict:
                 s["requests"].append(str(res["id"]))
             elif RESPONSE.match(body):
                 s["responses"].append(str(res["id"]))
+            elif RULING.match(body):
+                s["rulings"].append(str(res["id"]))
             elif SKIP.match(body):
                 s["skipped"] = True
         else:
@@ -404,6 +424,11 @@ def _latest(s: dict, ids: list[str]) -> datetime | None:
     return max(times) if times else None
 
 
+def _first(s: dict, ids: list[str]) -> datetime | None:
+    times = [s["read"][i][1] for i in ids if i in s["read"] and s["read"][i][1] is not None]
+    return min(times) if times else None
+
+
 def _feedback_after(s: dict, t: datetime) -> datetime | None:
     """The FIRST feedback comment created after `t`, or None."""
     times = [c for cid, (b, c) in s["read"].items()
@@ -411,11 +436,22 @@ def _feedback_after(s: dict, t: datetime) -> datetime | None:
     return min(times) if times else None
 
 
-def missing_evidence(lines: list[tuple[str, str]], rows: list[dict]) -> list[str]:
+def _feedbacks_after(s: dict, t: datetime) -> list[datetime]:
+    """Every feedback comment created after `t`, oldest first: one per round."""
+    return sorted(c for cid, (b, c) in s["read"].items()
+                  if cid not in s["mine"] and c is not None and c > t and FEEDBACK.match(b))
+
+
+def _mine_after(s: dict, ids: list[str], t: datetime) -> list[datetime]:
+    return [s["read"][i][1] for i in ids if i in s["read"] and s["read"][i][1] is not None and s["read"][i][1] > t]
+
+
+def missing_evidence(lines: list[tuple[str, str]], rows: list[dict], esc_ids: dict | None = None) -> list[str]:
     ev = evidence(rows)
+    esc_ids = esc_ids or {}
     gaps = []
     for key, verdict in lines:
-        s = ev.get(key) or {"requests": [], "responses": [], "skipped": False, "read": {}, "mine": set()}
+        s = ev.get(key) or {"requests": [], "responses": [], "rulings": [], "skipped": False, "read": {}, "mine": set()}
         if verdict == "skipped":
             if not s["skipped"]:
                 gaps.append(f"{key} skipped: no `Skipping LCH-600 review: <reason>` comment from this session on {key}")
@@ -423,6 +459,36 @@ def missing_evidence(lines: list[tuple[str, str]], rows: list[dict]) -> list[str
         req = _latest(s, s["requests"])
         if req is None:
             gaps.append(f"{key} {verdict}: this session has not posted a `[LCH-600 review request]` comment on {key}")
+            continue
+        # Rounds count from this session's FIRST request on the key, so a fresh request cannot reset the cap
+        # (LCH-600 round 3, item 1). A genuinely new change gets a new ticket key, and with it a new count.
+        first = _first(s, s["requests"])
+        # The cap applies to every verdict, `escalated` included (independent review on PR #3849): a 4th response
+        # means the session kept arguing instead of escalating. The way out is the operator, recorded as a skip.
+        if len(_mine_after(s, s["responses"], first)) > MAX_ROUNDS:
+            gaps.append(f"{key} {verdict}: more than {MAX_ROUNDS} responses on {key}, so the round limit is already "
+                        "broken. Give the operator a NEEDS YOU with both positions and your recommendation; once they "
+                        "decide, comment `Skipping LCH-600 review: operator ruling <comment id>` and use `skipped`")
+            continue
+        if verdict == "escalated":
+            rounds = _feedbacks_after(s, first)
+            rid = esc_ids.get(key)
+            ruling = s["read"].get(rid) if rid in s["rulings"] else None
+            argued = [i for i in s["responses"] if i in s["read"] and s["read"][i][1] is not None
+                      and s["read"][i][1] > first and ARGUE.match(s["read"][i][0])]
+            if len(rounds) < MAX_ROUNDS:
+                gaps.append(f"{key} escalated: only {len(rounds)} of {MAX_ROUNDS} feedback rounds on {key}; the operator "
+                            "is asked only after LCH-600's third feedback still leaves you disagreeing")
+            elif not argued:
+                gaps.append(f"{key} escalated: no `[LCH-600 response] ARGUE` from this session on {key}; escalation is "
+                            "for a disagreement, so accept the feedback instead")
+            elif ruling is None or ruling[1] is None or ruling[1] <= rounds[MAX_ROUNDS - 1]:
+                gaps.append(f"{key} escalated: the PR line must name a `[LCH-600 operator ruling]` comment this session "
+                            f"posted on {key} after the third feedback (`escalated <ruling comment id>`). Post it yourself, "
+                            "after bringing both positions and your recommendation to the operator")
+            elif not QUOTE.search(ruling[0]):
+                gaps.append(f"{key} escalated: the ruling comment must quote the operator's words on a line starting "
+                            "with `> `")
             continue
         fb = _feedback_after(s, req)
         if fb is None:
@@ -452,8 +518,12 @@ def flow_text(files: list[str], ask_seconds: bool = False) -> str:
         "3. Check back with send_later at 5, 10, 20, 40 and 60 minutes. After that, stop polling and give the "
         "operator a NEEDS YOU banner saying the review is waiting.\n"
         "4. Answer on the ticket with a comment that STARTS with `[LCH-600 response] ACCEPT` (capitals), or "
-        "`[LCH-600 response] ARGUE` plus your evidence. If you argue, wait for LCH-600's next feedback comment.\n"
-        "5. Add one line per ticket to the PR body, `LCH-600-Review: LC-1234 accepted <feedback comment id>` (or `rebutted <id>`), and "
+        "`[LCH-600 response] ARGUE` plus your evidence. If you argue, wait for LCH-600's next feedback comment. "
+        "At most 3 rounds: still disagreeing after LCH-600's third feedback, stop and give the operator a NEEDS YOU "
+        "with both positions and your recommendation, record their call in a comment that STARTS with "
+        "`[LCH-600 operator ruling]` that you post yourself, quoting their words on a `> ` line, and use "
+        "`escalated <ruling comment id>` below.\n"
+        "5. Add one line per ticket to the PR body, `LCH-600-Review: LC-1234 accepted <feedback comment id>` (or `rebutted <id>`, or `escalated <ruling comment id>`), and "
         "repeat this call.\n"
         "A T2 PR: finish this review before the approval request goes out, so the operator approves once. "
         "Urgent: comment `Skipping LCH-600 review: <reason>` on the ticket and use `LCH-600-Review: LC-1234 "
@@ -481,7 +551,7 @@ def decide(payload: dict, changes: list[dict] | None, rules: dict) -> dict | Non
     if not lines:
         reason = flow_text(hit, any(_match(h, r["ask_seconds"]) for h in hit))
     else:
-        gaps = missing_evidence(lines, transcript_reader.rows_for(payload))
+        gaps = missing_evidence(lines, transcript_reader.rows_for(payload), escalation_ids(str(inp.get("body") or "")))
         if not gaps:
             return None
         reason = ("The PR body names an LCH-600 review, but this session's Jira calls do not show it. Missing:\n- "
@@ -592,11 +662,13 @@ def changed_files(payload: dict, r: dict, run=_run) -> list[dict] | None:
     base = str(inp.get("base") or "main").strip() or "main"
     if not top or not branch:
         return None
-    for ref in (branch, f"origin/{branch}"):
-        rc, _ = run(["git", "-C", top, "rev-parse", "--verify", "--quiet", ref])
-        if rc == 0:
-            return changes_from_git(top, base, ref, r, run)
-    return None
+    # Diff what the PR will contain: the PUSHED branch against the CURRENT base, both fetched now. A local branch
+    # of the same name can be stale (project threads reuse branch names) and a stale origin/<base> widens the
+    # three-dot diff to other people's merges; both misfired in shadow (LC-2207 comment 194233). No fetch, no guess.
+    rc, _ = run(["git", "-C", top, "fetch", "-q", "origin", base, branch])
+    if rc != 0:
+        return None
+    return changes_from_git(top, base, f"origin/{branch}", r, run)
 
 
 def replay(since: str, rules: dict, owner: str = "brand-bridge-media", repo: str = "bbm-infrastructure",
@@ -881,6 +953,55 @@ def _selftest() -> int:
     check("rebutted: needs LCH-600's answer after it", len(missing_evidence([("LC-12", "rebutted")], req + fb + resp)), 1)
     answer = _read("LC-12", [("103", "[LCH-600 feedback] fair, keep it", T.format(20))])
     check("rebutted: answered", missing_evidence([("LC-12", "rebutted")], req + fb + resp + answer), [])
+
+    def rounds(n_fb, n_resp, ruling_at=None):
+        rows = list(req)
+        rows += _read("LC-12", [(str(200 + i), f"[LCH-600 feedback] round {i + 1}", T.format(10 * i + 2)) for i in range(n_fb)])
+        for i in range(n_resp):
+            rows += _write("LC-12", f"[LCH-600 response] ARGUE {i + 1}", str(300 + i), T.format(10 * i + 5))
+        if ruling_at is not None:
+            rows += _write("LC-12", "[LCH-600 operator ruling] keep the check\n> keep it, the operator", "400", T.format(ruling_at))
+        return rows
+    E = {"LC-12": "400"}
+    check("round limit: 3 rounds then accept is fine", missing_evidence([("LC-12", "accepted")], rounds(3, 3)), [])
+    check("round limit: a 4th response is a gap", "round limit is already broken" in " ".join(
+          missing_evidence([("LC-12", "rebutted")], rounds(4, 4))), True)
+    check("round limit: 4th response gaps accepted too", len(missing_evidence([("LC-12", "accepted")], rounds(4, 4))), 1)
+    check("escalated: ruling after the 3rd feedback", missing_evidence([("LC-12", "escalated")], rounds(3, 2, 25), E), [])
+    check("escalated: too early, 2 rounds", "only 2 of 3" in " ".join(
+          missing_evidence([("LC-12", "escalated")], rounds(2, 2, 25), E)), True)
+    check("escalated: ruling before the 3rd feedback does not count", "operator ruling" in " ".join(
+          missing_evidence([("LC-12", "escalated")], rounds(3, 2, 21), E)), True)
+    check("escalated: a 4th response breaks the cap", "round limit is already broken" in " ".join(
+          missing_evidence([("LC-12", "escalated")], rounds(3, 4, 40), E)), True)
+    check("escalated: no ruling", len(missing_evidence([("LC-12", "escalated")], rounds(3, 3), E)), 1)
+    check("escalated: PR line names another id", "must name" in " ".join(
+          missing_evidence([("LC-12", "escalated")], rounds(3, 2, 25), {"LC-12": "999"})), True)
+    check("escalated: PR line names no id", "must name" in " ".join(
+          missing_evidence([("LC-12", "escalated")], rounds(3, 2, 25))), True)
+    check("escalated: never argued", "no `[LCH-600 response] ARGUE`" in " ".join(
+          missing_evidence([("LC-12", "escalated")], rounds(3, 0, 25), E)), True)
+    accept_only = rounds(3, 0, 25) + _write("LC-12", "[LCH-600 response] ACCEPT", "310", T.format(23))
+    check("escalated: ACCEPT is not ARGUE", "ARGUE" in " ".join(
+          missing_evidence([("LC-12", "escalated")], accept_only, E)), True)
+    unquoted = rounds(3, 2) + _write("LC-12", "[LCH-600 operator ruling] fine", "400", T.format(25))
+    check("escalated: ruling without a > quote", "`> `" in " ".join(
+          missing_evidence([("LC-12", "escalated")], unquoted, E)), True)
+    undated = {"read": {"1": ("x", None), "2": ("x", datetime(2026, 1, 2))}}
+    check("first: an undated id is skipped", _first(undated, ["1", "2"]), datetime(2026, 1, 2))
+    check("mine_after: an undated id is skipped", _mine_after(undated, ["1", "2"], datetime(2026, 1, 1)), [datetime(2026, 1, 2)])
+    check("escalation id parsed", escalation_ids("x\nLCH-600-Review: lc-12 escalated 400\nLCH-600-Review: LC-9 accepted 5"),
+          {"LC-12": "400"})
+    # LCH-600 round 3, item 1: five request/feedback/ARGUE pairs, each with a fresh request, must not reset the cap
+    reset = []
+    for i in range(5):
+        reset += _write("LC-12", "[LCH-600 review request] again", str(500 + i), T.format(10 * i))
+        reset += _read("LC-12", [(str(600 + i), "[LCH-600 feedback] no", T.format(10 * i + 2))])
+        reset += _write("LC-12", "[LCH-600 response] ARGUE", str(700 + i), T.format(10 * i + 5))
+    check("round limit: a fresh request does not reset the cap", "round limit is already broken" in " ".join(
+          missing_evidence([("LC-12", "accepted")], reset)), True)
+    check("escalated: needs a request", "has not posted" in " ".join(missing_evidence([("LC-12", "escalated")], [])), True)
+    check("escalated line parsed", review_lines("LCH-600-Review: LC-12 escalated"), [("LC-12", "escalated")])
     skip = _write("LC-12", "Skipping LCH-600 review: prod down", "104", T.format(1))
     check("skipped with comment", missing_evidence([("LC-12", "skipped")], skip), [])
     check("skipped without comment", len(missing_evidence([("LC-12", "skipped")], [])), 1)
@@ -929,7 +1050,8 @@ def _selftest() -> int:
           and "NEEDS YOU" in d["permissionDecisionReason"], True)
     check("deny points to the protocol doc", "MERGE-QUEUE.md" in d["permissionDecisionReason"], True)
     check("deny names the response keywords and the sweep cadence",
-          "[LCH-600 response] ACCEPT" in d["permissionDecisionReason"]
+          "At most 3 rounds" in d["permissionDecisionReason"] and "[LCH-600 operator ruling]" in d["permissionDecisionReason"]
+          and "[LCH-600 response] ACCEPT" in d["permissionDecisionReason"]
           and "[LCH-600 response] ARGUE" in d["permissionDecisionReason"]
           and "every 30 minutes" in d["permissionDecisionReason"], True)
     check("deny orders it before T2 approval", "T2" in d["permissionDecisionReason"], True)
@@ -946,6 +1068,8 @@ def _selftest() -> int:
     check("unreadable diff: note, no deny", "permissionDecision" in nc, False)
     check("unreadable diff: says NOT CHECKED", "NOT CHECKED" in nc["additionalContext"], True)
     check("line with evidence: allow", decide(with_body("LCH-600-Review: LC-12 accepted", req + fb + resp), wf, enforce), None)
+    check("escalated through decide: the PR body's ruling id is read", decide(with_body(
+          "LCH-600-Review: LC-12 escalated 400", rounds(3, 2, 25)), wf, enforce), None)
     d2 = decide(with_body("LCH-600-Review: LC-12 accepted", req + fb), wf, enforce)["hookSpecificOutput"]
     check("line without evidence: deny", d2.get("permissionDecision"), "deny")
     check("line without evidence: names the gap", "[LCH-600 response]" in d2["permissionDecisionReason"], True)
@@ -986,14 +1110,15 @@ def _selftest() -> int:
 
     ok = {"--show-toplevel": (0, "/repo\n"), "get-url": (0, "git@github.com:o/r.git\n"), "--verify": (0, ""),
           "--name-status": (0, "A\t.github/workflows/test-a.yml\nM\tscripts/run_selftests.sh\nD\told.sh\n"),
-          "-U0": (0, "@@ -3 +3,2 @@\n+x\n")}
-    show = {"origin/main:scripts/ci/risk_tiers.json": (0, '{"tier2": []}'), "b:scripts/ci/risk_tiers.json": (0, '{"tier2": ["z"]}')}
+          "-U0": (0, "@@ -3 +3,2 @@\n+x\n"), "fetch": (0, "")}
+    show = {"origin/main:scripts/ci/risk_tiers.json": (0, '{"tier2": []}'),
+            "origin/b:scripts/ci/risk_tiers.json": (0, '{"tier2": ["z"]}')}
     tiers_ok = dict(ok, **{"--name-status": (0, "M\tscripts/ci/risk_tiers.json\n")}, **show)
     run, _ = fake(tiers_ok)
     got = changed_files({"tool_input": {"owner": "o", "repo": "r", "head": "b"}}, infra, run)
     check("git: json_grow reads base and head", (got[0]["base_text"], got[0]["head_text"]), ('{"tier2": []}', '{"tier2": ["z"]}'))
     check("git: json_grow file passes end to end", gated_changes(got, infra), [])
-    run, _ = fake(dict(tiers_ok, **{"b:scripts/ci/risk_tiers.json": (128, "")}))
+    run, _ = fake(dict(tiers_ok, **{"origin/b:scripts/ci/risk_tiers.json": (128, "")}))
     got = changed_files({"tool_input": {"owner": "o", "repo": "r", "head": "b"}}, infra, run)
     check("git: unreadable head text keeps it gated", gated_changes(got, infra), ["scripts/ci/risk_tiers.json"])
     run, seen = fake(ok)
@@ -1001,10 +1126,14 @@ def _selftest() -> int:
     check("git: statuses read", [(c["path"], c["status"]) for c in got],
           [(".github/workflows/test-a.yml", "A"), ("scripts/run_selftests.sh", "M"), ("old.sh", "D")])
     check("git: modified file's added lines read", got[1]["added"], ["x"])
-    check("git: diff against base", any("origin/main...lc1-x" in a for a in seen), True)
+    check("git: diff of the pushed branch against base", any("origin/main...origin/lc1-x" in a for a in seen), True)
+    check("git: base and branch fetched first", ["git", "-C", "/repo", "fetch", "-q", "origin", "main", "lc1-x"] in seen, True)
+    run, _ = fake(dict(ok, fetch=(1, "")))
+    check("git: failed fetch gives None (no guess from stale refs)",
+          changed_files({"tool_input": {"owner": "o", "repo": "r", "head": "b"}}, infra, run), None)
     run, seen = fake(ok)
     changed_files({"tool_input": {"owner": "o", "repo": "r", "head": "b", "base": "dev"}}, infra, run)
-    check("git: base honoured", any("origin/dev...b" in a for a in seen), True)
+    check("git: base honoured", any("origin/dev...origin/b" in a for a in seen), True)
     run, _ = fake(dict(ok, **{"-U0": (128, "")}))
     check("git: failed hunk read gives None", changed_files({"tool_input": {"owner": "o", "repo": "r", "head": "b"}}, infra, run), None)
     run, _ = fake(dict(ok, **{"--name-status": (128, "")}))
