@@ -13,7 +13,8 @@ export const DENY =
   '[mod:refresh-start-path-guard] refresh-run.yml starts only through the github-dispatch bridge (LC-1902, ' +
   'operator decision 2026-10-22), so dispatch-watch follows the run and warns if it finishes in under 2 minutes. ' +
   'Start it with execute_sql: net.http_post to /functions/v1/github-dispatch?secret= plus the Vault ' +
-  "edge_function_shared_secret read in the same statement, body {\"workflow\":\"refresh-run.yml\",\"inputs\":{...}}. " +
+  "edge_function_shared_secret read in the same statement, body {\"workflow\":\"refresh-run.yml\",\"inputs\":{...}}, " +
+  'timeout_milliseconds := 30000 (the 5000 ms default pages a timeout alarm). ' +
   'Exact call: the header of bbm-infrastructure/supabase/functions/github-dispatch/index.ts. ' +
   'Re-running or cancelling an existing run is not blocked.'
 

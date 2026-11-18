@@ -50,6 +50,8 @@ test('the refusal names the mod, the decision and the bridge', () => {
   expect(DENY).toContain('LC-1902')
   expect(DENY).toContain('github-dispatch')
   expect(DENY).toContain('dispatch-watch')
+  // LC-1938 incident 6b1a672a: a call copied without it gets pg_net's 5000 ms default and times out.
+  expect(DENY).toContain('timeout_milliseconds := 30000')
 })
 
 test('end to end: the MCP and Bash starts are denied before they run; a re-run passes through', async ($: any, on: any) => {
