@@ -446,13 +446,14 @@ def flow_text(files: list[str], ask_seconds: bool = False) -> str:
         f"reviews it first (operator decision 2026-11-17, LC-2207). Pushing the branch is fine. Protocol: {GUIDE}.\n"
         "1. On each Jira story this PR serves, post a comment that STARTS with `[LCH-600 review request]`: what "
         "changes and why, the files, the expected effect on PR wait time, links to the stories.\n"
-        "2. Give the operator ONE line to paste into the LCH-600 project: `Review LC-1234, LC-1235: read the "
-        "review request comment on each ticket and answer it there.`\n"
-        "3. Check back with send_later at 5, 10, 20 and 40 minutes. After that, stop polling and give the "
+        "2. Wake the LCH-600 review desk (LCH-722) with send_message(session_id=\"session_01LpqYrCPF63BFU9BJKCpLK7\", "
+        "message=\"LCH-600 review request on LC-1234, LC-1235\"). No send_message tool? Do nothing: the desk sweeps "
+        "Jira every 30 minutes. Never ask the operator to relay it.\n"
+        "3. Check back with send_later at 5, 10, 20, 40 and 60 minutes. After that, stop polling and give the "
         "operator a NEEDS YOU banner saying the review is waiting.\n"
-        "4. Answer on the ticket with a comment that STARTS with `[LCH-600 response]`: accept, or argue back "
-        "with evidence. If you argue, wait for LCH-600's next feedback comment.\n"
-        "5. Add one line per ticket to the PR body, `LCH-600-Review: LC-1234 accepted` (or `rebutted`), and "
+        "4. Answer on the ticket with a comment that STARTS with `[LCH-600 response] ACCEPT` (capitals), or "
+        "`[LCH-600 response] ARGUE` plus your evidence. If you argue, wait for LCH-600's next feedback comment.\n"
+        "5. Add one line per ticket to the PR body, `LCH-600-Review: LC-1234 accepted <feedback comment id>` (or `rebutted <id>`), and "
         "repeat this call.\n"
         "A T2 PR: finish this review before the approval request goes out, so the operator approves once. "
         "Urgent: comment `Skipping LCH-600 review: <reason>` on the ticket and use `LCH-600-Review: LC-1234 "
@@ -921,9 +922,16 @@ def _selftest() -> int:
     d = decide(with_body(""), wf, enforce)["hookSpecificOutput"]
     check("enforce, no line: deny", d.get("permissionDecision"), "deny")
     check("deny names the mod", d["permissionDecisionReason"].startswith(TAG), True)
-    check("deny backs off then stops", "5, 10, 20 and 40" in d["permissionDecisionReason"]
+    check("deny wakes the review desk, not the operator (LCH-722)",
+          "session_01LpqYrCPF63BFU9BJKCpLK7" in d["permissionDecisionReason"]
+          and "paste" not in d["permissionDecisionReason"], True)
+    check("deny backs off then stops", "5, 10, 20, 40 and 60" in d["permissionDecisionReason"]
           and "NEEDS YOU" in d["permissionDecisionReason"], True)
     check("deny points to the protocol doc", "MERGE-QUEUE.md" in d["permissionDecisionReason"], True)
+    check("deny names the response keywords and the sweep cadence",
+          "[LCH-600 response] ACCEPT" in d["permissionDecisionReason"]
+          and "[LCH-600 response] ARGUE" in d["permissionDecisionReason"]
+          and "every 30 minutes" in d["permissionDecisionReason"], True)
     check("deny orders it before T2 approval", "T2" in d["permissionDecisionReason"], True)
     check("plain gate: no seconds question", "seconds" in d["permissionDecisionReason"], False)
     qc = decide(with_body(""), [ch("scripts/ci/quick_checks.d/x.sh", "A")], enforce)["hookSpecificOutput"]
