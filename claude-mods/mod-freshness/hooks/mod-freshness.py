@@ -11,9 +11,16 @@ One job: compare each loaded bbm mod with the mirror's current copy of it, file 
 
 Payload on stdin (JSON):
   {"mode": "snapshot", "plugin_dirs": "<CLAUDE_CODE_PLUGIN_DIRS>"}
-      -> {"loaded": {"<mod>": "<digest>"}}   fingerprint of what was loaded, taken at session start
-  {"mode": "check", "loaded": {...}}
-      -> {"stale": [...], "fresh": [...], "not_checked": {"<mod>": "<reason>"}, "mirror": "<subject>"}
+      -> {"loaded": {"<mod>": "<digest>"}, "account": bool}   fingerprint of what was loaded, at session start
+  {"mode": "check", "loaded": {...}, "account": bool}
+      -> {"stale": [...], "fresh": [...], "missing": [...], "account": bool,
+          "not_checked": {"<mod>": "<reason>"}, "mirror": "<subject>"}
+
+"account" (LC-2217, 2026-11-18): project threads get no CLAUDE_CODE_PLUGIN_DIRS. They load the
+claude.ai ACCOUNT copy of the mods from ~/.claude/plugins/synced/<org>_<id>/<mod>/, and that copy
+does not follow the mirror (it sat 19 hours and 13 mods behind). A fresh session does not fix it;
+only the operator refreshing or re-uploading on claude.ai does. So when any mod came from the
+account copy, the check also lists mirror mods the session never loaded ("missing").
 
 Optional payload keys for tests: home, cache_dir, mirror_url.
 Fails open: any error is a NOT CHECKED line, never a "fresh".
@@ -30,7 +37,8 @@ import tarfile
 
 MARKETPLACE = 'bbm-mods'
 DEFAULT_URL = 'https://github.com/brand-bridge-media/bbm-mods.git'
-SKIP_DIRS = {'.git', 'node_modules', '__pycache__'}
+# .in_use: the marker directory the account sync drops into each plugin it loads (LC-2217).
+SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.in_use'}
 GIT_TIMEOUT = 45
 
 
@@ -64,13 +72,35 @@ def plugin_name(d: str) -> str | None:
         return None
 
 
+def synced_dirs(home: str) -> dict[str, str]:
+    """mod name -> directory, for the claude.ai account copy a project thread syncs at start.
+
+    Every synced plugin is listed (marketplace and hand-uploaded alike); check() ignores the
+    names the mirror does not ship, so Anthropic's own plugins never count.
+    """
+    out: dict[str, str] = {}
+    root = os.path.join(home, '.claude', 'plugins', 'synced')
+    try:
+        for org in sorted(os.listdir(root)):
+            base = os.path.join(root, org)
+            for entry in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+                d = os.path.join(base, entry)
+                name = plugin_name(d) if os.path.isdir(d) else None
+                if name:
+                    out[name] = d
+    except OSError:
+        pass
+    return out
+
+
 def loaded_dirs(home: str, plugin_dirs: str) -> dict[str, str]:
     """mod name -> the directory its code was loaded from.
 
-    Installed @bbm-mods plugins first; a CLAUDE_CODE_PLUGIN_DIRS entry (bbm-infrastructure
-    sessions load the checkout copy) replaces the installed one of the same name.
+    Account copy (project threads) first, then installed @bbm-mods plugins; a
+    CLAUDE_CODE_PLUGIN_DIRS entry (bbm-infrastructure sessions load the checkout copy) replaces
+    an earlier one of the same name, as it shadows it at load time.
     """
-    out: dict[str, str] = {}
+    out: dict[str, str] = dict(synced_dirs(home))
     try:
         with open(os.path.join(home, '.claude', 'plugins', 'installed_plugins.json'), encoding='utf-8') as f:
             plugins = json.load(f).get('plugins', {})
@@ -89,12 +119,15 @@ def loaded_dirs(home: str, plugin_dirs: str) -> dict[str, str]:
 
 def snapshot(home: str, plugin_dirs: str) -> dict:
     loaded = {}
+    synced = os.path.join(home, '.claude', 'plugins', 'synced') + os.sep
+    account = False
     for name, d in loaded_dirs(home, plugin_dirs).items():
         try:
             loaded[name] = digest_files(read_dir(d))
         except OSError:
             continue
-    return {'loaded': loaded}
+        account = account or d.startswith(synced)
+    return {'loaded': loaded, 'account': account}
 
 
 def mirror_url(home: str) -> str:
@@ -143,8 +176,8 @@ def mirror_mods(cache: str) -> dict[str, str]:
     return {n: digest_files(f) for n, f in files.items()}
 
 
-def check(loaded: dict, home: str, cache: str, url: str) -> dict:
-    out: dict = {'stale': [], 'fresh': [], 'not_checked': {}, 'mirror': ''}
+def check(loaded: dict, home: str, cache: str, url: str, account: bool = False) -> dict:
+    out: dict = {'stale': [], 'fresh': [], 'missing': [], 'account': bool(account), 'not_checked': {}, 'mirror': ''}
     if not isinstance(loaded, dict):
         out['not_checked']['*'] = f'malformed snapshot ({type(loaded).__name__}, expected an object)'
         return out
@@ -162,6 +195,8 @@ def check(loaded: dict, home: str, cache: str, url: str) -> dict:
         if name not in latest:
             continue  # not a bbm mod, or one the mirror has since dropped
         (out['fresh'] if loaded[name] == latest[name] else out['stale']).append(name)
+    if account:
+        out['missing'] = sorted(n for n in latest if n not in loaded)
     # Comparing nothing must never read like "all fresh".
     if not out['stale'] and not out['fresh']:
         out['not_checked']['*'] = 'no loaded mod is shipped by the mirror, so nothing was compared'
@@ -176,7 +211,8 @@ def main() -> int:
             result = snapshot(home, payload.get('plugin_dirs') or os.environ.get('CLAUDE_CODE_PLUGIN_DIRS', ''))
         else:
             cache = payload.get('cache_dir') or os.path.join(home, '.cache', 'mod-freshness', 'mirror')
-            result = check(payload.get('loaded') or {}, home, cache, payload.get('mirror_url') or mirror_url(home))
+            result = check(payload.get('loaded') or {}, home, cache, payload.get('mirror_url') or mirror_url(home),
+                           bool(payload.get('account')))
     except Exception as exc:  # fail open, loudly
         result = {'stale': [], 'fresh': [], 'not_checked': {'*': f'check crashed: {exc}'}, 'mirror': ''}
     print(json.dumps(result))
@@ -277,6 +313,26 @@ def selftest() -> int:
               json.dumps({MARKETPLACE: {'source': {'source': 'github', 'repo': 'acme/bbm-mods'}}}))
         ok(mirror_url(home) == 'https://github.com/acme/bbm-mods.git', 'mirror URL read from known_marketplaces')
         ok(mirror_url(os.path.join(tmp, 'nohome')) == DEFAULT_URL, 'mirror URL falls back to the default')
+
+        # LC-2217: a project thread loads the claude.ai account copy, with no plugin dirs.
+        thome = os.path.join(tmp, 'thread')
+        org = f'{thome}/.claude/plugins/synced/org_1'
+        shutil.copytree(f'{mirror}/claude-mods/beta', f'{org}/beta')
+        write(f'{org}/beta/hooks/__pycache__/x.pyc', 'ignored')
+        write(f'{org}/beta/.in_use/1234', '')
+        write(f'{org}/data/.claude-plugin/plugin.json', json.dumps({'name': 'data'}))  # an Anthropic plugin
+        write(f'{org}/manifest.json', '{}')
+        tsnap = snapshot(thome, '')
+        ok(sorted(tsnap['loaded']) == ['beta', 'data'] and tsnap['account'] is True, 'thread snapshot reads the account copy')
+        ok(snapshot(home, f'{checkout_beta}')['account'] is False, 'a session without the account copy is not flagged')
+        r = check(tsnap['loaded'], thome, cache, url, account=True)
+        ok(r['fresh'] == ['beta'] and r['missing'] == ['alpha'] and r['account'] is True, 'account copy: unloaded mirror mod is missing')
+        ok(check({'beta': snap['beta']}, home, cache, url)['missing'] == [], 'missing is reported only for the account copy')
+        write(f'{mirror}/claude-mods/beta/hooks/register.ts', '// beta v2\n')
+        sh(mirror, 'git', 'commit', '-qam', 'beta v2')
+        ok(check(tsnap['loaded'], thome, cache, url, account=True)['stale'] == ['beta'], 'account copy behind the mirror is stale')
+        both = snapshot(thome, f'{checkout_beta}')['loaded']
+        ok(both['beta'] == digest_files(read_dir(checkout_beta)), 'a plugin dir shadows the account copy')
 
         # main() end to end over stdin.
         proc = subprocess.run([sys.executable, '-I', os.path.abspath(__file__)], capture_output=True, text=True,

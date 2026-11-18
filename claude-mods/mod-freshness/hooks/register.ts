@@ -10,9 +10,12 @@ import { runArgs } from './py'
 // mod code its container installed at start. The Catalog orchestrator ran a fleet-tracker without
 // auto-track and with the old phone-push wording, and it read as "Claude ignores the mods".
 // This mod fingerprints the loaded mods at session start and, hourly, asks ./mod-freshness.py
-// whether the bbm-mods mirror now ships different code for any of them.
+// whether the bbm-mods mirror now ships different code for any of them. In a project thread the
+// mods come from the claude.ai account copy, which lags the mirror on its own (LC-2217), so there
+// the check also names mirror mods that were never loaded and routes the fix to the operator.
 
 const loaded = atom({ plugin: 'mod-freshness', key: 'loaded' } as const, {} as Fingerprints)
+const account = atom({ plugin: 'mod-freshness', key: 'account' } as const, false)
 const warned = atom({ plugin: 'mod-freshness', key: 'warned' } as const, [] as string[])
 
 // Wakes the host refused (submitted from inside a tool call) wait for the turn's end.
@@ -49,7 +52,7 @@ async function tick($: any) {
   busy = true
   try {
     const snap = await read($, loaded)
-    const v: Verdict | undefined = await runPy($, { mode: 'check', loaded: snap })
+    const v: Verdict | undefined = await runPy($, { mode: 'check', loaded: snap, account: await read($, account) })
     const nc = notCheckedText(v)
     // NOT CHECKED is never read as fresh, but an hourly network blip is not worth a wake: one toast.
     if (nc && !toldNotChecked) { toldNotChecked = true; toast($, nc) }
@@ -71,6 +74,7 @@ export const register: Register = on => {
     const dirs = (await $.env.get('CLAUDE_CODE_PLUGIN_DIRS')) ?? ''
     const snap = await runPy($, { mode: 'snapshot', plugin_dirs: dirs })
     if (snap?.loaded && typeof snap.loaded === 'object') await update($, loaded, () => snap.loaded)
+    if (snap?.account === true) await update($, account, () => true)
     if (!ticking) {
       ticking = true
       $.clock.every(CHECK_MS, () => { void tick($) })

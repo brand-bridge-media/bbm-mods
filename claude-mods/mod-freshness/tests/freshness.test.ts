@@ -7,6 +7,7 @@ import { CHECK_MS, newlyStale, notCheckedText, wakeText } from '../hooks/logic'
 
 const T0 = Date.parse('2026-10-22T18:00:00Z')
 const SNAP = { 'fleet-tracker': 'aaa', 'jira-closer': 'bbb' }
+const SNAP_ACCOUNT = { value: false }
 
 test('each stale mod is reported once; a newly stale one is reported again', () => {
   expect(newlyStale({ stale: ['fleet-tracker'] }, [])).toEqual(['fleet-tracker'])
@@ -21,6 +22,18 @@ test('the wake names the mods and the mirror head, and routes to the operator in
   expect(t).toContain('Sync from bbm-infrastructure@abc')
   expect(t).toContain('NEEDS YOU')
   expect(t).not.toContain('PushNotification')
+})
+
+test('account copy (project thread): missing mods count, and the fix goes to claude.ai, not a fresh session', () => {
+  expect(newlyStale({ stale: ['jira-epic-guard'], missing: ['pipeline-close-question'] }, [])).toEqual(['jira-epic-guard', 'pipeline-close-question'])
+  const t = wakeText(['jira-epic-guard', 'pipeline-close-question'],
+    { account: true, missing: ['pipeline-close-question'], mirror: 'Sync from bbm-infrastructure@abc' })
+  expect(t).toContain('account copy')
+  expect(t).toContain('Not loaded at all: pipeline-close-question.')
+  expect(t).toContain('Check for updates')
+  expect(t).toContain('NEEDS YOU')
+  expect(t).not.toContain('start a fresh session to pick them up')
+  expect(wakeText(['x'], {})).toContain('start a fresh session to pick them up')
 })
 
 test('NOT CHECKED is said, never silently read as fresh', () => {
@@ -38,7 +51,7 @@ function world(on: any, verdicts: unknown[]) {
   on('process.run', (_$: any, e: any) => {
     const p = JSON.parse(String(e.init?.stdin ?? '{}'))
     stdins.push(p)
-    const out = p.mode === 'snapshot' ? { loaded: SNAP } : verdicts.shift()
+    const out = p.mode === 'snapshot' ? { loaded: SNAP, account: SNAP_ACCOUNT.value } : verdicts.shift()
     return { value: { exitCode: 0, stdout: JSON.stringify(out ?? {}), stderr: '' } } as any
   })
   on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
@@ -58,7 +71,7 @@ test('end to end: snapshot at start, hourly check, one wake per newly stale mod'
   expect(w.stdins[0]).toEqual({ mode: 'snapshot', plugin_dirs: '/infra/claude-mods/fleet-tracker' })
 
   await w.clock.advance(CHECK_MS) // fresh: nothing said
-  expect(w.stdins[1]).toEqual({ mode: 'check', loaded: SNAP })
+  expect(w.stdins[1]).toEqual({ mode: 'check', loaded: SNAP, account: false })
   expect(w.prompts).toEqual([])
 
   await w.clock.advance(CHECK_MS) // fleet-tracker changed upstream: one wake
@@ -79,4 +92,19 @@ test('a check that cannot run toasts NOT CHECKED once and wakes nobody', async (
   await w.clock.advance(CHECK_MS)
   expect(w.prompts).toEqual([])
   expect(w.toasts.filter(t => t.includes('NOT CHECKED')).length).toBe(1)
+})
+
+test('a thread snapshot passes account through to the hourly check', async ($: any, on: any) => {
+  SNAP_ACCOUNT.value = true
+  try {
+    const w = world(on, [{ stale: [], fresh: ['fleet-tracker'], missing: ['pipeline-close-question'], account: true, not_checked: {} }])
+    await $.session.start({ source: 'startup', cwd: '/tmp' } as any)
+    await w.clock.advance(CHECK_MS)
+    expect(w.stdins[1]).toEqual({ mode: 'check', loaded: SNAP, account: true })
+    await ($ as any).turn.complete({ reason: 'answer', answer: 'done' })
+    await w.clock.advance(1)
+    expect(w.prompts.join('\n')).toContain('Not loaded at all: pipeline-close-question')
+  } finally {
+    SNAP_ACCOUNT.value = false
+  }
 })

@@ -7,19 +7,34 @@ export const RUN_TIMEOUT_MS = 60_000 // the check fetches the mirror over the ne
 export type Verdict = {
   stale?: string[]
   fresh?: string[]
+  /** Mirror mods this session never loaded; only reported for the account copy (LC-2217). */
+  missing?: string[]
+  /** The loaded mods came from the claude.ai account copy, which a fresh session does not refresh. */
+  account?: boolean
   not_checked?: Record<string, string>
   mirror?: string
 }
 
 /** Stale mods not yet reported this session. Each mod is reported once; a newly stale one is reported again. */
 export function newlyStale(v: Verdict | undefined, warned: readonly string[]): string[] {
-  return (v?.stale ?? []).filter(m => !warned.includes(m))
+  return [...(v?.stale ?? []), ...(v?.missing ?? [])].filter(m => !warned.includes(m))
 }
 
 /** The wake text for newly stale mods. */
 export function wakeText(stale: readonly string[], v: Verdict): string {
   const names = stale.join(', ')
   const head = v.mirror ? ` The mirror now ships: ${v.mirror}.` : ''
+  if (v.account) {
+    // LC-2217: a project thread loads the claude.ai account copy, which does not follow the mirror,
+    // so "start a fresh session" would load the same old code again.
+    const missing = (v.missing ?? []).filter(m => stale.includes(m))
+    const gone = missing.length ? ` Not loaded at all: ${missing.join(', ')}.` : ''
+    return `[mod:mod-freshness] This thread loaded the claude.ai account copy of the mods, and it is behind the ` +
+      `bbm-mods mirror for: ${names}.${head}${gone} A fresh thread loads the same old copy. ` +
+      'Tell the operator in chat, opening with the NEEDS YOU banner: on claude.ai Plugins, run Check for updates ' +
+      'on the bbm-mods marketplace (or upload the mod zip with Add > Upload plugin), then start a new thread. ' +
+      'See LC-2217. Until then, do the stale mod\'s job by hand where it matters.'
+  }
   return `[mod:mod-freshness] This session is running out-of-date mod code: ${names}.${head} ` +
     'Mods load once, when the container starts, so fixes merged since then are not active here. ' +
     'Tell the operator in chat, opening with the NEEDS YOU banner: start a fresh session to pick them up ' +

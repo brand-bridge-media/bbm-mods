@@ -64,6 +64,11 @@ new project thread with no install step. Measured: 37 of 37 synced, `jira-epic-g
   platform launches sessions with its own `=1`, which wins), a project `.claude/settings.json`, and a generic in-mod gate
   (the validator refuses a wrapped `on()`; a `plugin.register` gate cannot judge mods synced in its own batch).
 - Every mod's plugin.json carries `"author": { "name": "Brand Bridge Media" }`.
+- **The account copy does not follow the mirror on its own (LC-2217, measured 2026-11-18).** "Sync automatically"
+  was on, yet the account stayed on bbm-mods 336ea9d for 13 mirror pushes; plugin.json version bumps did not
+  help. After merging a mod change, the operator runs claude.ai Plugins > Add > Manage marketplaces > bbm-mods
+  `...` > **Check for updates** and confirms "Synced commit" equals bbm-mods `main`. That moved it 336ea9d to
+  66a7ddb in one click. `mod-freshness` wakes a thread whose mods lag the mirror or were never loaded.
 
 ## Layout
 
