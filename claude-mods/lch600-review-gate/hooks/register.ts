@@ -20,6 +20,43 @@ const FEEDBACK = /\\?\[LCH-600 feedback\\?\]/
 const MAX_ROWS = 200
 const MAX_TEXT = 100_000
 const rows = atom({ plugin: 'lch600-review-gate', key: 'rows' } as const, [] as Row[])
+// LC-2207 (found opening PR #3849): $.state does not survive a container restart, and a request this session
+// wrote can only be proven from its own record, so after a restart no session could pass the gate. The record
+// is saved to $.store (which outlives $.state) with this session's id, and read back when the live list is empty.
+const STORE_KEY = 'rows'
+
+// '' when the id cannot be read; an empty id never matches a save.
+async function sessionIdOf($: any): Promise<string> {
+  try { return String((await $.session.id()) ?? '') } catch { return '' }
+}
+
+// The live record, or this session's saved one after a restart. `ok` is false when the store could not be read,
+// so the writer keeps the last good save instead of overwriting it with a list that lost the request (LCH-600 on
+// LC-2242, item 2). Only rows shaped like transcript rows come back: a damaged store must not loosen the gate,
+// since the check fails open on bad input (item 3). One key holds one session's save, so two sessions sharing
+// a store overwrite each other (item 1; same as pr-ci-watch): the cost is the old false would-deny, never a pass.
+async function recorded($: any): Promise<{ list: Row[]; ok: boolean }> {
+  const live = await read($, rows)
+  if (live.length > 0) return { list: live, ok: true }
+  try {
+    const sessionId = await sessionIdOf($)
+    const saved: any = sessionId ? await $.store.get(STORE_KEY) : undefined
+    if (saved && saved.sessionId === sessionId && Array.isArray(saved.rows)) {
+      return { list: saved.rows.filter((r: any) => !!r && typeof r === 'object' && typeof r.type === 'string'
+        && !!r.message && typeof r.message === 'object') as Row[], ok: true }
+    }
+    return { list: live, ok: true }
+  } catch {
+    return { list: live, ok: false }
+  }
+}
+
+async function persist($: any, list: Row[]): Promise<void> {
+  try {
+    const sessionId = await sessionIdOf($)
+    if (sessionId) await $.store.set(STORE_KEY, { sessionId, rows: list })
+  } catch { /* saving is a convenience: the live record still works */ }
+}
 
 // --- $ helpers. They live in this file because the plugin validator follows $ only into functions
 // declared in the hook's own file (claude-code 2.1.292); ./py.ts stays pure.
@@ -86,16 +123,19 @@ export const register: Register = on => {
     // Keep only what the check can use: writes (comments), and reads that carry the feedback marker.
     if (!WRITE.test(tool_name) && !FEEDBACK.test(text)) return ran
     const id = String((e as any).tool_use_id ?? '')
-    await update($, rows, l => [...l,
+    const { list: base, ok } = await recorded($)
+    const next_ = [...base,
       { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: tool_name, input: tool_input }] } },
       { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: text.slice(0, MAX_TEXT) }] } },
-    ].slice(-MAX_ROWS))
+    ].slice(-MAX_ROWS) as Row[]
+    await update($, rows, () => next_)
+    if (ok) await persist($, next_)
     return ran
   // A recording failure must never change the call's outcome.
   }).catch(($, e, next) => next(e))
 
   on('classic.PreToolUse', { tool: /^mcp__(github|GitHub_Custom)__create_pull_request$/ }, async ($, e, next) => {
-    const v = await runCheck($, 'lch600-review-gate.py', { ...toolPayload(e as any), transcript_rows: await read($, rows) })
+    const v = await runCheck($, 'lch600-review-gate.py', { ...toolPayload(e as any), transcript_rows: (await recorded($)).list })
     shadowToast($, v)
     return preToolUse($, v) ?? next(e)
   // Fail open: a bug in the mod must never stop a tool call or a turn (runCheck already fails open).
@@ -110,7 +150,7 @@ export const register: Register = on => {
     const { tool_name, tool_input } = toolPayload(ev)
     const v = await runCheck($, 'lch600-review-gate.py', {
       tool_name, tool_input: { ...tool_input, head: pr.head, title: pr.title, body: pr.body },
-      pr_files: pr.files, transcript_rows: await read($, rows),
+      pr_files: pr.files, transcript_rows: (await recorded($)).list,
     })
     shadowToast($, v)
     return preToolUse($, v) ?? next(e)

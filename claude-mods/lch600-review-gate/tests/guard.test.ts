@@ -135,3 +135,56 @@ for (const [label, call, pr, isError] of [
     expect(w.reached.length).toBe(1)
   })
 }
+
+// LC-2207: the record must survive a container restart ($.state is lost; $.store is not), or a session that
+// posted its request before the restart could never pass the gate.
+function store(on: any, sid: string, saved?: unknown) {
+  const data: Record<string, unknown> = saved === undefined ? {} : { rows: saved }
+  on('store.get', ((_$: any, e: any) => ({ value: data[e.key] })) as any)
+  on('store.set', ((_$: any, e: any) => { data[e.key] = e.value; return { value: undefined } }) as any)
+  on('session.id', (() => ({ value: sid })) as any)
+  return data
+}
+
+test('recorded Jira writes are saved with the session id', async ($: any, on: any) => {
+  const data = store(on, 'session_a')
+  world(on, { stdout: '' }, '{"id": "101"}')
+  await $.tool.call({ tool: 'mcp__Atlassian__addCommentToJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5', commentBody: '[LCH-600 review request] x' })
+  const saved: any = data.rows
+  expect(saved.sessionId).toBe('session_a')
+  expect(saved.rows.length).toBe(2)
+})
+
+test('after a restart the saved record of the same session reaches the check', async ($: any, on: any) => {
+  const row = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__Atlassian__addCommentToJiraIssue', input: {} }] } }
+  store(on, 'session_a', { sessionId: 'session_a', rows: [row] })
+  const w = world(on, { stdout: '' })
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
+  expect(JSON.parse(w.runs[0]!.stdin).transcript_rows).toEqual([row])
+})
+
+test("another session's saved record is never used", async ($: any, on: any) => {
+  store(on, 'session_b', { sessionId: 'session_a', rows: [{ type: 'assistant' }] })
+  const w = world(on, { stdout: '' })
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
+  expect(JSON.parse(w.runs[0]!.stdin).transcript_rows).toEqual([])
+})
+
+test('a store that cannot be read keeps the last good save (LCH-600 on LC-2242, item 2)', async ($: any, on: any) => {
+  const old = { sessionId: 'session_a', rows: [{ type: 'assistant', message: { content: [] } }] }
+  const data: Record<string, unknown> = { rows: old }
+  on('store.get', (() => { throw new Error('store down') }) as any)
+  on('store.set', ((_$: any, e: any) => { data[e.key] = e.value; return { value: undefined } }) as any)
+  on('session.id', (() => ({ value: 'session_a' })) as any)
+  world(on, { stdout: '' }, '{"id": "101"}')
+  await $.tool.call({ tool: 'mcp__Atlassian__addCommentToJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5', commentBody: '[LCH-600 response] ok' })
+  expect(data.rows).toEqual(old)
+})
+
+test('damaged saved rows are dropped, good ones kept (item 3)', async ($: any, on: any) => {
+  const good = { type: 'assistant', message: { content: [] } }
+  store(on, 'session_a', { sessionId: 'session_a', rows: [good, 'junk', { type: 'user' }, { message: { content: [] } }, null] })
+  const w = world(on, { stdout: '' })
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
+  expect(JSON.parse(w.runs[0]!.stdin).transcript_rows).toEqual([good])
+})
