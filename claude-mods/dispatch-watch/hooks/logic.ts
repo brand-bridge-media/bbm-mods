@@ -15,6 +15,9 @@ export const FAST_MS = 2 * 60_000 // finished faster than this: likely did nothi
 export const REPLY_STALE_MS = 5 * 60_000 // pg_net never answered the status request: send another
 
 const FN_URL = 'https://tlcbwwgfqnasmiipgmmd.supabase.co/functions/v1/github-dispatch'
+// pg_net's default is 5 s; the bridge mints an App token and lists runs, which can take longer.
+// A status poll that hit 5 s paged as cron_http_timeout (incident 6b1a672a, 2026-11-18).
+export const STATUS_TIMEOUT_MS = 30_000
 
 /** The workflow a bridge DISPATCH names, or null (a status request is not a dispatch). */
 export function parseDispatch(query: string): string | null {
@@ -30,7 +33,7 @@ export function statusSql(w: Pick<Watch, 'workflow' | 'since'>): string {
   const body = JSON.stringify({ action: 'status', workflow: w.workflow, since: w.since }).replace(/'/g, "''")
   return `select net.http_post(url := '${FN_URL}?secret=' || (select decrypted_secret from vault.decrypted_secrets ` +
     `where name = 'edge_function_shared_secret'), headers := '{"Content-Type":"application/json"}'::jsonb, ` +
-    `body := '${body}'::jsonb) as req_id`
+    `body := '${body}'::jsonb, timeout_milliseconds := ${STATUS_TIMEOUT_MS}) as req_id`
 }
 
 export function replySql(reqId: number): string {

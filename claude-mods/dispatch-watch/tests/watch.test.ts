@@ -26,6 +26,8 @@ test('the status SQL reads the secret inside the statement and asks only for sta
   expect(q).toContain("name = 'edge_function_shared_secret'")
   expect(q).toContain('"action":"status"')
   expect(q).toContain(`"since":"${W.since}"`)
+  // Never pg_net's 5 s default: a slow bridge reply pages as cron_http_timeout (incident 6b1a672a).
+  expect(q).toContain('timeout_milliseconds := 30000)')
   expect(replySql(42.9)).toContain('where id = 42')
 })
 
