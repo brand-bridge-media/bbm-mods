@@ -3,6 +3,8 @@
   "_mode": "shadow = warn and toast `SHADOW would-deny`, never block. enforce = deny. Shadow ends on shadow_until: the selftest fails after that date while mode is still shadow, so the decision cannot be forgotten. Enforce bar: in the week's replay (python3 lch600-review-gate.py --replay --since 2026-11-17), at most 1 would-deny that a reviewer judges a false alarm.",
   "mode": "shadow",
   "shadow_until": "2026-11-24",
+  "_plan": "LCH-744 (operator decision 2026-11-19: no build without the building permit, enforced from day one, no shadow week): plan-stage half, hooks/plan_stage.py. An edit of a file this list would review (minus new_ok, append_ok and derived paths) is denied until the ci-speed desk has approved the session's PLAN (board verdict accepted or ship_after_fixes, or Jira request plus LCH-600 feedback, or a stated Skipping LCH-600 review). enforce = deny; shadow = kill switch short of disabling the mod (one note per session, selftest fails after shadow_until).",
+  "plan": {"mode": "enforce", "shadow_until": "2026-11-26"},
   "repos": {
     "brand-bridge-media/bbm-infrastructure": {
       "gate": [

@@ -13,13 +13,25 @@ import { blockReason, contextOf, decisionOf, parseOut, resultText, runArgs, toas
 // as transcript rows. A PR taken out of draft is checked too (the PR's head, title, body and files are read
 // through the GitHub connector, so it works without a local clone). Logic, rules and selftest:
 // ./lch600-review-gate.py, ./paths.json.
-const RECORD = /^mcp__Atlassian\w*__(getJiraIssue|listJiraIssueComments|searchJiraIssuesUsingJql|executeRead|addCommentToJiraIssue|addOrEditJiraIssueComment|executeWrite)$/
+// LCH-744: the plan-stage check also needs the calls that post a plan to the speed desk (an execute_sql that
+// calls ask_track('ci-speed', ...), or a PLAN: send_message to the desk) and the read of the desk's answer
+// (an execute_sql on track_request_messages). Only those are kept, never other SQL.
+const PLAN_CALL = /^mcp__(Supabase\w*__execute_sql|claude-code-remote__send_message)$/
+const PLAN_POST = /ask_track\s*\(\s*'ci-speed'|PLAN:|track_request_messages/i
+const EDIT = /^(Write|Edit|MultiEdit|NotebookEdit)$/
+const RECORD_ANY = /^mcp__(Atlassian\w*__(getJiraIssue|listJiraIssueComments|searchJiraIssuesUsingJql|executeRead|addCommentToJiraIssue|addOrEditJiraIssueComment|executeWrite)|Supabase\w*__execute_sql|claude-code-remote__send_message)$/
+// A cheap pre-filter so ordinary edits never start Python: a path that could match ANY repo's gate list in
+// paths.json. Over-matching is fine (plan_stage.py decides); a gate pattern outside this list would be missed,
+// so the test pins every pattern in paths.json against it.
+export const MAYBE_GATED = /(^|\/)(\.github\/|\.trunk\/|\.mergify\.yml$|scripts\/ci\/|scripts\/run_selftests\.sh$|scripts\/quality\/|infra\/|wrangler\.toml$|supabase\/(config\.toml|github_schedules\.json)$|\.claude\/settings\.json$|claude-mods\/|review_policy\.json$|REVIEWER-CHARTER\.md$|budget_gate\.py$)/
 const WRITE = /__(addCommentToJiraIssue|addOrEditJiraIssueComment|executeWrite)$/
 // Jira's markdown export escapes the brackets: \[LCH-600 feedback\].
 const FEEDBACK = /\\?\[LCH-600 feedback\\?\]/
 const MAX_ROWS = 200
 const MAX_TEXT = 100_000
 const rows = atom({ plugin: 'lch600-review-gate', key: 'rows' } as const, [] as Row[])
+// Shadow mode notes the plan ask once per session, not on every edit.
+const planTold = atom({ plugin: 'lch600-review-gate', key: 'planTold' } as const, false)
 // LC-2207 (found opening PR #3849): $.state does not survive a container restart, and a request this session
 // wrote can only be proven from its own record, so after a restart no session could pass the gate. The record
 // is saved to $.store (which outlives $.state) with this session's id, and read back when the live list is empty.
@@ -115,13 +127,15 @@ function shadowToast($: any, v: HookOut | undefined): void {
 }
 
 export const register: Register = on => {
-  on('tool.call', { tool: RECORD }, async ($, e, next) => {
+  on('tool.call', { tool: RECORD_ANY }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError) return ran
     const { tool_name, tool_input } = toolPayload(e as any)
     const text = resultText(ran)
-    // Keep only what the check can use: writes (comments), and reads that carry the feedback marker.
-    if (!WRITE.test(tool_name) && !FEEDBACK.test(text)) return ran
+    // Keep only what the checks can use: Jira writes (comments), reads that carry the feedback marker, and
+    // plan posts to the speed desk (LCH-744).
+    const planPost = PLAN_CALL.test(tool_name) && PLAN_POST.test(JSON.stringify(tool_input))
+    if (!planPost && (PLAN_CALL.test(tool_name) || (!WRITE.test(tool_name) && !FEEDBACK.test(text)))) return ran
     const id = String((e as any).tool_use_id ?? '')
     const { list: base, ok } = await recorded($)
     const next_ = [...base,
@@ -132,6 +146,21 @@ export const register: Register = on => {
     if (ok) await persist($, next_)
     return ran
   // A recording failure must never change the call's outcome.
+  }).catch(($, e, next) => next(e))
+
+  // LCH-744: no edit of a speed-sensitive file before the desk approves the plan (logic and selftest: ./plan_stage.py).
+  on('classic.PreToolUse', { tool: EDIT }, async ($, e, next) => {
+    const ev = e as any
+    if (!MAYBE_GATED.test(String(ev.file_path ?? ev.notebook_path ?? ''))) return next(e)
+    const told = await read($, planTold)
+    const v = await runCheck($, 'plan_stage.py', { ...toolPayload(e as any), told, transcript_rows: (await recorded($)).list })
+    const note = contextOf(v)
+    if (note && note.includes('SHADOW would-ask-plan')) {
+      toast($, note)
+      await update($, planTold, () => true)
+    }
+    return preToolUse($, v) ?? next(e)
+  // Fail open: a bug in the mod must never stop an edit.
   }).catch(($, e, next) => next(e))
 
   on('classic.PreToolUse', { tool: /^mcp__(github|GitHub_Custom)__create_pull_request$/ }, async ($, e, next) => {

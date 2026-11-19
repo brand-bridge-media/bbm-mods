@@ -188,3 +188,58 @@ test('damaged saved rows are dropped, good ones kept (item 3)', async ($: any, o
   await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
   expect(JSON.parse(w.runs[0]!.stdin).transcript_rows).toEqual([good])
 })
+
+// ---- LCH-744 plan stage ----------------------------------------------------------------------------------------
+
+const SHADOW_PLAN = "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"additionalContext\": \"[mod:lch600-review-gate] SHADOW would-ask-plan (shadow mode): PLAN REVIEW\"}}"
+const DENY_PLAN = "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"[mod:lch600-review-gate] PLAN REVIEW\"}}"
+const WF = '/home/claude/bbm-infrastructure/.github/workflows/deploy-workers.yml'
+
+test('an ordinary edit never starts the plan check', async ($: any, on: any) => {
+  const w = world(on, { stdout: DENY_PLAN })
+  const r: any = await $.tool.call({ tool: 'Edit', file_path: '/w/repo/docs/a.md', old_string: 'a', new_string: 'b' })
+  expect(r.deny).toBeUndefined()
+  expect(w.runs.length).toBe(0)
+})
+
+test('a gated edit the plan check denies is not made; the reason is toasted', async ($: any, on: any) => {
+  const w = world(on, { stdout: DENY_PLAN })
+  const r: any = await $.tool.call({ tool: 'Edit', file_path: WF, old_string: 'a', new_string: 'b' })
+  expect(String(r.deny ?? r.text)).toContain('PLAN REVIEW')
+  expect(w.reached.length).toBe(0)
+  expect(w.runs[0]!.argv[2]).toMatch(/hooks\/plan_stage\.py$/)
+  const sent = JSON.parse(w.runs[0]!.stdin)
+  expect(sent.tool_name).toBe('Edit')
+  expect(sent.told).toBe(false)
+})
+
+test('shadow: the note is toasted once, then the check is told', async ($: any, on: any) => {
+  const w = world(on, { stdout: SHADOW_PLAN })
+  await $.tool.call({ tool: 'Write', file_path: WF, content: 'x' })
+  await $.tool.call({ tool: 'Write', file_path: WF, content: 'y' })
+  expect(w.reached.length).toBe(2)
+  expect(w.toasts.filter(t => t.includes('SHADOW would-ask-plan')).length).toBe(2)
+  expect(JSON.parse(w.runs[1]!.stdin).told).toBe(true)
+})
+
+test('a plan check failure lets the edit through (fail open)', async ($: any, on: any) => {
+  const w = world(on, { throws: true })
+  const r: any = await $.tool.call({ tool: 'Edit', file_path: WF, old_string: 'a', new_string: 'b' })
+  expect(r.deny).toBeUndefined()
+  expect(w.reached.length).toBe(1)
+})
+
+test('the plan post and the read of the answer are recorded for the check; other SQL is not', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' }, '[{"ask_track": {"id": 9}}]')
+  await $.tool.call({ tool: 'mcp__Supabase__execute_sql', project_id: 'p', query: 'select 1' })
+  await $.tool.call({ tool: 'mcp__Supabase__execute_sql', project_id: 'p',
+    query: "select public.ask_track('ci-speed', 'speed-review', 'PLAN: LC-1: x', 's', 'LC-1');" })
+  await $.tool.call({ tool: 'mcp__Supabase__execute_sql', project_id: 'p',
+    query: "select kind, payload from public.v_track_request_messages where request_id = 9" })
+  await $.tool.call({ tool: 'Edit', file_path: WF, old_string: 'a', new_string: 'b' })
+  const rows = JSON.parse(w.runs[0]!.stdin).transcript_rows
+  expect(rows.length).toBe(4)
+  expect(JSON.stringify(rows)).toContain('v_track_request_messages')
+  expect(JSON.stringify(rows)).toContain("ask_track('ci-speed'")
+  expect(JSON.stringify(rows)).not.toContain('select 1')
+})
