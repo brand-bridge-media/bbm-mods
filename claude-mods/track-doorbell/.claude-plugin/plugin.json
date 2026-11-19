@@ -1,6 +1,6 @@
 {
   "name": "track-doorbell",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cross-track request board (LC-2257): after an execute_sql result that returns a ring or ring_back for a session, tells the session to message that session now; blocks a turn's end once when a ring was never sent.",
   "author": {
     "name": "Brand Bridge Media"

@@ -23,6 +23,14 @@ WHY IT CANNOT LOOP. Claude Code sets `stop_hook_active` on the stop after a bloc
 hook always passes then. A session that cannot reach the other one (it ended) calls
 mark_delivered(id, false, why) and the board's overdue clock takes over.
 
+A RING STOPS AT THE PROJECT WALL (LC-2278, measured 2026-11-19). A Claude project thread
+can wake sessions in its own project, or in no project, but every wake aimed at a session
+in ANOTHER project (send_message, create_trigger, fire_trigger) returns "the requested
+resource was not found". The address is not wrong and retrying never helps. So every note
+says what to do then: record it with mark_delivered(id, false, CROSS_PROJECT_NOTE) and rely
+on the other side's own scheduled board sweep, which is how desks and askers in other
+projects find their work. The attempted send still satisfies the Stop check.
+
 Fails open: unreadable input prints nothing and exits 1 (visible, never blocking).
 
 Self-test: python3 track-doorbell.py --selftest
@@ -45,6 +53,14 @@ SEND_TOOL = re.compile(r"(__send_message|^SendMessage)$")
 DOORBELL = re.compile(r'"(ring|ring_back)"\s*:\s*(\{[^{}]*\})')
 TELL_OPERATOR = re.compile(r'"tell_operator"\s*:\s*"((?:[^"\\]|\\.)*)"')
 REQUEST_NO = re.compile(r"request #(\d+)", re.IGNORECASE)
+# LC-2278: the one agreed wording, so the board shows the same note for every cross-project ring.
+# No apostrophe in it: it is pasted inside a single-quoted SQL literal.
+CROSS_PROJECT_NOTE = "cross-project: send_message not found (platform limit); picked up by the other side on its board sweep"
+CROSS_PROJECT_HINT = (
+    "If the send fails with \"not found\", that session is in another Claude project: the platform blocks "
+    "wakes across projects (LC-2278). Do not retry and do not re-register; run "
+    "`select public.mark_delivered({rid}, false, '" + CROSS_PROJECT_NOTE + "');` and tell the user the other "
+    "side picks it up on its own scheduled board sweep (a desk's claim clock is 30 minutes).")
 
 
 def _text(resp) -> str:
@@ -103,7 +119,7 @@ def post_tool_note(payload: dict) -> str | None:
             f"{TAG} Ring now: send_message to session `{b['session_id']}` with this message: "
             f"\"{b['message']}\". Then run `select public.mark_delivered({rid}, true);` "
             f"(or `mark_delivered({rid}, false, '<why>')` if that session cannot be reached). "
-            "The turn will not end until the message is sent.")
+            "The turn will not end until the message is sent. " + CROSS_PROJECT_HINT.format(rid=rid))
     for n in notes:
         lines.append(f"{TAG} {n} Open the reply with `NEEDS YOU:`.")
     return "\n".join(lines)
@@ -137,7 +153,7 @@ def stop_reason(payload: dict) -> str | None:
     return (f"{TAG} This turn rang the request board but never messaged {', '.join(parts)}. "
             "A row cannot wake a session: send_message the doorbell text to it now, then "
             "mark_delivered. If it cannot be reached, call mark_delivered(<id>, false, '<why>') "
-            "and say so in the reply.")
+            "and say so in the reply. " + CROSS_PROJECT_HINT.format(rid="<id>"))
 
 
 def evaluate(payload: dict) -> tuple[str, str] | None:
@@ -192,6 +208,9 @@ def _selftest() -> int:
     r = evaluate({"hook_event_name": "PostToolUse", "tool_name": sql, "tool_response": ask})
     ck(r and r[0] == "context" and "session_DESK" in r[1] and "mark_delivered(7, true)" in r[1]
        and r[1].startswith(TAG), "ring -> send + mark_delivered instruction")
+    ck(r and "another Claude project" in r[1] and "mark_delivered(7, false, '" + CROSS_PROJECT_NOTE + "')" in r[1],
+       "ring note carries the cross-project fallback with this request's id (LC-2278)")
+    ck("'" not in CROSS_PROJECT_NOTE, "the note is safe inside a single-quoted SQL literal (LC-2278)")
     r = evaluate({"hook_event_name": "PostToolUse", "tool_name": sql, "tool_response": paused})
     ck(r and "NEEDS YOU" in r[1], "pause -> NEEDS YOU note")
     ck(evaluate({"hook_event_name": "PostToolUse", "tool_name": "mcp__x__list_tables",
@@ -213,6 +232,11 @@ def _selftest() -> int:
     rang = [prompt, a("1", sql, {"query": "select ask_track(...)"}), u("1", ask)]
     r = evaluate({"hook_event_name": "Stop", "stop_hook_active": False, "transcript_rows": rang})
     ck(r and r[0] == "block" and "session_DESK" in r[1] and "#7" in r[1], "unsent ring blocks")
+    ck(r and CROSS_PROJECT_NOTE in r[1], "block reason carries the cross-project fallback (LC-2278)")
+    failed = rang + [a("2", send, {"session_id": "session_DESK", "message": "..."}),
+                     u("2", "failed to send message: the requested resource was not found")]
+    ck(evaluate({"hook_event_name": "Stop", "stop_hook_active": False, "transcript_rows": failed}) is None,
+       "a send that failed across projects still counts as rung (LC-2278)")
     sent = rang + [a("2", send, {"session_id": "session_DESK", "message": "..."}), u("2", "ok")]
     ck(evaluate({"hook_event_name": "Stop", "stop_hook_active": False, "transcript_rows": sent}) is None,
        "sent ring passes")
