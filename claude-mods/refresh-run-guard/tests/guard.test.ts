@@ -414,3 +414,43 @@ test('review 12: unknown and variant Webflow actions are examined or refused; ch
     expect(await state()).toContain('best-sofas: STALE')
   }
 })
+
+// LCH-745: the Draft stage's own findings merge (stages/v2_s6_draft.md Part 3 item 4) goes through in ONE
+// shape; every near miss, and every trick that would carry a receipt write along with it, is still denied.
+test('LCH-745: a v2_s6 draft-copy findings merge is allowed, near misses are denied', async ($, on) => {
+  passthrough(on)
+  const sql = async (query: string) => ((await $.tool.call({ tool: 'mcp__x__execute_sql', query } as any)) as any).deny as string | undefined
+  const RUN = '5e706b07-c688-4764-8f53-e2ea899114e6'
+  const ROW = '5b2174f7-148e-440c-9ea8-b28858ff776b'
+  const ac = `'{"article_content": {"conclusion": "<p>We haven''t sat on it -- yet; really.</p>"}}'::jsonb`
+  for (const q of [
+    `update refresh_run_sections set findings = findings || ${ac} where run_id = '${RUN}' and section_key = 'v2_s6'`,
+    `UPDATE public.refresh_run_sections SET findings = coalesce(findings, '{}'::jsonb) || ${ac}\n WHERE section_key = 'v2_s6' AND run_id = '${RUN}' AND id = '${ROW}' RETURNING id;`,
+    `update refresh_run_sections set findings = findings || '{"product_copy": {}, "search_title": "x", "h1": "y"}'::jsonb where run_id = '${RUN}' and section_key = 'v2_s6'`,
+  ]) expect(await sql(q)).toBeUndefined()
+  for (const q of [
+    // another section's findings (a gate's receipt lives there)
+    `update refresh_run_sections set findings = findings || ${ac} where run_id = '${RUN}' and section_key = 'v2_s6_5'`,
+    // a key that is not draft copy
+    `update refresh_run_sections set findings = findings || '{"lint_sha": "abc"}'::jsonb where run_id = '${RUN}' and section_key = 'v2_s6'`,
+    `update refresh_run_sections set findings = findings || '{"article_content": {}, "verdict": "pass"}'::jsonb where run_id = '${RUN}' and section_key = 'v2_s6'`,
+    // a whole replace, not a merge
+    `update refresh_run_sections set findings = ${ac} where run_id = '${RUN}' and section_key = 'v2_s6'`,
+    // status rides along
+    `update refresh_run_sections set findings = findings || ${ac}, status = 'done' where run_id = '${RUN}' and section_key = 'v2_s6'`,
+    `update refresh_run_sections set status = 'done', findings = findings || ${ac} where run_id = '${RUN}' and section_key = 'v2_s6'`,
+    // no run pin, or a looser WHERE
+    `update refresh_run_sections set findings = findings || ${ac} where section_key = 'v2_s6'`,
+    `update refresh_run_sections set findings = findings || ${ac} where run_id = '${RUN}' or section_key = 'v2_s6'`,
+    `update refresh_run_sections set findings = findings || ${ac} where run_id = '${RUN}' and section_key = 'v2_s6' and status <> 'x'`,
+    // a second statement, a comment, a CTE
+    `update refresh_run_sections set findings = findings || ${ac} where run_id = '${RUN}' and section_key = 'v2_s6'; update refresh_run_sections set status = 'done'`,
+    `update refresh_run_sections set findings = findings || ${ac} where run_id = '${RUN}' and section_key = 'v2_s6' -- ok`,
+    `with t as (update refresh_run_sections set findings = findings || ${ac} where run_id = '${RUN}' and section_key = 'v2_s6' returning 1) select * from t`,
+    // not JSON, or not an object
+    `update refresh_run_sections set findings = findings || '[1]'::jsonb where run_id = '${RUN}' and section_key = 'v2_s6'`,
+    `update refresh_run_sections set findings = findings || '{}'::jsonb where run_id = '${RUN}' and section_key = 'v2_s6'`,
+  ]) expect(await sql(q)).toContain('refresh-run-guard')
+  // The deny now names the one allowed shape, so a session can correct itself instead of stalling.
+  expect(await sql(`update refresh_run_sections set findings = '{}' where run_id = '${RUN}'`)).toContain("section_key = 'v2_s6'")
+})

@@ -94,7 +94,67 @@ const TARGETS: { verb: string; re: RegExp }[] = [
 ]
 const WHOLE_ROW_VERBS = new Set(['delete', 'truncate', 'merge', 'copy', 'drop'])
 
+// ---------- rule 1 exception: the Draft's own findings merge (LCH-745) ----
+//
+// Why: the Draft stage doc (bbm-refresh-agent `stages/v2_s6_draft.md`, Part 3 item 4) tells a cloud
+// session, which has no service-role key, to merge `article_content` / `product_copy` / the title pair
+// into its run's `v2_s6` findings through the Supabase connector. Rule 1 refused every such write, so
+// every cloud Draft stalled (deep-sofas, run 5e706b07, 2026-11-19, went round it with a data-changes
+// package). A findings MERGE of draft copy is not a receipt: it sets no status, and the lint (v2_s6_5)
+// and the quality gate (v2_s7) read that copy afterwards. So exactly one shape is let through, judged on
+// the WHOLE query text (anchored, so no second statement, comment or CTE can ride along):
+//   update [public.]refresh_run_sections
+//      set findings = findings || '<json object>'::jsonb      (or coalesce(findings, '{}'[::jsonb]) || ...)
+//    where run_id = '<uuid>' and section_key = 'v2_s6' [and id = '<uuid>'] [and article_id = '<uuid>']
+//   [returning <columns>] [;]
+// and the JSON's top-level keys must all be draft-copy keys. Anything else falls through to rule 1.
+export const DRAFT_FINDINGS_KEYS = ['article_content', 'product_copy', 'search_title', 'h1'] as const
+export const DRAFT_FINDINGS_SHAPE =
+  "A Draft's own findings merge is allowed in one shape: update refresh_run_sections set findings = findings || " +
+  "'<json>'::jsonb where run_id = '<run id>' and section_key = 'v2_s6' (top-level keys only " +
+  DRAFT_FINDINGS_KEYS.join(', ') +
+  ').'
+const UUID_LIT = String.raw`'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'`
+const MERGE_SHAPE = new RegExp(
+  String.raw`^\s*update\s+(?:public\.)?refresh_run_sections\s+set\s+findings\s*=\s*` +
+    String.raw`(?:coalesce\(\s*findings\s*,\s*'\{\}'(?:\s*::\s*jsonb)?\s*\)|findings)\s*\|\|\s*` +
+    String.raw`'(?<json>(?:[^']|'')*)'\s*::\s*jsonb\s+where\s+(?<where>[a-z_\s=0-9'-]+?)` +
+    String.raw`(?:\s+returning\s+[a-z_\s,.*]+)?\s*;?\s*$`,
+  'i',
+)
+const WHERE_TERMS: { key: string; re: RegExp }[] = [
+  { key: 'run_id', re: new RegExp(String.raw`^run_id\s*=\s*${UUID_LIT}$`, 'i') },
+  { key: 'section_key', re: /^section_key\s*=\s*'v2_s6'$/i },
+  { key: 'id', re: new RegExp(String.raw`^id\s*=\s*${UUID_LIT}$`, 'i') },
+  { key: 'article_id', re: new RegExp(String.raw`^article_id\s*=\s*${UUID_LIT}$`, 'i') },
+]
+
+export function isDraftFindingsMerge(query: unknown): boolean {
+  if (typeof query !== 'string' || query.length > MAX_CHECKED) return false
+  const m = MERGE_SHAPE.exec(query)
+  if (!m?.groups) return false
+  // The WHERE is a plain AND of known equality terms, each at most once; run_id and section_key required.
+  const seen = new Set<string>()
+  for (const raw of m.groups.where.trim().split(/\s+and\s+/i)) {
+    const term = raw.trim()
+    const hit = WHERE_TERMS.find(t => t.re.test(term))
+    if (!hit || seen.has(hit.key)) return false
+    seen.add(hit.key)
+  }
+  if (!seen.has('run_id') || !seen.has('section_key')) return false
+  let merged: unknown
+  try {
+    merged = JSON.parse(m.groups.json.replace(/''/g, "'"))
+  } catch {
+    return false
+  }
+  if (merged === null || typeof merged !== 'object' || Array.isArray(merged)) return false
+  const keys = Object.keys(merged as object)
+  return keys.length > 0 && keys.every(k => (DRAFT_FINDINGS_KEYS as readonly string[]).includes(k))
+}
+
 export function sqlViolation(query: unknown): string | null {
+  if (isDraftFindingsMerge(query)) return null
   if (typeof query !== 'string') return 'query was not a string, so it could not be checked'
   if (query.trim() === '') return 'query was empty, so there was nothing to check'
   if (query.length > MAX_CHECKED) return 'query was too large to check'
@@ -131,7 +191,7 @@ export function sqlViolation(query: unknown): string | null {
         const m = re.exec(stmt)
         if (!m) continue
         const table = m.groups?.t
-        if (table === 'refresh_run_sections') return 'This SQL writes refresh_run_sections.'
+        if (table === 'refresh_run_sections') return `This SQL writes refresh_run_sections. ${DRAFT_FINDINGS_SHAPE}`
         // refresh_runs: whole-row removal destroys receipts; UPDATE/INSERT are a violation only when they
         // set the receipt columns (a plain status UPDATE, or creating a run row, is the conductor's lifecycle).
         if (WHOLE_ROW_VERBS.has(verb)) return 'This SQL removes or recreates refresh_runs rows, which destroys their receipts.'
