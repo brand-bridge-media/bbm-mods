@@ -5,36 +5,40 @@ import type { Row } from '../types'
 import type { HookOut } from './py'
 import { blockReason, contextOf, decisionOf, parseOut, resultText, runArgs, toastText, toolPayload } from './py'
 
-// Why (LC-2207, operator decision 2026-11-17; reworked after LCH-600's review, Jira comment 192938): every change to how code is tested, merged or deployed is
+// Why (LC-2207, operator decision 2026-11-17): every change to how code is tested, merged or deployed is
 // reviewed by LCH-600 (Deploy and CI speed) before a session opens its PR. The trigger is the files a PR
-// changes, not the project the session runs in, so stray chats are covered too. The review happens in Jira
-// comments; a PreToolUse hook gets no transcript, so this mod records the Jira calls the check needs (comment
-// reads that carry the [LCH-600 feedback] marker, and every comment this session writes) and hands them over
-// as transcript rows. A PR taken out of draft is checked too (the PR's head, title, body and files are read
+// changes, not the project the session runs in, so stray chats are covered too. Since LC-2265 (operator
+// decision 2026-11-19) the review is a request on the cross-track request board (LC-2257), not a Jira comment
+// exchange. A PreToolUse hook gets no transcript, so this mod records the calls its checks need and hands them
+// over as transcript rows. A PR taken out of draft is checked too (the PR's head, title, body and files are read
 // through the GitHub connector, so it works without a local clone). Logic, rules and selftest:
-// ./lch600-review-gate.py, ./paths.json.
-// LCH-744: the plan-stage check also needs the calls that post a plan to the speed desk (an execute_sql that
-// calls ask_track('ci-speed', ...), or a PLAN: send_message to the desk) and the read of the desk's answer
-// (an execute_sql on track_request_messages). Only those are kept, never other SQL.
-const PLAN_CALL = /^mcp__(Supabase\w*__execute_sql|claude-code-remote__send_message)$/
+// ./lch600-review-gate.py, ./plan_stage.py, ./paths.json.
+// What is kept (never other SQL or messages):
+//  * PR stage: an execute_sql result that shows a ci-speed board row (the closed request the PR line names);
+//  * plan stage (LCH-744): the call that posts a plan (execute_sql calling ask_track('ci-speed', ...), or a
+//    PLAN: send_message to the desk), the read of the desk's answer (track_request_messages), and a Jira comment
+//    write, for the urgent `Skipping LCH-600 review:` escape (the one Jira path LC-2265 kept).
+const SQL = /^mcp__Supabase\w*__execute_sql$/
+const SEND = /^mcp__claude-code-remote__send_message$/
 const PLAN_POST = /ask_track\s*\(\s*'ci-speed'|PLAN:|track_request_messages/i
+const BOARD_READ = /\btrack_requests\b/i
+const COMMENT = /^mcp__Atlassian\w*__(addCommentToJiraIssue|addOrEditJiraIssueComment)$/
+const RUNNER = /^mcp__Atlassian\w*__executeWrite$/
+const RUNNER_COMMENT = /"name":"(addCommentToJiraIssue|addOrEditJiraIssueComment)"/
+const RECORD_ANY = /^mcp__(Supabase\w*__execute_sql|claude-code-remote__send_message|Atlassian\w*__(addCommentToJiraIssue|addOrEditJiraIssueComment|executeWrite))$/
 const EDIT = /^(Write|Edit|MultiEdit|NotebookEdit)$/
-const RECORD_ANY = /^mcp__(Atlassian\w*__(getJiraIssue|listJiraIssueComments|searchJiraIssuesUsingJql|executeRead|addCommentToJiraIssue|addOrEditJiraIssueComment|executeWrite)|Supabase\w*__execute_sql|claude-code-remote__send_message)$/
 // A cheap pre-filter so ordinary edits never start Python: a path that could match ANY repo's gate list in
 // paths.json. Over-matching is fine (plan_stage.py decides); a gate pattern outside this list would be missed,
 // so the test pins every pattern in paths.json against it.
 export const MAYBE_GATED = /(^|\/)(\.github\/|\.trunk\/|\.mergify\.yml$|scripts\/ci\/|scripts\/run_selftests\.sh$|scripts\/quality\/|infra\/|wrangler\.toml$|supabase\/(config\.toml|github_schedules\.json)$|\.claude\/settings\.json$|claude-mods\/|review_policy\.json$|REVIEWER-CHARTER\.md$|budget_gate\.py$)/
-const WRITE = /__(addCommentToJiraIssue|addOrEditJiraIssueComment|executeWrite)$/
-// Jira's markdown export escapes the brackets: \[LCH-600 feedback\].
-const FEEDBACK = /\\?\[LCH-600 feedback\\?\]/
 const MAX_ROWS = 200
 const MAX_TEXT = 100_000
 const rows = atom({ plugin: 'lch600-review-gate', key: 'rows' } as const, [] as Row[])
 // Shadow mode notes the plan ask once per session, not on every edit.
 const planTold = atom({ plugin: 'lch600-review-gate', key: 'planTold' } as const, false)
-// LC-2207 (found opening PR #3849): $.state does not survive a container restart, and a request this session
-// wrote can only be proven from its own record, so after a restart no session could pass the gate. The record
-// is saved to $.store (which outlives $.state) with this session's id, and read back when the live list is empty.
+// LC-2207 (found opening PR #3849): $.state does not survive a container restart. The record is saved to
+// $.store (which outlives $.state) with this session's id, and read back when the live list is empty. Since
+// LC-2265 one fresh read of the board row also restores the PR-stage evidence.
 const STORE_KEY = 'rows'
 
 // '' when the id cannot be read; an empty id never matches a save.
@@ -132,10 +136,13 @@ export const register: Register = on => {
     if (ran.deny !== undefined || ran.isError) return ran
     const { tool_name, tool_input } = toolPayload(e as any)
     const text = resultText(ran)
-    // Keep only what the checks can use: Jira writes (comments), reads that carry the feedback marker, and
-    // plan posts to the speed desk (LCH-744).
-    const planPost = PLAN_CALL.test(tool_name) && PLAN_POST.test(JSON.stringify(tool_input))
-    if (!planPost && (PLAN_CALL.test(tool_name) || (!WRITE.test(tool_name) && !FEEDBACK.test(text)))) return ran
+    // Keep only what the checks can use (see the list at the top).
+    const input = JSON.stringify(tool_input)
+    // A board row counts only from a query on track_requests, never from text that merely mentions ci-speed (review finding 3).
+    const keep = (SQL.test(tool_name) && (BOARD_READ.test(input) || PLAN_POST.test(input)))
+      || (SEND.test(tool_name) && PLAN_POST.test(input)) || COMMENT.test(tool_name)
+      || (RUNNER.test(tool_name) && RUNNER_COMMENT.test(input))
+    if (!keep) return ran
     const id = String((e as any).tool_use_id ?? '')
     const { list: base, ok } = await recorded($)
     const next_ = [...base,

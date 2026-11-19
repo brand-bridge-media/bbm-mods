@@ -6,8 +6,8 @@ review (paths.json `gate`, minus the pure-addition and generated-file rules), it
 speed desk has approved the session's PLAN. The permit is in this session's own recorded calls:
   * board: a read of `v_track_request_messages` whose newest `ci-speed` response carries verdict `accepted` or
     `ship_after_fixes` (the desk's `respond` payload); `not_yet` / `needs_info` mean revise and follow up;
-  * Jira: the session's `[LCH-600 review request]` comment and a `[LCH-600 feedback]` comment read after it;
-  * `Skipping LCH-600 review: <reason>` on the ticket (urgent fixes; the reason is on record).
+  * `Skipping LCH-600 review: <reason>` commented on the ticket (urgent fixes; the reason is on record). Since
+    LC-2265 this is the only Jira path left: the Jira request/feedback exchange no longer grants a permit.
 Until then each gated edit is denied with the next step: post the plan, or wait for the answer and read it.
 
 WHY. Operator decision (2026-11-19, LCH-744): "no one starts building without the building permit". The PR-stage gate
@@ -46,11 +46,16 @@ import transcript_reader  # noqa: E402
 
 TAG = gate.TAG
 EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
-DESK_SESSION = "session_01LpqYrCPF63BFU9BJKCpLK7"
 RUBRIC = "scripts/ci/lch600_review_desk.md (Plan review rubric)"
 ASK_SQL = re.compile(r"ask_track\s*\(\s*'ci-speed'", re.I)
 SQL_TOOL = re.compile(r"^mcp__Supabase\w*__execute_sql$")
 SEND_TOOL = re.compile(r"^mcp__claude-code-remote__send_message$")
+COMMENT_TOOL = re.compile(r"^mcp__Atlassian\w*__(addCommentToJiraIssue|addOrEditJiraIssueComment)$")
+# Same 10-character reason rule as the PR body's `LCH-600-Review: skipped <reason>` (review finding 4).
+SKIP = re.compile(r"^\s*Skipping LCH-600 review:\s*\S.{9,}", re.I)
+# The Atlassian MCP's generic runner carries the same comment as executeWrite {name, inputs} (review finding 2).
+RUNNER_TOOL = re.compile(r"^mcp__Atlassian\w*__executeWrite$")
+COMMENT_OPS = ("addCommentToJiraIssue", "addOrEditJiraIssueComment")
 STEP_TIMEOUT = 5
 
 
@@ -91,23 +96,24 @@ def permit(rows: list[dict]) -> str:
         q = str(inp.get("query") or "")
         if SQL_TOOL.match(name) and ASK_SQL.search(q) and not _failed(text):
             state = "posted" if state == "none" else state
-        elif SEND_TOOL.match(name) and str(inp.get("session_id") or "") == DESK_SESSION and "PLAN:" in str(inp.get("message") or ""):
+        # Any desk address counts (LC-2265 desk item 4a): the desk's session is the board's to know, not a constant
+        # here, and a ring only marks the plan posted, never approved.
+        elif SEND_TOOL.match(name) and "PLAN:" in str(inp.get("message") or ""):
             state = "posted" if state == "none" else state
         elif SQL_TOOL.match(name) and MESSAGES.search(q) and "ci-speed" in text:
             # The newest read decides: a later not_yet after an earlier accept takes the permit back.
             verdicts = VERDICT.findall(text)
             if verdicts:
-                state = "granted" if set(verdicts) <= {"accepted", "ship_after_fixes"} else "posted"
-    # Jira: the gate's own reader, so a write only counts when Jira returned its comment id, and feedback the
-    # session wrote itself never counts.
-    for s in gate.evidence(rows).values():
-        if s["skipped"]:
+                state = "granted" if set(verdicts) <= set(gate.APPROVED) else "posted"
+    # Urgent skip (LC-2265 kept only this Jira path): this session's own comment that STARTS with the skip marker,
+    # counted only when Jira returned the comment's id (the write landed).
+    for name, inp, text in transcript_reader.tool_calls_with_results(rows):
+        inp = inp if isinstance(inp, dict) else {}
+        if RUNNER_TOOL.match(name) and inp.get("name") in COMMENT_OPS and isinstance(inp.get("inputs"), dict):
+            name, inp = "mcp__Atlassian__" + str(inp["name"]), inp["inputs"]
+        if COMMENT_TOOL.match(name) and SKIP.match(str(inp.get("commentBody") or inp.get("body") or "")) \
+                and isinstance(gate._json(text), dict) and gate._json(text).get("id"):
             return "granted"
-        if s["requests"]:
-            first = gate._first(s, s["requests"])
-            if first and gate._feedback_after(s, first):
-                return "granted"
-            state = "posted" if state == "none" else state
     return state
 
 
@@ -159,7 +165,8 @@ def ask_text(rel: str, state: str = "none") -> str:
         "<ticket>: <what you will change and why; the files; seconds added per PR and which check it replaces; "
         "anything it loosens; runner label and worst-case runtime; rollout and back-out>', '<your session id>', "
         "'<ticket>');`, then send_message the `ring` it returns and run `mark_delivered`. No execute_sql? "
-        f"send_message {DESK_SESSION} a message starting `PLAN:` with the same content.\n"
+        "send_message the ci-speed desk (its session is `reached_at` in public.v_track_desk_health) a message "
+        "starting `PLAN:` with the same content.\n"
         f"2. Check your plan against the rubric in {RUBRIC} while you wait; do work that does not touch these files.\n"
         f"3. When the desk rings back, read its answer: {READ_ANSWER} The permit is `accepted` or `ship_after_fixes`.\n"
         "Urgent fix that cannot wait: comment `Skipping LCH-600 review: <reason>` on the ticket. A branch named "
@@ -299,28 +306,37 @@ def _selftest() -> int:
     check("posted: Muni-style Supabase server name too", permit(_row_calls(("mcp__Supabase_Muni__execute_sql", ok_sql, "[]"))), "posted")
     send = "mcp__claude-code-remote__send_message"
     check("posted: PLAN message sent straight to the desk", permit(_row_calls(
-        (send, {"session_id": DESK_SESSION, "message": "PLAN: LC-1: change deploy.yml"}, "delivered"))), "posted")
-    check("nothing: a message to another session", permit(_row_calls(
-        (send, {"session_id": "session_other", "message": "PLAN: x"}, "delivered"))), "none")
+        (send, {"session_id": "session_desk", "message": "PLAN: LC-1: change deploy.yml"}, "delivered"))), "posted")
+    check("posted: a PLAN ring to any desk address (desk item 4a)", permit(_row_calls(
+        (send, {"session_id": "session_other", "message": "PLAN: x"}, "delivered"))), "posted")
     check("nothing: a desk message with no plan", permit(_row_calls(
-        (send, {"session_id": DESK_SESSION, "message": "hello"}, "delivered"))), "none")
+        (send, {"session_id": "session_desk", "message": "hello"}, "delivered"))), "none")
     add = "mcp__Atlassian__addCommentToJiraIssue"
-    get = "mcp__Atlassian__getJiraIssue"
-    req = (add, {"issueIdOrKey": "LC-1", "commentBody": "[LCH-600 review request] plan: ..."},
-           '{"id": "100", "created": "2026-11-19T10:00:00.000+0000"}')
-
-    def jira_read(body, cid="101", created="2026-11-19T10:10:00.000+0000"):
-        issue = {"key": "LC-1", "fields": {"comment": {"comments": [{"id": cid, "body": body, "created": created}]}}}
-        return (get, {"issueIdOrKey": "LC-1"}, json.dumps({"issues": {"nodes": [issue]}}))
-
-    check("posted: Jira review request alone", permit(_row_calls(req)), "posted")
-    check("granted: Jira request then LCH-600 feedback read", permit(_row_calls(req, jira_read("[LCH-600 feedback] ship it"))), "granted")
-    check("not granted: feedback older than the request", permit(_row_calls(
-        req, jira_read("[LCH-600 feedback] old", created="2026-11-19T09:00:00.000+0000"))), "posted")
+    check("nothing: a Jira review request no longer counts (LC-2265)", permit(_row_calls(
+        (add, {"issueIdOrKey": "LC-1", "commentBody": "[LCH-600 review request] plan: ..."}, '{"id": "100"}'))), "none")
     check("granted: stated skip", permit(_row_calls(
         (add, {"issueIdOrKey": "LC-1", "commentBody": "Skipping LCH-600 review: incident hotfix"}, '{"id": "1"}'))), "granted")
-    check("nothing: a comment quoting the marker mid-text", permit(_row_calls(
-        (add, {"issueIdOrKey": "LC-1", "commentBody": "will post [LCH-600 review request] later"}, '{"id": "1"}'))), "none")
+    check("nothing: a skip quoted mid-text", permit(_row_calls(
+        (add, {"issueIdOrKey": "LC-1", "commentBody": "maybe Skipping LCH-600 review: later"}, '{"id": "1"}'))), "none")
+    check("nothing: a skip write that did not land", permit(_row_calls(
+        (add, {"issueIdOrKey": "LC-1", "commentBody": "Skipping LCH-600 review: incident hotfix"}, '{"error": true}'))), "none")
+    run = "mcp__Atlassian_MCP__executeWrite"
+    check("granted: skip through the executeWrite runner (review finding 2)", permit(_row_calls(
+        (run, {"name": "addCommentToJiraIssue", "cloudId": "c", "inputs": {"issueIdOrKey": "LC-1",
+               "commentBody": "Skipping LCH-600 review: incident hotfix"}}, '{"id": "1"}'))), "granted")
+    check("nothing: executeWrite of another operation", permit(_row_calls(
+        (run, {"name": "editJiraIssue", "cloudId": "c", "inputs": {"issueIdOrKey": "LC-1",
+               "commentBody": "Skipping LCH-600 review: incident hotfix"}}, '{"id": "1"}'))), "none")
+    check("nothing: executeWrite whose inputs are not an object", permit(_row_calls(
+        (run, {"name": "addCommentToJiraIssue", "cloudId": "c", "inputs": "Skipping LCH-600 review: incident hotfix"},
+         '{"id": "1"}'))), "none")
+    check("granted: a direct comment's own body counts, not a nested runner-shaped field", permit(_row_calls(
+        (add, {"issueIdOrKey": "LC-1", "commentBody": "Skipping LCH-600 review: incident hotfix",
+               "name": "addCommentToJiraIssue", "inputs": {"commentBody": "no"}}, '{"id": "1"}'))), "granted")
+    check("nothing: a reason under 10 characters (review finding 4)", permit(_row_calls(
+        (add, {"issueIdOrKey": "LC-1", "commentBody": "Skipping LCH-600 review: x"}, '{"id": "1"}'))), "none")
+    check("nothing: a skip with no reason", permit(_row_calls(
+        (add, {"issueIdOrKey": "LC-1", "commentBody": "Skipping LCH-600 review:"}, '{"id": "1"}'))), "none")
     check("nothing: nothing recorded", permit([]), "none")
 
     # Locating the file.
@@ -341,7 +357,7 @@ def _selftest() -> int:
     r0 = reason(d)
     check("enforce: first gated edit denied", (d or {}).get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
     check("deny: names the board call, the desk, the rubric and how to read the answer",
-          all(x in r0 for x in ("ask_track('ci-speed'", DESK_SESSION, RUBRIC, "PLAN:", "v_track_request_messages",
+          all(x in r0 for x in ("ask_track('ci-speed'", "v_track_desk_health", RUBRIC, "PLAN:", "v_track_request_messages",
                                  "Skipping LCH-600 review:")), True)
     check("deny: asks for minutes and what it replaces", "seconds added per PR" in r0 and "replaces" in r0, True)
     d = decide(dict(wf, transcript_rows=_row_calls(posted)), rules, _fake_git())

@@ -2,7 +2,7 @@ import { test, expect } from 'claude-code/testing'
 
 // The Python check (path list, evidence rules, diff reading) is tested by its own --selftest
 // (claude-mods.yml runs it). These tests pin the mod's plumbing: which calls reach the check, which
-// Jira calls are recorded for it, and how its verdict maps.
+// board reads are recorded for it (LC-2265), and how its verdict maps.
 
 export function world(on: any, answer: { exitCode?: number; stdout?: string; throws?: boolean } = {},
   toolText = 'ok') {
@@ -54,29 +54,53 @@ test('other GitHub calls never start the check', async ($: any, on: any) => {
   expect(w.runs.length).toBe(0)
 })
 
-test('comment writes and marker-carrying reads are handed to the check; other reads are not', async ($: any, on: any) => {
-  const w = world(on, { stdout: '' }, 'c1: [LCH-600 feedback] fine')
-  await $.tool.call({ tool: 'mcp__Atlassian__getJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5' })
-  await $.tool.call({ tool: 'mcp__Atlassian__addCommentToJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5', commentBody: '[LCH-600 response] ok' })
+const SQL = 'mcp__Supabase__execute_sql'
+const ROW = '{"result": "<untrusted-data-x>[{\\"id\\": 7, \\"track\\": \\"ci-speed\\", \\"status\\": \\"closed\\"}]</untrusted-data-x>"}'
+
+test('a board read that shows a ci-speed row is handed to the check', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' }, ROW)
+  await $.tool.call({ tool: SQL, project_id: 'p', query: 'select * from public.track_requests where id = 7' })
   await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
   const sent = JSON.parse(w.runs[0]!.stdin)
-  expect(sent.transcript_rows.length).toBe(4)
-  expect(sent.transcript_rows[0].message.content[0].name).toBe('mcp__Atlassian__getJiraIssue')
-  expect(sent.transcript_rows[2].message.content[0].input.commentBody).toBe('[LCH-600 response] ok')
+  expect(sent.transcript_rows.length).toBe(2)
+  expect(sent.transcript_rows[0].message.content[0].name).toBe(SQL)
+  expect(sent.transcript_rows[1].message.content[0].content).toContain('ci-speed')
 })
 
-test('a read without the feedback marker is not recorded', async ($: any, on: any) => {
-  const w = world(on, { stdout: '' }, 'nothing here')
-  await $.tool.call({ tool: 'mcp__Atlassian__getJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5' })
+test('the second Supabase connector is recorded too', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' }, ROW)
+  await $.tool.call({ tool: 'mcp__Supabase_Muni__execute_sql', project_id: 'p', query: 'select * from public.track_requests where id = 7' })
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
+  expect(JSON.parse(w.runs[0]!.stdin).transcript_rows.length).toBe(2)
+})
+
+test('a ci-speed row from a query not on track_requests is not recorded (review finding 3)', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' }, ROW)
+  await $.tool.call({ tool: SQL, project_id: 'p', query: "select 7 as id, 'ci-speed' as track" })
   await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
   expect(JSON.parse(w.runs[0]!.stdin).transcript_rows.length).toBe(0)
 })
 
-test('an escaped marker from Jira markdown is still recorded', async ($: any, on: any) => {
-  const w = world(on, { stdout: '' }, 'c1: \\[LCH-600 feedback\\] fine')
-  await $.tool.call({ tool: 'mcp__Atlassian__getJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5' })
+test('a Jira skip through the executeWrite runner is recorded (review finding 2)', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' }, '{"id": "1"}')
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__executeWrite', name: 'addCommentToJiraIssue', cloudId: 'c', inputs: { issueIdOrKey: 'LC-1', commentBody: 'Skipping LCH-600 review: incident hotfix' } })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__executeWrite', name: 'editJiraIssue', cloudId: 'c', inputs: { issueIdOrKey: 'LC-1' } })
   await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
   expect(JSON.parse(w.runs[0]!.stdin).transcript_rows.length).toBe(2)
+})
+
+test('a query result without a ci-speed row is not recorded', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' }, '{"result": "[{\\"id\\": 1}]"}')
+  await $.tool.call({ tool: SQL, project_id: 'p', query: 'select 1' })
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
+  expect(JSON.parse(w.runs[0]!.stdin).transcript_rows.length).toBe(0)
+})
+
+test('Jira calls are no longer recorded (LC-2265)', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' }, 'c1: [LCH-600 feedback] ci-speed fine')
+  await $.tool.call({ tool: 'mcp__Atlassian__getJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5' })
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
+  expect(JSON.parse(w.runs[0]!.stdin).transcript_rows.length).toBe(0)
 })
 
 const SHADOW = "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"additionalContext\": \"[mod:lch600-review-gate] SHADOW would-deny (x): review first\"}}"
@@ -117,8 +141,8 @@ test('leaving draft: the PR head, title, body and files are read and sent to the
 test('leaving draft with a new body: the new body is what gets checked', async ($: any, on: any) => {
   const w = world(on, { stdout: '' })
   prWorld(on, { draft: true, head: { ref: 'b' }, title: 'LC-1', body: 'old' }, FILES)
-  await $.tool.call({ ...UPDATE, draft: false, body: 'LCH-600-Review: LC-1 accepted' })
-  expect(JSON.parse(w.runs[0]!.stdin).tool_input.body).toBe('LCH-600-Review: LC-1 accepted')
+  await $.tool.call({ ...UPDATE, draft: false, body: 'LCH-600-Review: request 7 closed' })
+  expect(JSON.parse(w.runs[0]!.stdin).tool_input.body).toBe('LCH-600-Review: request 7 closed')
 })
 
 for (const [label, call, pr, isError] of [
@@ -136,8 +160,8 @@ for (const [label, call, pr, isError] of [
   })
 }
 
-// LC-2207: the record must survive a container restart ($.state is lost; $.store is not), or a session that
-// posted its request before the restart could never pass the gate.
+// LC-2207: the record survives a container restart ($.state is lost; $.store is not). Since LC-2265 a fresh
+// board read also restores it, so this is a convenience that must still never leak across sessions.
 function store(on: any, sid: string, saved?: unknown) {
   const data: Record<string, unknown> = saved === undefined ? {} : { rows: saved }
   on('store.get', ((_$: any, e: any) => ({ value: data[e.key] })) as any)
@@ -146,17 +170,17 @@ function store(on: any, sid: string, saved?: unknown) {
   return data
 }
 
-test('recorded Jira writes are saved with the session id', async ($: any, on: any) => {
+test('recorded board reads are saved with the session id', async ($: any, on: any) => {
   const data = store(on, 'session_a')
-  world(on, { stdout: '' }, '{"id": "101"}')
-  await $.tool.call({ tool: 'mcp__Atlassian__addCommentToJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5', commentBody: '[LCH-600 review request] x' })
+  world(on, { stdout: '' }, ROW)
+  await $.tool.call({ tool: SQL, project_id: 'p', query: 'select * from public.track_requests where id = 7' })
   const saved: any = data.rows
   expect(saved.sessionId).toBe('session_a')
   expect(saved.rows.length).toBe(2)
 })
 
 test('after a restart the saved record of the same session reaches the check', async ($: any, on: any) => {
-  const row = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__Atlassian__addCommentToJiraIssue', input: {} }] } }
+  const row = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: SQL, input: {} }] } }
   store(on, 'session_a', { sessionId: 'session_a', rows: [row] })
   const w = world(on, { stdout: '' })
   await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
@@ -176,8 +200,8 @@ test('a store that cannot be read keeps the last good save (LCH-600 on LC-2242, 
   on('store.get', (() => { throw new Error('store down') }) as any)
   on('store.set', ((_$: any, e: any) => { data[e.key] = e.value; return { value: undefined } }) as any)
   on('session.id', (() => ({ value: 'session_a' })) as any)
-  world(on, { stdout: '' }, '{"id": "101"}')
-  await $.tool.call({ tool: 'mcp__Atlassian__addCommentToJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5', commentBody: '[LCH-600 response] ok' })
+  world(on, { stdout: '' }, ROW)
+  await $.tool.call({ tool: SQL, project_id: 'p', query: 'select * from public.track_requests where id = 7' })
   expect(data.rows).toEqual(old)
 })
 

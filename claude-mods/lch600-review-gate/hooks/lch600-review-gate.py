@@ -6,26 +6,22 @@ it reads what the PR changes (the session's local clone: `git diff --name-status
 update, the PR's own file list and patches from the connector). A change counts when it matches the repo's
 `gate` patterns in hooks/paths.json and is not a pure addition the repo allows (`new_ok`: a brand-new file
 such as a new `test-*.yml`; `append_ok`: a file that only gains lines, such as a new row in
-`risk_tiers.json`). If anything counts, the PR body must carry one line per reviewed ticket:
+`risk_tiers.json`). If anything counts, the PR body must carry a review line:
 
-    LCH-600-Review: <KEY> accepted | rebutted | escalated | skipped
+    LCH-600-Review: request <id> closed          (one per board request)
+    LCH-600-Review: skipped <reason>             (urgent; the reason is the record, 10 characters or more)
 
-and this session's Jira calls must show the exchange on <KEY>, read comment by comment:
-  * the session wrote a comment starting `[LCH-600 review request]` on <KEY>;
-  * accepted: a comment STARTING `[LCH-600 feedback]`, created after that request, was read, and the
-    session then wrote a comment starting `[LCH-600 response]`;
-  * rebutted: as accepted, plus a `[LCH-600 feedback]` comment created after the session's latest
-    response (LCH-600 answered the argument);
-  * skipped: the session wrote a comment starting `Skipping LCH-600 review:` plus a reason.
-  * ROUND LIMIT (operator decision 2026-11-18): at most 3 rounds of feedback and response. A 4th response
-    is a gap; still disagreeing after LCH-600's 3rd feedback goes to the operator with both positions and
-    a recommendation, whose call the session records in a comment starting `[LCH-600 operator ruling]`.
-  * escalated: 3 feedback comments after the request, then that operator-ruling comment after the 3rd.
-Quoting the marker mid-comment (a request that says "reply with [LCH-600 feedback]") never counts.
+THE REVIEW RUNS ON THE CROSS-TRACK REQUEST BOARD (LC-2257; LC-2265 moved it off Jira comments). The session
+asks the `ci-speed` desk with `ask_track`, rings it, and closes the request once it agrees with the answer.
+The board keeps the conversation, the clocks and the 3-response cap, and pauses the request for the operator
+past the cap, so this gate no longer counts rounds. For a `request <id>` line this session must have READ that
+`track_requests` row (an `execute_sql` result) showing track `ci-speed`, status `closed`, and at least one desk
+response, or an operator close. A request the asker closed with no answer is a skip, not a review.
 
 WHY. Operator decision (2026-11-17): every change to how code is tested, merged or deployed is reviewed by
 the LCH-600 program (Deploy and CI speed) before a session acts on it. The trigger is the files, not the
-project. LCH-600 reviewed this gate itself on LC-2207 (comment 192938); its ten points shaped this version.
+project. Operator decision (2026-11-19): the review goes through the request board, because Jira comments
+lost state (LC-1991: an accepted answer closed the request and the requester never learned it arrived).
 
 MODE. paths.json `mode`: `shadow` (the default while it beds in) only warns, with a note that starts
 `[mod:lch600-review-gate] SHADOW would-deny`, which register.ts toasts so session-close counts it;
@@ -34,8 +30,8 @@ MODE. paths.json `mode`: `shadow` (the default while it beds in) only warns, wit
 EXEMPT. A PR title that STARTS with an LCH key, or a branch named `lch<N>-...` (incidents, LCH-600's work).
 Pushing a branch is never gated: sessions push to save work in an ephemeral container.
 
-WHAT IT CANNOT SEE. A PreToolUse hook gets no transcript, so register.ts records the Jira calls this gate
-reads and hands them over as `transcript_rows`. A container restart loses them: re-read the ticket.
+WHAT IT CANNOT SEE. A PreToolUse hook gets no transcript, so register.ts records the Supabase reads this gate
+needs and hands them over as `transcript_rows`. After a container restart, re-read the row: one query is enough.
 
 FAIL OPEN. Unreadable input, no clone, a failed diff, a bad paths.json or any exception allows the call
 and writes one line to stderr (exit 1). A diff it could not read adds a NOT CHECKED note.
@@ -51,7 +47,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import transcript_reader  # noqa: E402
@@ -60,27 +56,18 @@ TAG = "[mod:lch600-review-gate]"
 PATHS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paths.json")
 EXEMPT_TITLE = re.compile(r"^\s*LCH-\d+\b", re.I)
 EXEMPT_BRANCH = re.compile(r"^lch-?\d+", re.I)
-LINE_RE = re.compile(r"^\s*LCH-600-Review:\s*([A-Z][A-Z0-9]+-\d+)\s+(accepted|rebutted|escalated|skipped)\b", re.I | re.M)
-KEY_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
-
-
-def _marker(name: str) -> re.Pattern:
-    # Jira's markdown export escapes brackets (`\[LCH-600 feedback\]`, seen on LC-2207), so allow a backslash.
-    return re.compile(r"^\s*\\?\[" + re.escape(name) + r"\\?\]", re.I)
-
-
-REQUEST, FEEDBACK, RESPONSE = _marker("LCH-600 review request"), _marker("LCH-600 feedback"), _marker("LCH-600 response")
-MAX_ROUNDS = 3  # operator decision 2026-11-18: past this, the operator decides
-RULING = _marker("LCH-600 operator ruling")
-ARGUE = re.compile(RESPONSE.pattern + r"\s*ARGUE\b")  # capitals, as step 4 asks
-# Honour system: every session posts under one Jira account, so who wrote a ruling cannot be proven from Jira.
-# The quote makes it checkable by a person, and the CI side (LC-2209) is the real backstop.
-QUOTE = re.compile(r"^\s*> ?\S", re.M)
-SKIP = re.compile(r"^\s*Skipping LCH-600 review:\s*\S", re.I)
-JIRA_URL = "https://b-b-m.atlassian.net/browse/"
+# LC-2265: the review is a row on the cross-track request board (LC-2257), so the PR line names that row.
+LINE_RE = re.compile(r"^\s*LCH-600-Review:\s*request\s+#?(\d+)\s+closed\b", re.I | re.M)
+# A skip carries its reason in the PR body, where anyone reading the PR sees it (it was a Jira comment before).
+SKIP_RE = re.compile(r"^\s*LCH-600-Review:\s*skipped\b[\s:,-]*(\S.{9,})$", re.I | re.M)
+DESK, REQUEST_TYPE = "ci-speed", "speed-review"  # track_desks.track and its request type
+SQL_TOOL = re.compile(r"^mcp__Supabase\w*__execute_sql$")
+# One list defines "approved", shared with plan_stage.py (LC-2265 desk item 1).
+APPROVED = ("accepted", "ship_after_fixes")
+TICKET = re.compile(r"\b([A-Z][A-Z0-9]+)-(\d+)\b")
+BRANCH_TICKET = re.compile(r"^([a-z][a-z0-9]*?)-?(\d+)-", re.I)
+BOARD_DOC = "scripts/track-requests/README.md (LCH-600 review: .github/MERGE-QUEUE.md)"
 STEP_TIMEOUT = 8
-COMMENT_OPS = ("addCommentToJiraIssue", "addOrEditJiraIssueComment")
-GUIDE = ".github/MERGE-QUEUE.md (LCH-600 review before CI and deploy changes)"
 
 
 # ---- rules data -----------------------------------------------------------------------------------------------------
@@ -289,58 +276,35 @@ def is_exempt(title, head) -> bool:
 
 
 def review_lines(body: str) -> list[tuple[str, str]]:
-    return [(k.upper(), v.lower()) for k, v in LINE_RE.findall(body or "")]
+    """("request", "<id>") per `LCH-600-Review: request <id> closed`, ("skipped", "<reason>") per skip line."""
+    body = body or ""
+    return ([("request", n) for n in LINE_RE.findall(body)]
+            + [("skipped", why.strip()) for why in SKIP_RE.findall(body)])
 
 
-ESC_RE = re.compile(r"^\s*LCH-600-Review:\s*([A-Z][A-Z0-9]+-\d+)\s+escalated\s+(\d+)\b", re.I | re.M)
+# ---- board evidence -------------------------------------------------------------------------------------------------
 
+def board_rows(text: str) -> list[dict]:
+    """Every JSON object that looks like a track_requests row (has `id` and `status`) in an execute_sql result.
 
-def escalation_ids(body: str) -> dict[str, str]:
-    """Key -> the ruling comment id an `escalated` line names (round 3, item 2a: it must match a real ruling)."""
-    return {k.upper(): v for k, v in ESC_RE.findall(body or "")}
-
-
-# ---- Jira evidence --------------------------------------------------------------------------------------------------
-
-def _op(name: str, inp: dict) -> tuple[str, dict]:
-    """(operation, arguments) for a direct Atlassian tool or the generic execute runners."""
-    short = name.rsplit("__", 1)[-1]
-    if short in ("executeRead", "executeWrite") and isinstance(inp.get("inputs"), dict):
-        return str(inp.get("name") or ""), inp["inputs"]
-    return short, inp
-
-
-def _key_of(args: dict) -> str:
-    for k in ("issueIdOrKey", "issueKey", "key"):
-        v = args.get(k)
-        if isinstance(v, str) and KEY_RE.match(v.strip().upper()):
-            return v.strip().upper()
-    return ""
-
-
-def _adf_text(node) -> str:
-    if isinstance(node, dict):
-        if node.get("type") == "text":
-            return str(node.get("text") or "")
-        return "".join(_adf_text(c) for c in node.get("content") or [])
-    if isinstance(node, list):
-        return "".join(_adf_text(c) for c in node)
-    return ""
-
-
-def _body_text(v) -> str:
-    if isinstance(v, str):
-        return v
-    if isinstance(v, (dict, list)):
-        return _adf_text(v)
-    return ""
-
-
-def _comment_of(args: dict) -> str:
-    for k in ("commentBody", "body", "comment"):
-        if k in args:
-            return _body_text(args[k])
-    return ""
+    The Supabase connector wraps the rows as a JSON array inside a `result` string, between untrusted-data tags, so
+    this scans for arrays rather than trusting one shape. A result it cannot read gives nothing, never a pass."""
+    outer = _json(text)
+    if isinstance(outer, dict) and isinstance(outer.get("result"), str):
+        text = outer["result"]
+    found, dec, i = [], json.JSONDecoder(), 0
+    while True:
+        i = text.find("[", i)
+        if i < 0:
+            return found
+        try:
+            val, end = dec.raw_decode(text, i)
+        except ValueError:
+            i += 1
+            continue
+        if isinstance(val, list):
+            found += [r for r in val if isinstance(r, dict) and "id" in r and "status" in r]
+        i = end
 
 
 def _when(s) -> datetime | None:
@@ -357,149 +321,106 @@ def _json(text: str):
         return None
 
 
-def read_comments(data, key_hint: str = "") -> list[tuple[str, str, str, datetime | None]]:
-    """(issue key, comment id, body, created) for every comment in a Jira read result.
-
-    Comments are attributed to the issue that holds them (issues.nodes[].key / fields.comment.comments),
-    never to a key that merely appears elsewhere in the text (LCH-600 feedback item 10a)."""
-    out = []
-
-    def walk(node, key):
-        if isinstance(node, dict):
-            k = node.get("key") if isinstance(node.get("key"), str) and KEY_RE.match(node["key"]) else key
-            comments = node.get("comments")
-            if isinstance(comments, list) and k:
-                for c in comments:
-                    # LC-2207 waived: `or` differs only for a bare string "body" entry, which Jira never returns.
-                    if isinstance(c, dict) and ("body" in c):
-                        out.append((k.upper(), str(c.get("id") or ""), _body_text(c.get("body")), _when(c.get("created"))))
-            for name, v in node.items():
-                if name != "comments":
-                    walk(v, k)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v, key)
-
-    walk(data, key_hint)
-    return out
-
-
-def evidence(rows: list[dict]) -> dict:
-    """Per key: request/response/skip comment ids this session wrote, and every comment it read."""
-    ev: dict[str, dict] = {}
-
-    def slot(key):
-        return ev.setdefault(key, {"requests": [], "responses": [], "rulings": [], "skipped": False, "read": {}, "mine": set()})
-
+def evidence(rows: list[dict]) -> dict[str, dict]:
+    """Request id -> the LAST board row this session read for it (later reads win: a request moves on)."""
+    seen: dict[str, dict] = {}
     for name, inp, text in transcript_reader.tool_calls_with_results(rows):
-        if not name.startswith("mcp__Atlassian"):
+        rid = read_id(str((inp if isinstance(inp, dict) else {}).get("query") or ""))
+        if not SQL_TOOL.match(name or "") or rid is None:
             continue
-        op, args = _op(name, inp if isinstance(inp, dict) else {})
-        if op in COMMENT_OPS:
-            key, body, res = _key_of(args), _comment_of(args), _json(text)
-            if not key or not isinstance(res, dict) or not res.get("id"):
-                continue  # a write without a returned comment id did not land
-            s = slot(key)
-            s["read"][str(res["id"])] = (body, _when(res.get("created")))
-            s["mine"].add(str(res["id"]))  # never counts as LCH-600's feedback (round 2, item 1)
-            if REQUEST.match(body):
-                s["requests"].append(str(res["id"]))
-            elif RESPONSE.match(body):
-                s["responses"].append(str(res["id"]))
-            elif RULING.match(body):
-                s["rulings"].append(str(res["id"]))
-            elif SKIP.match(body):
-                s["skipped"] = True
-        else:
-            for key, cid, body, created in read_comments(_json(text), _key_of(args)):
-                if cid:
-                    slot(key)["read"][cid] = (body, created)
-    return ev
+        for r in board_rows(text):
+            if str(r["id"]) != rid:  # the row must be the one the query asked for (desk item 2a)
+                continue
+            seen[str(r["id"])] = r
+    return seen
 
 
-def _latest(s: dict, ids: list[str]) -> datetime | None:
-    # LC-2207 waived: every written id is in s["read"], so `and` -> `or` only differs when it lets a None through,
-    # and the max() of [None] is still None (covered by "request with no created time").
-    times = [s["read"][i][1] for i in ids if i in s["read"] and s["read"][i][1] is not None]
-    return max(times) if times else None
+def _count(v) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
 
 
-def _first(s: dict, ids: list[str]) -> datetime | None:
-    times = [s["read"][i][1] for i in ids if i in s["read"] and s["read"][i][1] is not None]
-    return min(times) if times else None
+READ_ROW = ("select r.id, r.track, r.ticket_key, r.status, r.responses, r.closed_by, r.asked_by_session, "
+            "m.author_session as answered_by, m.payload->>'verdict' as verdict from public.track_requests r "
+            "left join lateral (select author_session, payload from public.track_request_messages where request_id = "
+            "r.id and kind = 'response' order by seq desc limit 1) m on true where r.id = {id};")
 
 
-def _feedback_after(s: dict, t: datetime) -> datetime | None:
-    """The FIRST feedback comment created after `t`, or None."""
-    times = [c for cid, (b, c) in s["read"].items()
-             if cid not in s["mine"] and c is not None and c > t and FEEDBACK.match(b)]
-    return min(times) if times else None
+def _norm(q: str) -> str:
+    return re.sub(r"\s+", " ", q).strip().rstrip(";").strip()
 
 
-def _feedbacks_after(s: dict, t: datetime) -> list[datetime]:
-    """Every feedback comment created after `t`, oldest first: one per round."""
-    return sorted(c for cid, (b, c) in s["read"].items()
-                  if cid not in s["mine"] and c is not None and c > t and FEEDBACK.match(b))
+READ_ROW_EXACT = re.compile("^" + re.escape(_norm(READ_ROW)).replace(re.escape("{id}"), r"(\d+)") + "$")
 
 
-def _mine_after(s: dict, ids: list[str], t: datetime) -> list[datetime]:
-    return [s["read"][i][1] for i in ids if i in s["read"] and s["read"][i][1] is not None and s["read"][i][1] > t]
+def read_id(query: str) -> str | None:
+    """The request id when `query` is exactly READ_ROW (whitespace and a trailing `;` aside), else None.
+
+    An allowlist of one text, not a denylist: aliases, casts, functions, comments or a second statement can each make
+    a hand-written SELECT print a good-looking row, so any other query is no board read (LC-2265 desk round 2)."""
+    m = READ_ROW_EXACT.match(_norm(query))
+    return m.group(1) if m else None
 
 
-def missing_evidence(lines: list[tuple[str, str]], rows: list[dict], esc_ids: dict | None = None) -> list[str]:
-    ev = evidence(rows)
-    esc_ids = esc_ids or {}
+def pr_tickets(title, head) -> set[str]:
+    """Jira keys the PR names: any KEY-N in its title, and the key a `lc2265-...` branch starts with."""
+    keys = {f"{a}-{n}" for a, n in TICKET.findall(str(title or ""))}
+    m = BRANCH_TICKET.match(str(head or "").split(":", 1)[-1].strip())
+    if m:
+        keys.add(f"{m.group(1).upper()}-{m.group(2)}")
+    return keys
+
+
+def missing_evidence(lines: list[tuple[str, str]], rows: list[dict], tickets: set[str] | None = None) -> list[str]:
+    seen = evidence(rows)
     gaps = []
-    for key, verdict in lines:
-        s = ev.get(key) or {"requests": [], "responses": [], "rulings": [], "skipped": False, "read": {}, "mine": set()}
-        if verdict == "skipped":
-            if not s["skipped"]:
-                gaps.append(f"{key} skipped: no `Skipping LCH-600 review: <reason>` comment from this session on {key}")
+    for kind, val in lines:
+        if kind == "skipped":
+            continue  # the reason in the PR body is the record; review_lines already required one
+        row = seen.get(val)
+        read = "`" + READ_ROW.format(id=val) + "`"
+        if row is None:
+            gaps.append(f"request {val}: this session has not read it from the board. Run {read}")
             continue
-        req = _latest(s, s["requests"])
-        if req is None:
-            gaps.append(f"{key} {verdict}: this session has not posted a `[LCH-600 review request]` comment on {key}")
+        if row.get("track") != DESK:
+            gaps.append(f"request {val}: it went to the `{row.get('track')}` desk, not `{DESK}` (read it with {read}, "
+                        "which returns the track)")
             continue
-        # Rounds count from this session's FIRST request on the key, so a fresh request cannot reset the cap
-        # (LCH-600 round 3, item 1). A genuinely new change gets a new ticket key, and with it a new count.
-        first = _first(s, s["requests"])
-        # The cap applies to every verdict, `escalated` included (independent review on PR #3849): a 4th response
-        # means the session kept arguing instead of escalating. The way out is the operator, recorded as a skip.
-        if len(_mine_after(s, s["responses"], first)) > MAX_ROUNDS:
-            gaps.append(f"{key} {verdict}: more than {MAX_ROUNDS} responses on {key}, so the round limit is already "
-                        "broken. Give the operator a NEEDS YOU with both positions and your recommendation; once they "
-                        "decide, comment `Skipping LCH-600 review: operator ruling <comment id>` and use `skipped`")
-            continue
-        if verdict == "escalated":
-            rounds = _feedbacks_after(s, first)
-            rid = esc_ids.get(key)
-            ruling = s["read"].get(rid) if rid in s["rulings"] else None
-            argued = [i for i in s["responses"] if i in s["read"] and s["read"][i][1] is not None
-                      and s["read"][i][1] > first and ARGUE.match(s["read"][i][0])]
-            if len(rounds) < MAX_ROUNDS:
-                gaps.append(f"{key} escalated: only {len(rounds)} of {MAX_ROUNDS} feedback rounds on {key}; the operator "
-                            "is asked only after LCH-600's third feedback still leaves you disagreeing")
-            elif not argued:
-                gaps.append(f"{key} escalated: no `[LCH-600 response] ARGUE` from this session on {key}; escalation is "
-                            "for a disagreement, so accept the feedback instead")
-            elif ruling is None or ruling[1] is None or ruling[1] <= rounds[MAX_ROUNDS - 1]:
-                gaps.append(f"{key} escalated: the PR line must name a `[LCH-600 operator ruling]` comment this session "
-                            f"posted on {key} after the third feedback (`escalated <ruling comment id>`). Post it yourself, "
-                            "after bringing both positions and your recommendation to the operator")
-            elif not QUOTE.search(ruling[0]):
-                gaps.append(f"{key} escalated: the ruling comment must quote the operator's words on a line starting "
-                            "with `> `")
-            continue
-        fb = _feedback_after(s, req)
-        if fb is None:
-            gaps.append(f"{key} {verdict}: no comment starting `[LCH-600 feedback]` read on {key} after your request")
-            continue
-        resp = _latest(s, s["responses"])
-        if resp is None or resp < fb:
-            gaps.append(f"{key} {verdict}: no `[LCH-600 response]` comment from this session on {key} after the feedback")
-            continue
-        if verdict == "rebutted" and _feedback_after(s, resp) is None:
-            gaps.append(f"{key} rebutted: LCH-600 has not answered your rebuttal yet (no `[LCH-600 feedback]` after it)")
+        status = row.get("status")
+        if status == "open":
+            gaps.append(f"request {val}: still open, waiting on the desk. Wait for its ring back (the board marks a "
+                        "late desk overdue), then re-read the row")
+        elif status == "responded":
+            gaps.append(f"request {val}: the desk has answered. Read it (`select seq, kind, body, link from "
+                        f"public.track_request_messages where request_id = {val} order by seq;`), then "
+                        f"`select public.close_request({val}, '<your session id>', '<one-line resolution>');` or "
+                        "follow_up, and re-read the row")
+        elif status == "paused":
+            gaps.append(f"request {val}: paused after the desk's last allowed response, so the operator decides. Post "
+                        "the follow_up's tell_operator text as NEEDS YOU; their ruling (rule_on_request) closes or "
+                        "re-opens it")
+        elif status != "closed":
+            gaps.append(f"request {val}: status `{status}` is not closed")
+        elif row.get("closed_by") == "operator":
+            pass  # the operator's ruling closes it whatever the desk said
+        elif _count(row.get("responses")) < 1:
+            gaps.append(f"request {val}: closed with no answer from the desk. That is a skip, not a review: use "
+                        "`LCH-600-Review: skipped <reason>`")
+        elif "verdict" not in row or "answered_by" not in row:
+            gaps.append(f"request {val}: the read does not show the desk's verdict and who gave it. Re-read it with {read}")
+        elif row.get("verdict") not in APPROVED:
+            gaps.append(f"request {val}: the desk's last answer is `{row.get('verdict')}`, not accepted or "
+                        "ship_after_fixes. Closing it does not turn that into an approval: fix what it asked, then "
+                        f"`follow_up({val}, ...)` for a re-check")
+        elif not row.get("answered_by") or row.get("answered_by") == row.get("asked_by_session"):
+            gaps.append(f"request {val}: the answer was written by the session that asked. The desk answers, not "
+                        "the asker")
+        elif tickets is not None and row.get("ticket_key") not in tickets:
+            gaps.append(f"request {val}: it was asked for `{row.get('ticket_key')}`, but this PR names "
+                        f"{', '.join(sorted(tickets)) or 'no ticket'} in its title or branch. Cite this PR's own "
+                        "request, or put its ticket key in the title")
     return gaps
 
 
@@ -508,32 +429,26 @@ def missing_evidence(lines: list[tuple[str, str]], rows: list[dict], esc_ids: di
 def flow_text(files: list[str], ask_seconds: bool = False) -> str:
     shown = ", ".join(files[:6]) + (f" and {len(files) - 6} more" if len(files) > 6 else "")
     return (
-        f"This PR changes how code is tested, merged or deployed ({shown}), so LCH-600 (Deploy and CI speed) "
-        f"reviews it first (operator decision 2026-11-17, LC-2207). Pushing the branch is fine. Protocol: {GUIDE}.\n"
-        "1. On each Jira story this PR serves, post a comment that STARTS with `[LCH-600 review request]`: what "
-        "changes and why, the files, the expected effect on PR wait time, links to the stories.\n"
-        "2. Ask on the request board (LCH-740): execute_sql `select public.ask_track('ci-speed', 'speed-review', "
-        "'<one line: what to review, the PR or branch, the Jira comment id>', '<your session id>', 'LC-1234');`, "
-        "then send_message the `ring` it returns and run `mark_delivered`. That rings the review desk (LCH-722, "
-        "session_01LpqYrCPF63BFU9BJKCpLK7). No execute_sql? send_message the desk directly, naming the tickets. "
-        "No send_message tool? Do nothing: the desk sweeps every 30 minutes. Never ask the operator to relay it. "
-        "After you fix what the feedback asked, ask for the re-check with `select public.follow_up(<request id>, "
-        "'<your session id>', '<what changed, new commit>');` and ring the desk again; an ACCEPT alone leaves the "
-        "fixes unchecked.\n"
-        "3. Check back with send_later at 5, 10, 20, 40 and 60 minutes. After that, stop polling and give the "
-        "operator a NEEDS YOU banner saying the review is waiting.\n"
-        "4. Answer on the ticket with a comment that STARTS with `[LCH-600 response] ACCEPT` (capitals), or "
-        "`[LCH-600 response] ARGUE` plus your evidence. If you argue, wait for LCH-600's next feedback comment. "
-        "At most 3 rounds: still disagreeing after LCH-600's third feedback, stop and give the operator a NEEDS YOU "
-        "with both positions and your recommendation, record their call in a comment that STARTS with "
-        "`[LCH-600 operator ruling]` that you post yourself, quoting their words on a `> ` line, and use "
-        "`escalated <ruling comment id>` below.\n"
-        "5. Add one line per ticket to the PR body, `LCH-600-Review: LC-1234 accepted <feedback comment id>` (or `rebutted <id>`, or `escalated <ruling comment id>`), and "
-        "repeat this call.\n"
-        "A T2 PR: finish this review before the approval request goes out, so the operator approves once. "
-        "Urgent: comment `Skipping LCH-600 review: <reason>` on the ticket and use `LCH-600-Review: LC-1234 "
-        "skipped`. A PR titled with an LCH key is exempt."
-        + ("\nThis PR adds or changes a check that runs on every PR: the review request must state the seconds it adds "
+        f"This PR changes how code is tested, merged or deployed ({shown}), so the Deploy and CI speed desk "
+        f"(LCH-600) reviews it first (operator decision 2026-11-17, LC-2207). Pushing the branch is fine. The review "
+        f"runs on the cross-track request board: {BOARD_DOC}.\n"
+        f"1. Ask: `select public.ask_track('{DESK}', '{REQUEST_TYPE}', '<what changes and why, the files, the "
+        "expected effect on PR wait time, links to the stories and the branch>', '<your session id>', "
+        "'<ticket key>');` Your session id: get_session with no arguments.\n"
+        "2. Ring the desk: send the result's `ring.message` to `ring.session_id` with send_message, then "
+        "`select public.mark_delivered(<request_id>, true);` (the track-doorbell mod holds the turn until you do). "
+        "Never ask the operator to relay it.\n"
+        "3. Wait for the desk's ring back. Set one send_later check-in at the result's `answer_due_at`; no polling.\n"
+        "4. Read the answer (`select seq, kind, body, link from public.track_request_messages where request_id = <id> "
+        "order by seq;`). Agree: `select public.close_request(<id>, '<your session id>', '<one-line resolution>');`. "
+        "Disagree: `select public.follow_up(<id>, '<your session id>', '<your evidence>');` and wait again. The desk "
+        "answers at most 3 times; a follow-up after that pauses the request and the board emails the operator: post "
+        "its `tell_operator` text as NEEDS YOU.\n"
+        f"5. Read the closed row (`{READ_ROW.format(id='<id>')}`), add `LCH-600-Review: request <id> closed` to the "
+        "PR body, and repeat this call.\n"
+        "A T2 PR: finish this review before the approval request goes out, so the operator approves once. Urgent: "
+        "`LCH-600-Review: skipped <reason, 10 characters or more>`. A PR titled with an LCH key is exempt."
+        + ("\nThis PR adds or changes a check that runs on every PR: the question must state the seconds it adds "
            "per PR and which existing check it folds into or retires (LCH-620)." if ask_seconds else "")
     )
 
@@ -546,7 +461,7 @@ def decide(payload: dict, changes: list[dict] | None, rules: dict) -> dict | Non
     if changes is None:
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
                 f"{TAG} NOT CHECKED: could not read what this PR changes. If it touches CI, CD, deploy or "
-                f"test-runner files it still needs an LCH-600 review (LC-2207). Protocol: {GUIDE}."}}
+                f"test-runner files it still needs an LCH-600 review (LC-2207). Protocol: {BOARD_DOC}."}}
     # LC-2207 waived: a missing owner/repo falls to the default rules either way ("" or "None"), an equivalent mutant.
     r = payload_rules(payload, rules)
     hit = gated_changes(changes, r)
@@ -556,13 +471,11 @@ def decide(payload: dict, changes: list[dict] | None, rules: dict) -> dict | Non
     if not lines:
         reason = flow_text(hit, any(_match(h, r["ask_seconds"]) for h in hit))
     else:
-        gaps = missing_evidence(lines, transcript_reader.rows_for(payload), escalation_ids(str(inp.get("body") or "")))
+        gaps = missing_evidence(lines, transcript_reader.rows_for(payload), pr_tickets(inp.get("title"), inp.get("head")))
         if not gaps:
             return None
-        reason = ("The PR body names an LCH-600 review, but this session's Jira calls do not show it. Missing:\n- "
-                  + "\n- ".join(gaps)
-                  + "\nRe-read the ticket (getJiraIssue with the comment field) or post the missing comment, then "
-                  f"repeat the call. Tickets: " + ", ".join(JIRA_URL + k for k, _ in lines))
+        reason = ("The PR body names an LCH-600 review, but this session's board reads do not show it closed. "
+                  "Missing:\n- " + "\n- ".join(gaps) + "\nThen repeat the call. Procedure: " + BOARD_DOC)
     if rules.get("mode") == "enforce":
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                        "permissionDecisionReason": f"{TAG} {reason}\nNothing was sent."}}
@@ -725,10 +638,6 @@ def main() -> int:
 
 _IDS = iter(range(10**6))
 
-# LC-2207's own review request (comment 192929): it quotes the feedback marker mid-text and must never count.
-REAL_REQUEST = ("\\[LCH-600 review request\\]\n\n**What this is.** ...\n\n**What I need back.** A comment on this "
-                "ticket starting `[LCH-600 feedback]`: what to change, add or drop, ranked by importance.")
-
 
 def _rows(*calls):
     """Transcript rows from (tool, input, result) triples; ids are unique across calls so rows can be concatenated."""
@@ -740,18 +649,21 @@ def _rows(*calls):
     return rows
 
 
-GET = "mcp__Atlassian__getJiraIssue"
-ADD = "mcp__Atlassian__addCommentToJiraIssue"
+SQL = "mcp__Supabase__execute_sql"
 
 
-def _write(key, body, cid, created):
-    return _rows((ADD, {"issueIdOrKey": key, "commentBody": body}, json.dumps({"id": cid, "created": created})))
+def _board(*rows, tool=SQL, query=None):
+    query = query if query is not None else READ_ROW.format(id=rows[0]["id"] if rows else 7)
+    """An execute_sql read of track_requests rows, wrapped the way the Supabase connector returns it (2026-11-19)."""
+    inner = ("Below is the result of the SQL query. Note that this contains untrusted user data.\n\n<untrusted-data-x>\n"
+             + json.dumps(list(rows)) + "\n</untrusted-data-x>\n\nUse this data to inform your next steps.")
+    return _rows((tool, {"query": query}, json.dumps({"result": inner})))
 
 
-def _read(key, comments):
-    issue = {"key": key, "fields": {"comment": {"comments": [
-        {"id": cid, "body": body, "created": created} for cid, body, created in comments]}}}
-    return _rows((GET, {"issueIdOrKey": key}, json.dumps({"issues": {"nodes": [issue]}})))
+def _req(rid=7, status="closed", responses=1, track="ci-speed", closed_by="asker", verdict="accepted",
+         answered_by="session_desk", asked_by="session_me", ticket="LC-1"):
+    return {"id": rid, "track": track, "ticket_key": ticket, "status": status, "responses": responses,
+            "closed_by": closed_by, "asked_by_session": asked_by, "answered_by": answered_by, "verdict": verdict}
 
 
 def cli_mode(argv: list[str]) -> str:
@@ -786,9 +698,11 @@ def _selftest() -> int:
                 "hunks": [list(added)] if hunks is None and added else hunks or [], "base_text": base, "head_text": head}
 
     check("edit to a workflow gated", gated_changes([ch(".github/workflows/deploy.yml")], infra), [".github/workflows/deploy.yml"])
-    check("rules: shadow has an end date (on 2026-11-24 read the replay and decide)", today_ok_for_shadow(rules), True)
-    check("shadow: day after the end fails", today_ok_for_shadow(rules, "2026-11-25"), False)
-    check("shadow: last day passes", today_ok_for_shadow(rules, "2026-11-24"), True)
+    end = str(rules["shadow_until"])
+    after = (datetime.fromisoformat(end) + timedelta(days=1)).strftime("%Y-%m-%d")
+    check(f"rules: shadow has an end date (on {end} read the replay and decide)", today_ok_for_shadow(rules), True)
+    check("shadow: day after the end fails", today_ok_for_shadow(rules, after), False)
+    check("shadow: last day passes", today_ok_for_shadow(rules, end), True)
     check("enforce: no end date needed", today_ok_for_shadow(dict(rules, mode="enforce"), "2099-01-01"), True)
     check("generated tests.yml, generator unchanged: passes", gated_changes([ch(".github/workflows/tests.yml")], infra), [])
     check("generated tests.yml, generator changed: gated", gated_changes(
@@ -915,123 +829,100 @@ def _selftest() -> int:
     check("exempt: project-thread branch is not", is_exempt("LC-1 t", "claude/project-thread-x"), False)
     check("exempt: nothing given", is_exempt(None, None), False)
 
-    check("lines parsed", review_lines("x\nLCH-600-Review: lc-12 Accepted\n  LCH-600-Review: LC-13 skipped (urgent)"),
-          [("LC-12", "accepted"), ("LC-13", "skipped")])
-    check("bad verdict ignored", review_lines("LCH-600-Review: LC-12 maybe"), [])
-    check("mid-line ignored", review_lines("see LCH-600-Review: LC-12 accepted"), [])
+    check("lines parsed", review_lines("x\nLCH-600-Review: request 7 closed\n  lch-600-review: Request #12 Closed"),
+          [("request", "7"), ("request", "12")])
+    check("skip parsed with its reason", review_lines("LCH-600-Review: skipped: prod is down, hotfix first"),
+          [("skipped", "prod is down, hotfix first")])
+    check("skip without a reason ignored", review_lines("LCH-600-Review: skipped"), [])
+    check("skip with a too-short reason ignored", review_lines("LCH-600-Review: skipped urgent"), [])
+    check("old Jira line no longer counts", review_lines("LCH-600-Review: LC-12 accepted 193156"), [])
+    check("open request is not a review line", review_lines("LCH-600-Review: request 7 open"), [])
+    check("mid-line ignored", review_lines("see LCH-600-Review: request 7 closed"), [])
 
-    T = "2026-11-17T14:{:02d}:00.000-0600"
-    req = _write("LC-12", "[LCH-600 review request] plan", "100", T.format(0))
-    fb = _read("LC-12", [("100", REAL_REQUEST, T.format(0)), ("101", "\\[LCH-600 feedback\\] fold it", T.format(5))])
-    resp = _write("LC-12", "[LCH-600 response] Accepted", "102", T.format(8))
-    check("accepted: request, feedback, response", missing_evidence([("LC-12", "accepted")], req + fb + resp), [])
-    mine_fb = _write("LC-12", "[LCH-600 feedback] looks fine", "150", T.format(3))
-    mine_read = _read("LC-12", [("150", "[LCH-600 feedback] looks fine", T.format(3))])
-    check("feedback this session wrote itself does not count",
-          len(missing_evidence([("LC-12", "accepted")], req + mine_fb + mine_read + resp)), 1)
-    check("own feedback does not answer a rebuttal", len(missing_evidence([("LC-12", "rebutted")],
-          req + fb + resp + _write("LC-12", "[LCH-600 feedback] ok", "151", T.format(20)))), 1)
-    check("accepted: no request from this session", "has not posted" in " ".join(
-        missing_evidence([("LC-12", "accepted")], fb + resp)), True)
-    undated = _rows((ADD, {"issueIdOrKey": "LC-12", "commentBody": "[LCH-600 review request] x"}, json.dumps({"id": "100"})))
-    check("request with no created time: treated as not posted", "has not posted" in " ".join(
-        missing_evidence([("LC-12", "accepted")], undated + _read("LC-12", [("101", "[LCH-600 feedback] y", T.format(5))]) + resp)), True)
-    check("runner without inputs: ignored, no crash", evidence(_rows(("mcp__Atlassian_MCP__executeRead", {"name": "x"}, "{}"))), {})
-    check("key: non-string ignored", _key_of({"issueIdOrKey": 123}), "")
-    check("key: not a key ignored", _key_of({"issueIdOrKey": "hello"}), "")
-    check("ADF: top-level list read", _body_text([{"type": "text", "text": "x"}, {"type": "text", "text": "y"}]), "xy")
-    check("read: non-dict comment skipped", read_comments({"key": "LC-1", "comments": ["x", {"id": "2", "body": "b"}]})[0][1], "2")
-    check("accepted: no response", len(missing_evidence([("LC-12", "accepted")], req + fb)), 1)
-    check("accepted: no feedback read", len(missing_evidence([("LC-12", "accepted")], req + resp)), 1)
-    check("accepted: nothing", len(missing_evidence([("LC-12", "accepted")], [])), 1)
-    only_request = _read("LC-12", [("100", REAL_REQUEST, T.format(0))])
-    check("REAL request quoting the marker is not feedback",
-          len(missing_evidence([("LC-12", "accepted")], req + only_request + resp)), 1)
-    old_fb = _read("LC-12", [("90", "[LCH-600 feedback] earlier round", "2026-11-16T10:00:00.000-0600")])
-    check("feedback older than the request does not count", len(missing_evidence([("LC-12", "accepted")], req + old_fb + resp)), 1)
-    early_resp = _write("LC-12", "[LCH-600 response] ok", "99", T.format(1))
-    check("response before the feedback does not count", len(missing_evidence([("LC-12", "accepted")], req + early_resp + fb)), 1)
-    check("feedback on another issue does not count", len(missing_evidence([("LC-12", "accepted")],
-          req + _read("LC-99", [("101", "[LCH-600 feedback] x", T.format(5))]) + resp)), 1)
-    bad_write = _rows((ADD, {"issueIdOrKey": "LC-12", "commentBody": "[LCH-600 response] x"}, "Error: 403"))
-    check("failed comment write does not count", len(missing_evidence([("LC-12", "accepted")], req + fb + bad_write)), 1)
-    check("rebutted: needs LCH-600's answer after it", len(missing_evidence([("LC-12", "rebutted")], req + fb + resp)), 1)
-    answer = _read("LC-12", [("103", "[LCH-600 feedback] fair, keep it", T.format(20))])
-    check("rebutted: answered", missing_evidence([("LC-12", "rebutted")], req + fb + resp + answer), [])
+    check("board rows: connector wrapping read", board_rows(json.dumps({"result": "x [" + json.dumps(_req()) + "] y"})),
+          [_req()])
+    check("board rows: plain JSON array", board_rows(json.dumps([_req(), {"other": 1}])), [_req()])
+    check("board rows: unreadable gives nothing", board_rows("no rows [not json"), [])
+    check("board rows: a nested array inside a row is still one row", len(board_rows(json.dumps(
+          {"result": json.dumps([dict(_req(), tags=["a", "b"])])}))), 1)
+    check("board rows: a non-array value skipped", board_rows('{"x": [1, 2]} ' + json.dumps([_req()])), [_req()])
 
-    def rounds(n_fb, n_resp, ruling_at=None):
-        rows = list(req)
-        rows += _read("LC-12", [(str(200 + i), f"[LCH-600 feedback] round {i + 1}", T.format(10 * i + 2)) for i in range(n_fb)])
-        for i in range(n_resp):
-            rows += _write("LC-12", f"[LCH-600 response] ARGUE {i + 1}", str(300 + i), T.format(10 * i + 5))
-        if ruling_at is not None:
-            rows += _write("LC-12", "[LCH-600 operator ruling] keep the check\n> keep it, the operator", "400", T.format(ruling_at))
-        return rows
-    E = {"LC-12": "400"}
-    check("round limit: 3 rounds then accept is fine", missing_evidence([("LC-12", "accepted")], rounds(3, 3)), [])
-    check("round limit: a 4th response is a gap", "round limit is already broken" in " ".join(
-          missing_evidence([("LC-12", "rebutted")], rounds(4, 4))), True)
-    check("round limit: 4th response gaps accepted too", len(missing_evidence([("LC-12", "accepted")], rounds(4, 4))), 1)
-    check("escalated: ruling after the 3rd feedback", missing_evidence([("LC-12", "escalated")], rounds(3, 2, 25), E), [])
-    check("escalated: too early, 2 rounds", "only 2 of 3" in " ".join(
-          missing_evidence([("LC-12", "escalated")], rounds(2, 2, 25), E)), True)
-    check("escalated: ruling before the 3rd feedback does not count", "operator ruling" in " ".join(
-          missing_evidence([("LC-12", "escalated")], rounds(3, 2, 21), E)), True)
-    check("escalated: a 4th response breaks the cap", "round limit is already broken" in " ".join(
-          missing_evidence([("LC-12", "escalated")], rounds(3, 4, 40), E)), True)
-    check("escalated: no ruling", len(missing_evidence([("LC-12", "escalated")], rounds(3, 3), E)), 1)
-    check("escalated: PR line names another id", "must name" in " ".join(
-          missing_evidence([("LC-12", "escalated")], rounds(3, 2, 25), {"LC-12": "999"})), True)
-    check("escalated: PR line names no id", "must name" in " ".join(
-          missing_evidence([("LC-12", "escalated")], rounds(3, 2, 25))), True)
-    check("escalated: never argued", "no `[LCH-600 response] ARGUE`" in " ".join(
-          missing_evidence([("LC-12", "escalated")], rounds(3, 0, 25), E)), True)
-    accept_only = rounds(3, 0, 25) + _write("LC-12", "[LCH-600 response] ACCEPT", "310", T.format(23))
-    check("escalated: ACCEPT is not ARGUE", "ARGUE" in " ".join(
-          missing_evidence([("LC-12", "escalated")], accept_only, E)), True)
-    unquoted = rounds(3, 2) + _write("LC-12", "[LCH-600 operator ruling] fine", "400", T.format(25))
-    check("escalated: ruling without a > quote", "`> `" in " ".join(
-          missing_evidence([("LC-12", "escalated")], unquoted, E)), True)
-    undated = {"read": {"1": ("x", None), "2": ("x", datetime(2026, 1, 2))}}
-    check("first: an undated id is skipped", _first(undated, ["1", "2"]), datetime(2026, 1, 2))
-    check("mine_after: an undated id is skipped", _mine_after(undated, ["1", "2"], datetime(2026, 1, 1)), [datetime(2026, 1, 2)])
-    check("escalation id parsed", escalation_ids("x\nLCH-600-Review: lc-12 escalated 400\nLCH-600-Review: LC-9 accepted 5"),
-          {"LC-12": "400"})
-    # LCH-600 round 3, item 1: five request/feedback/ARGUE pairs, each with a fresh request, must not reset the cap
-    reset = []
-    for i in range(5):
-        reset += _write("LC-12", "[LCH-600 review request] again", str(500 + i), T.format(10 * i))
-        reset += _read("LC-12", [(str(600 + i), "[LCH-600 feedback] no", T.format(10 * i + 2))])
-        reset += _write("LC-12", "[LCH-600 response] ARGUE", str(700 + i), T.format(10 * i + 5))
-    check("round limit: a fresh request does not reset the cap", "round limit is already broken" in " ".join(
-          missing_evidence([("LC-12", "accepted")], reset)), True)
-    check("escalated: needs a request", "has not posted" in " ".join(missing_evidence([("LC-12", "escalated")], [])), True)
-    check("escalated line parsed", review_lines("LCH-600-Review: LC-12 escalated"), [("LC-12", "escalated")])
-    skip = _write("LC-12", "Skipping LCH-600 review: prod down", "104", T.format(1))
-    check("skipped with comment", missing_evidence([("LC-12", "skipped")], skip), [])
-    check("skipped without comment", len(missing_evidence([("LC-12", "skipped")], [])), 1)
-    check("skip with no reason does not count",
-          len(missing_evidence([("LC-12", "skipped")], _write("LC-12", "Skipping LCH-600 review:", "105", T.format(1)))), 1)
-    runner = _rows(("mcp__Atlassian_MCP__executeWrite", {"name": "addOrEditJiraIssueComment", "cloudId": "c",
-                    "inputs": {"issueIdOrKey": "lc-12", "body": "[LCH-600 response] no"}},
-                    json.dumps({"id": "102", "created": T.format(8)})),
-                   ("mcp__Atlassian_MCP__executeRead", {"name": "listJiraIssueComments", "inputs": {"issueIdOrKey": "LC-12"}},
-                    json.dumps({"comments": [{"id": "101", "body": "[LCH-600 feedback] y", "created": T.format(5)},
-                                             {"id": "103", "body": "[LCH-600 feedback] z", "created": T.format(20)}]})))
-    check("execute runners count", missing_evidence([("LC-12", "rebutted")], req + runner), [])
-    adf = {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "[LCH-600 response] ok"}]}]}
-    adf_resp = _rows((ADD, {"issueIdOrKey": "LC-12", "commentBody": adf}, json.dumps({"id": "102", "created": T.format(8)})))
-    check("ADF response counts", missing_evidence([("LC-12", "accepted")], req + fb + adf_resp), [])
-    check("non-Atlassian tool ignored", len(missing_evidence([("LC-12", "accepted")],
-          req + _rows(("mcp__other__getJiraIssue", {"issueIdOrKey": "LC-12"},
-                       json.dumps({"key": "LC-12", "comments": [{"id": "101", "body": "[LCH-600 feedback] x",
-                                                                "created": T.format(5)}]}))) + resp)), 1)
-    check("read: comments keep their own issue", [c[0] for c in read_comments(
-        {"issues": {"nodes": [{"key": "LC-1", "fields": {"comment": {"comments": [{"id": "1", "body": "b"}]}}},
-                              {"key": "LC-2", "fields": {"comment": {"comments": [{"id": "2", "body": "c"}]}}}]}})],
-          ["LC-1", "LC-2"])
-    check("read: non-JSON text gives nothing", read_comments(None, "LC-1"), [])
-    check("when: bad date", _when("nope"), None)
+    check("closed with an answer: no gap", missing_evidence([("request", "7")], _board(_req())), [])
+    check("operator close without an answer: no gap",
+          missing_evidence([("request", "7")], _board(_req(responses=0, closed_by="operator"))), [])
+    check("clock close after an answer: no gap",
+          missing_evidence([("request", "7")], _board(_req(closed_by="clock"))), [])
+    check("Supabase_Muni connector counts too",
+          missing_evidence([("request", "7")], _board(_req(), tool="mcp__Supabase_Muni__execute_sql")), [])
+    check("a row printed by a query not on track_requests is no read (review finding 1)",
+          bool(missing_evidence([("request", "7")], _board(_req(), query="select 7 as id, 'ci-speed' as track, 'closed' as status"))), True)
+    check("a track_requests query that unions in its own row is no read",
+          bool(missing_evidence([("request", "7")], _board(_req(), query="select id, status from public.track_requests where false union select 7, 'closed'"))), True)
+    check("the view v_track_requests is not the table",
+          bool(missing_evidence([("request", "7")], _board(_req(), query="select * from public.v_track_requests where id = 7"))), True)
+    check("any other query on track_requests is no read (desk round 2: exact text only)",
+          "not read it" in " ".join(missing_evidence([("request", "7")], _board(_req(), query="select * from track_requests where id = 7"))), True)
+    check("an implicit alias forges nothing",
+          "not read it" in " ".join(missing_evidence([("request", "7")], _board(_req(), query=READ_ROW.format(id=7).replace("r.status,", "'closed' status,")))), True)
+    check("a comment hiding the WHERE forges nothing",
+          "not read it" in " ".join(missing_evidence([("request", "7")], _board(_req(), query=READ_ROW.format(id=7)[:-1] + " -- where r.id = 7"))), True)
+    check("whitespace and the trailing ; do not matter",
+          missing_evidence([("request", "7")], _board(_req(), query="  " + READ_ROW.format(id=7).replace(" ", "\n  ")[:-1] + "  ")), [])
+    check("a changed literal is not the read", read_id(READ_ROW.format(id=7).replace("'response'", "'RESPONSE'")), None)
+    check("read_id: the id", read_id(READ_ROW.format(id=42)), "42")
+    check("read_id: a second statement is not the read", read_id(READ_ROW.format(id=7) + " select 1;"), None)
+    check("closed after a not_yet answer: gap (desk item 1)",
+          "not_yet" in " ".join(missing_evidence([("request", "7")], _board(_req(verdict="not_yet")))), True)
+    check("closed after a needs_info answer: gap",
+          "needs_info" in " ".join(missing_evidence([("request", "7")], _board(_req(verdict="needs_info")))), True)
+    check("ship_after_fixes passes", missing_evidence([("request", "7")], _board(_req(verdict="ship_after_fixes"))), [])
+    check("operator close passes whatever the verdict",
+          missing_evidence([("request", "7")], _board(_req(verdict="not_yet", closed_by="operator"))), [])
+    check("an answer the asker wrote: gap (desk item 2c)",
+          "session that asked" in " ".join(missing_evidence([("request", "7")], _board(_req(answered_by="session_me")))), True)
+    check("no answer author: gap",
+          "session that asked" in " ".join(missing_evidence([("request", "7")], _board(_req(answered_by=None)))), True)
+    check("an old read without the verdict: re-read",
+          "Re-read" in " ".join(missing_evidence([("request", "7")], _board({k: v for k, v in _req().items() if k != "verdict"}))), True)
+    check("another ticket's request: gap (desk item 2b)",
+          "asked for `LC-9`" in " ".join(missing_evidence([("request", "7")], _board(_req(ticket="LC-9")), {"LC-1"})), True)
+    check("a PR naming no ticket says so",
+          "names no ticket" in " ".join(missing_evidence([("request", "7")], _board(_req()), set())), True)
+    check("this PR's ticket: no gap", missing_evidence([("request", "7")], _board(_req()), {"LC-1", "LCH-3"}), [])
+    check("a row for another id than the query asked: no read",
+          "not read it" in " ".join(missing_evidence([("request", "7")], _board(_req(), query=READ_ROW.format(id=8)))), True)
+    check("a numeric alias forges nothing",
+          "not read it" in " ".join(missing_evidence([("request", "7")], _board(_req(), query="select 7 as id, * from track_requests where id = 7"))), True)
+    check("pr_tickets: title keys", pr_tickets("LC-2265 LCH-600: x", "claude/x"), {"LC-2265", "LCH-600"})
+    check("pr_tickets: branch key", pr_tickets("no key", "owner:lc2265-board-review"), {"LC-2265"})
+    check("pr_tickets: nothing", pr_tickets("", "claude/project-thread-0qvfcu"), set())
+    check("skip needs no board read", missing_evidence([("skipped", "prod is down, hotfix first")], []), [])
+    g = " ".join(missing_evidence([("request", "7")], []))
+    check("never read: names the query", "not read it" in g and "where r.id = 7" in g, True)
+    g = " ".join(missing_evidence([("request", "8")], _board(_req())))
+    check("another request's row does not count", "not read it" in g, True)
+    g = " ".join(missing_evidence([("request", "7")], _board(_req(track="catalog"))))
+    check("wrong desk", "`catalog` desk" in g, True)
+    g = " ".join(missing_evidence([("request", "7")], _board(_req(status="open", responses=0))))
+    check("open: waiting on the desk", "waiting on the desk" in g, True)
+    g = " ".join(missing_evidence([("request", "7")], _board(_req(status="responded"))))
+    check("responded: read the answer and close", "close_request(7" in g, True)
+    g = " ".join(missing_evidence([("request", "7")], _board(_req(status="paused", responses=3))))
+    check("paused: operator decides", "NEEDS YOU" in g, True)
+    g = " ".join(missing_evidence([("request", "7")], _board(_req(status="weird"))))
+    check("unknown status: not closed", "not closed" in g, True)
+    g = " ".join(missing_evidence([("request", "7")], _board(_req(responses=0))))
+    check("asker closed with no answer: a skip, not a review", "skipped <reason>" in g, True)
+    g = " ".join(missing_evidence([("request", "7")], _board(_req(responses=None))))
+    check("unreadable responses count as none", "skipped <reason>" in g, True)
+    check("a later read wins (request moved on)",
+          missing_evidence([("request", "7")], _board(_req(status="open", responses=0)) + _board(_req())), [])
+    check("a later read wins the other way too", len(missing_evidence([("request", "7")],
+          _board(_req()) + _board(_req(status="paused", responses=3)))), 1)
+    check("a non-Supabase tool does not count", len(missing_evidence([("request", "7")],
+          _board(_req(), tool="mcp__Atlassian__getJiraIssue"))), 1)
+    check("two requests, one missing: one gap", len(missing_evidence([("request", "7"), ("request", "9")],
+          _board(_req()))), 1)
 
     wf = [ch(".github/workflows/deploy.yml")]
     base = {"tool_name": "mcp__github__create_pull_request",
@@ -1046,21 +937,20 @@ def _selftest() -> int:
         return p
 
     d = decide(with_body(""), wf, enforce)["hookSpecificOutput"]
+    why = d["permissionDecisionReason"]
     check("enforce, no line: deny", d.get("permissionDecision"), "deny")
-    check("deny names the mod", d["permissionDecisionReason"].startswith(TAG), True)
-    check("deny wakes the review desk, not the operator (LCH-722)",
-          "session_01LpqYrCPF63BFU9BJKCpLK7" in d["permissionDecisionReason"]
-          and "paste" not in d["permissionDecisionReason"], True)
-    check("deny backs off then stops", "5, 10, 20, 40 and 60" in d["permissionDecisionReason"]
-          and "NEEDS YOU" in d["permissionDecisionReason"], True)
-    check("deny points to the protocol doc", "MERGE-QUEUE.md" in d["permissionDecisionReason"], True)
-    check("deny names the response keywords and the sweep cadence",
-          "At most 3 rounds" in d["permissionDecisionReason"] and "[LCH-600 operator ruling]" in d["permissionDecisionReason"]
-          and "[LCH-600 response] ACCEPT" in d["permissionDecisionReason"]
-          and "[LCH-600 response] ARGUE" in d["permissionDecisionReason"]
-          and "every 30 minutes" in d["permissionDecisionReason"], True)
-    check("deny orders it before T2 approval", "T2" in d["permissionDecisionReason"], True)
-    check("plain gate: no seconds question", "seconds" in d["permissionDecisionReason"], False)
+    check("deny names the mod", why.startswith(TAG), True)
+    check("deny asks the ci-speed desk on the board", "ask_track('ci-speed', 'speed-review'" in why, True)
+    check("deny: the board names who to ring, no hard-coded desk id",
+          "ring.session_id" in why and "session_01" not in why and "paste" not in why, True)
+    check("deny: no polling, one check-in at the answer clock", "answer_due_at" in why and "no polling" in why, True)
+    check("deny: the board caps rounds and the operator decides", "at most 3 times" in why and "NEEDS YOU" in why
+          and "follow_up" in why and "close_request" in why, True)
+    check("deny: no Jira comment steps left", "[LCH-600" in why or "Jira" in why, False)
+    check("deny points to the board procedure", "scripts/track-requests/README.md" in why, True)
+    check("deny names the PR line", "LCH-600-Review: request <id> closed" in why, True)
+    check("deny orders it before T2 approval", "T2" in why, True)
+    check("plain gate: no seconds question", "seconds" in why, False)
     qc = decide(with_body(""), [ch("scripts/ci/quick_checks.d/x.sh", "A")], enforce)["hookSpecificOutput"]
     check("quick check: asks for the seconds it adds", "seconds it adds" in qc["permissionDecisionReason"]
           and "LCH-620" in qc["permissionDecisionReason"], True)
@@ -1072,17 +962,22 @@ def _selftest() -> int:
     nc = decide(with_body(""), None, enforce)["hookSpecificOutput"]
     check("unreadable diff: note, no deny", "permissionDecision" in nc, False)
     check("unreadable diff: says NOT CHECKED", "NOT CHECKED" in nc["additionalContext"], True)
-    check("line with evidence: allow", decide(with_body("LCH-600-Review: LC-12 accepted", req + fb + resp), wf, enforce), None)
-    check("escalated through decide: the PR body's ruling id is read", decide(with_body(
-          "LCH-600-Review: LC-12 escalated 400", rounds(3, 2, 25)), wf, enforce), None)
-    d2 = decide(with_body("LCH-600-Review: LC-12 accepted", req + fb), wf, enforce)["hookSpecificOutput"]
-    check("line without evidence: deny", d2.get("permissionDecision"), "deny")
-    check("line without evidence: names the gap", "[LCH-600 response]" in d2["permissionDecisionReason"], True)
+    check("closed request read: allow", decide(with_body("LCH-600-Review: request 7 closed", _board(_req())), wf,
+                                               enforce), None)
+    check("skip with a reason: allow", decide(with_body("LCH-600-Review: skipped prod is down, hotfix first"), wf,
+                                              enforce), None)
+    d2 = decide(with_body("LCH-600-Review: request 7 closed", _board(_req(status="responded"))), wf,
+                enforce)["hookSpecificOutput"]
+    check("line without a closed row: deny", d2.get("permissionDecision"), "deny")
+    check("line without a closed row: names the gap", "close_request(7" in d2["permissionDecisionReason"], True)
+    check("old Jira line: treated as no line", "ask_track" in decide(with_body(
+          "LCH-600-Review: LC-12 accepted 193156"), wf, enforce)["hookSpecificOutput"]["permissionDecisionReason"], True)
     lch = with_body("")
     lch["tool_input"]["title"] = "LCH-640 runner fix"
     check("LCH PR exempt", decide(lch, wf, enforce), None)
     check("two lines, one missing: deny", decide(with_body(
-        "LCH-600-Review: LC-12 accepted\nLCH-600-Review: LC-13 accepted", req + fb + resp), wf, enforce) is not None, True)
+        "LCH-600-Review: request 7 closed\nLCH-600-Review: request 9 closed", _board(_req())), wf, enforce) is not None,
+        True)
     other = with_body("")
     other["tool_input"]["repo"] = "bbm-guardrails"
     check("per-repo rules applied", decide(other, [ch("scripts/ci/x.py")], enforce), None)
