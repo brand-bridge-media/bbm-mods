@@ -206,3 +206,24 @@ test('the env pin is judged like any plan: a BLOCKED section on the pinned run i
   expect(JSON.stringify(out)).toContain('BLOCKED')
   expect(log.engine).toBe(0)
 })
+
+// LCH-745: a parked Draft run is `blocked`, so no run is active and the default view has no plan. A SQL write that
+// names the run must have its section ids matched against THAT run's plan, not against the empty default one.
+const FINDINGS = (run: string) =>
+  `update refresh_run_sections set findings = findings || '{"article_content": {}}'::jsonb where run_id = '${run}' and section_key = 'v2_s9c2'`
+
+test('LCH-745: with no active run, a SQL findings write naming a parked run maps against that run (READY goes through)', async ($, on) => {
+  const log = await world($, on, { active: [], runs: { [B]: {} } })
+  const out: any = await $.tool.call({ tool: 'mcp__Supabase__execute_sql', query: FINDINGS(B) } as any)
+  expect(JSON.stringify(out)).not.toContain('does not map')
+  expect(log.asked.length).toBe(0)
+  expect(log.engine).toBe(1)
+})
+
+test('LCH-745: the same named write is still judged: a BLOCKED section on the parked run is denied', async ($, on) => {
+  const log = await world($, on, { active: [], runs: { [B]: { v2_s9c2: 'BLOCKED' } } })
+  const out: any = await $.tool.call({ tool: 'mcp__Supabase__execute_sql', query: FINDINGS(B) } as any)
+  expect(JSON.stringify(out)).toContain('BLOCKED')
+  expect(JSON.stringify(out)).not.toContain('does not map')
+  expect(log.engine).toBe(0)
+})

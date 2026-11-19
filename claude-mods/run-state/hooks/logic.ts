@@ -8,9 +8,32 @@ import type { RunView } from '../types'
 // conductor's live mode needs SUPABASE_* in the shell, which a cloud session
 // does not have (LC-1715 step 0); --snapshot-style input does work, so the mod
 // reads the row through the Supabase MCP and hands it over here. argv[1] = path.
+// LCH-745: conductorPath is relative to the bbm-infrastructure checkout, but a project thread or cloud session can start
+// OUTSIDE it (cwd /home/claude with the clone in /home/claude/bbm-infrastructure), and then no plan could be read at all.
+// So the helper finds the file itself: as given, then under $CLAUDE_PROJECT_DIR, the working directory and each of its
+// parents, then one folder down from the working directory and from home. It names the miss if all of those fail.
 export const PY_HELPER = [
-  'import importlib.util, json, sys',
-  'spec = importlib.util.spec_from_file_location("rc", sys.argv[1])',
+  'import importlib.util, json, os, sys',
+  'from pathlib import Path',
+  'def find(p):',
+  '    c = Path(p)',
+  '    if c.is_absolute() or c.is_file():',
+  '        return c',
+  '    here = Path.cwd()',
+  '    bases = ([Path(os.environ["CLAUDE_PROJECT_DIR"])] if os.environ.get("CLAUDE_PROJECT_DIR") else []) + [here, *here.parents]',
+  '    for b in bases:',
+  '        if (b / c).is_file():',
+  '            return b / c',
+  '    for b in (here, Path.home()):',
+  '        try:',
+  '            kids = sorted(k for k in b.iterdir() if k.is_dir())',
+  '        except OSError:',
+  '            kids = []',
+  '        for k in kids:',
+  '            if (k / c).is_file():',
+  '                return k / c',
+  '    raise SystemExit(f"{p} not found under the working directory, its parents or the folders inside it")',
+  'spec = importlib.util.spec_from_file_location("rc", str(find(sys.argv[1])))',
   'm = importlib.util.module_from_spec(spec)',
   'sys.modules["rc"] = m',
   'spec.loader.exec_module(m)',
@@ -164,7 +187,19 @@ export type WriteTarget = {
   // The run the write itself names (--run-id / --slug, or id / article_slug in the SQL), lowercased.
   // Absent = the write names none, so the pinned / only active run is the one to judge against.
   run?: string
+  // SQL writes only: the statement itself, so section ids can be matched again against the plan of the
+  // run the write names (LCH-745). `ids` is matched against whatever plan was known up front, which is
+  // none at all when no run is active (a parked Draft run is `blocked`).
+  sql?: string
 }
+
+// Section ids that appear as whole words in a SQL statement (v2_s6 matches, v2_s6_vos does not).
+export const idsIn = (seg: string, knownIds: string[]): string[] =>
+  knownIds.filter(id => new RegExp(`(^|[^A-Za-z0-9_])${id}([^A-Za-z0-9_]|$)`).test(seg))
+
+// The target with its section ids matched against THIS plan (LCH-745). Bash targets carry stage/part, not ids.
+export const againstPlan = (t: WriteTarget, view: RunView): WriteTarget =>
+  t.sql === undefined ? t : { ...t, ids: idsIn(t.sql, view.table.map(r => r.id)) }
 
 const KNOWN_WRITERS = ['write_stage_receipt.py', 'article_audit.py']
 
@@ -437,7 +472,7 @@ export function receiptWritesInSql(tool: string, query: string, knownIds: string
     const touchesReceipts =
       /\brefresh_runs\b/i.test(seg) && /\b(stages|selection_provenance)\b/i.test(seg)
     if (!touchesSections && !touchesReceipts) continue
-    const ids = knownIds.filter(id => new RegExp(`(^|[^A-Za-z0-9_])${id}([^A-Za-z0-9_]|$)`).test(seg))
+    const ids = idsIn(seg, knownIds)
     const pairs: WriteTarget['pairs'] = []
     for (const obj of seg.match(/\{[^{}]*\}/g) ?? []) {
       const st = /"stage"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)/.exec(obj)
@@ -451,7 +486,7 @@ export function receiptWritesInSql(tool: string, query: string, knownIds: string
     const rid = /\b(?:id|run_id)\s*=\s*'([0-9a-f-]{36})'/i.exec(seg)
     const rslug = /\barticle_slug\s*=\s*'([a-z0-9][a-z0-9-]*)'/i.exec(seg)
     const run = rid ? rid[1].toLowerCase() : rslug ? rslug[1].toLowerCase() : undefined
-    out.push({ what: 'SQL write to refresh run state', ids, pairs, passes, run })
+    out.push({ what: 'SQL write to refresh run state', ids, pairs, passes, run, sql: seg })
   }
   return out
 }

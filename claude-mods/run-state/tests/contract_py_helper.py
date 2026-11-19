@@ -73,6 +73,16 @@ def main() -> int:
         check(ids == set(states), f"v{version}: stage/part table covers exactly the plan's sections", fails)
         check(all(isinstance(t["stage"], (int, float)) for t in table), f"v{version}: every table row has a numeric stage", fails)
         check(out["pass_a"] == {"verdict": "PASS", "at": "2026-10-06T00:00:00Z"}, f"v{version}: Pass A verdict + time read from provenance", fails)
+    # LCH-745: the relative conductorPath (the plugin default) must resolve when the session starts OUTSIDE the
+    # checkout (one folder above it, as a project thread does) and from inside a subfolder of it.
+    rel = "webflow/bulk-operations/refresh-conductor/refresh_conductor.py"
+    for where in (ROOT.parent, ROOT / "claude-mods"):
+        p = subprocess.run([sys.executable, "-I", "-c", src, rel], cwd=str(where),
+                           input=json.dumps(row(2)), capture_output=True, text=True, timeout=60)
+        check(p.returncode == 0, f"relative conductorPath resolves from {where} (stderr: {p.stderr.strip()[-200:]})", fails)
+    miss = subprocess.run([sys.executable, "-I", "-c", src, "no/such/conductor.py"], cwd=str(ROOT),
+                          input=json.dumps(row(2)), capture_output=True, text=True, timeout=60)
+    check(miss.returncode != 0 and "not found" in miss.stderr, "a missing conductor exits non-zero and says not found", fails)
     # Input that is not a row at all must exit non-zero (the mod turns that into "plan unreadable").
     junk = subprocess.run([sys.executable, "-I", "-c", src, str(CONDUCTOR)],
                           input="not json", capture_output=True, text=True, timeout=60)

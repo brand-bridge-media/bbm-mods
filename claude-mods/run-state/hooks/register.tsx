@@ -9,6 +9,7 @@ import {
   REST_ACTIVE_QS,
   SQL_TOOL,
   UUID,
+  againstPlan,
   bandText,
   decide,
   mayWriteRunState,
@@ -244,7 +245,9 @@ export const register: Register = (on, options) => {
               continue
             }
           }
-          const d0 = decide(v as RunView, t)
+          // LCH-745: section ids are matched against the plan this write is judged on. Before, they were matched only
+          // against the default view, which is null when no run is active, so a named parked run's write mapped to nothing.
+          const d0 = decide(v as RunView, againstPlan(t, v as RunView))
           // Read the pin only for the one ask it can change; an unreadable env is "not pinned" (the ask stands).
           let pinned = ''
           if (d0.supersede === 'IN_PROGRESS') {

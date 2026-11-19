@@ -1,6 +1,6 @@
 {
   "name": "run-state",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Band above the prompt with the refresh run's stage, next READY section, Pass A age and missing receipts; plus a guard that refuses receipt writes for sections the conductor has not marked READY.",
   "types": "./types/index.d.ts",
   "author": {
@@ -22,7 +22,7 @@
     "conductorPath": {
       "type": "string",
       "title": "refresh_conductor.py path",
-      "description": "Relative to the session's working directory (the bbm-infrastructure checkout).",
+      "description": "Relative to the bbm-infrastructure checkout. Found from the working directory, its parents, $CLAUDE_PROJECT_DIR, or one folder down from the working directory or home (LCH-745).",
       "default": "webflow/bulk-operations/refresh-conductor/refresh_conductor.py"
     }
   }
