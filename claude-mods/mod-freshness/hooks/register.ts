@@ -16,6 +16,7 @@ import { runArgs } from './py'
 
 const loaded = atom({ plugin: 'mod-freshness', key: 'loaded' } as const, {} as Fingerprints)
 const account = atom({ plugin: 'mod-freshness', key: 'account' } as const, false)
+const syncedAt = atom({ plugin: 'mod-freshness', key: 'syncedAt' } as const, null as string | null)
 const warned = atom({ plugin: 'mod-freshness', key: 'warned' } as const, [] as string[])
 
 // Wakes the host refused (submitted from inside a tool call) wait for the turn's end.
@@ -52,7 +53,7 @@ async function tick($: any) {
   busy = true
   try {
     const snap = await read($, loaded)
-    const v: Verdict | undefined = await runPy($, { mode: 'check', loaded: snap, account: await read($, account) })
+    const v: Verdict | undefined = await runPy($, { mode: 'check', loaded: snap, account: await read($, account), synced_at: await read($, syncedAt) })
     const nc = notCheckedText(v)
     // NOT CHECKED is never read as fresh, but an hourly network blip is not worth a wake: one toast.
     if (nc && !toldNotChecked) { toldNotChecked = true; toast($, nc) }
@@ -75,6 +76,7 @@ export const register: Register = on => {
     const snap = await runPy($, { mode: 'snapshot', plugin_dirs: dirs })
     if (snap?.loaded && typeof snap.loaded === 'object') await update($, loaded, () => snap.loaded)
     if (snap?.account === true) await update($, account, () => true)
+    if (typeof snap?.synced_at === 'string') await update($, syncedAt, () => snap.synced_at)
     if (!ticking) {
       ticking = true
       $.clock.every(CHECK_MS, () => { void tick($) })

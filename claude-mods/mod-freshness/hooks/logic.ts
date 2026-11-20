@@ -13,6 +13,14 @@ export type Verdict = {
   account?: boolean
   not_checked?: Record<string, string>
   mirror?: string
+  /** When the mirror's head commit landed (ISO). */
+  mirror_at?: string
+  /**
+   * Account copy only. True: this thread synced AFTER the mirror head and still differs, so the account copy
+   * itself is behind and only the operator can fix it. False: this thread synced BEFORE the mirror head, so
+   * only this thread's copy is known to be old; a new thread may already be current (board request #72).
+   */
+  account_behind?: boolean
 }
 
 /** Stale mods not yet reported this session. Each mod is reported once; a newly stale one is reported again. */
@@ -29,6 +37,17 @@ export function wakeText(stale: readonly string[], v: Verdict): string {
     // so "start a fresh session" would load the same old code again.
     const missing = (v.missing ?? []).filter(m => stale.includes(m))
     const gone = missing.length ? ` Not loaded at all: ${missing.join(', ')}.` : ''
+    if (v.account_behind === false) {
+      // Board request #72 (2026-11-20): three threads that started before the operator's Check for updates
+      // kept asking for it after it was done. This thread cannot see today's account copy, only the one it
+      // started with; a thread started later checks the account itself and asks only if it is really behind.
+      return `[mod:mod-freshness] This thread started with an older copy of these mods: ${names}.${head}${gone} ` +
+        'The thread synced its mods before that mirror change, so it cannot tell whether the claude.ai account ' +
+        'copy is current. Do NOT ask the operator to run Check for updates and do not use the NEEDS YOU banner: ' +
+        'a thread started later checks the account copy itself and asks only if it is really behind. If this ' +
+        'thread\'s work depends on the changed mod, mention in one line that a new thread has the newer copy. ' +
+        'Until then, do the stale mod\'s job by hand where it matters.'
+    }
     return `[mod:mod-freshness] This thread loaded the claude.ai account copy of the mods, and it is behind the ` +
       `bbm-mods mirror for: ${names}.${head}${gone} A fresh thread loads the same old copy. ` +
       'Tell the operator in chat, opening with the NEEDS YOU banner: on claude.ai Plugins, run Check for updates ' +

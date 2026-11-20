@@ -11,16 +11,25 @@ One job: compare each loaded bbm mod with the mirror's current copy of it, file 
 
 Payload on stdin (JSON):
   {"mode": "snapshot", "plugin_dirs": "<CLAUDE_CODE_PLUGIN_DIRS>"}
-      -> {"loaded": {"<mod>": "<digest>"}, "account": bool}   fingerprint of what was loaded, at session start
-  {"mode": "check", "loaded": {...}, "account": bool}
+      -> {"loaded": {"<mod>": "<digest>"}, "account": bool, "synced_at": "<ISO>"|None}
+         fingerprint of what was loaded, at session start
+  {"mode": "check", "loaded": {...}, "account": bool, "synced_at": "<ISO>"|None}
       -> {"stale": [...], "fresh": [...], "missing": [...], "account": bool,
-          "not_checked": {"<mod>": "<reason>"}, "mirror": "<subject>"}
+          "not_checked": {"<mod>": "<reason>"}, "mirror": "<subject>", "mirror_at": "<ISO>",
+          "account_behind": bool}
 
 "account" (LC-2217, 2026-11-18): project threads get no CLAUDE_CODE_PLUGIN_DIRS. They load the
 claude.ai ACCOUNT copy of the mods from ~/.claude/plugins/synced/<org>_<id>/<mod>/, and that copy
 does not follow the mirror (it sat 19 hours and 13 mods behind). A fresh session does not fix it;
 only the operator refreshing or re-uploading on claude.ai does. So when any mod came from the
 account copy, the check also lists mirror mods the session never loaded ("missing").
+
+"account_behind" (LC-2217 follow-up, 2026-11-20, board request #72): a thread keeps the account
+copy it synced when its container started. Three Refresh Engine threads that started before the
+operator's Check for updates kept asking for it after it was done. So the check now says whether
+the ACCOUNT copy is behind (the thread synced after the mirror's head commit and still differs:
+certain), or only THIS thread's copy (it synced before that commit: a new thread may already be
+current, so the operator is not asked).
 
 Optional payload keys for tests: home, cache_dir, mirror_url.
 Fails open: any error is a NOT CHECKED line, never a "fresh".
@@ -117,6 +126,36 @@ def loaded_dirs(home: str, plugin_dirs: str) -> dict[str, str]:
     return out
 
 
+def synced_at(home: str) -> str | None:
+    """When this container synced the account copy: the newest manifest.json lastUpdated (epoch ms), as ISO UTC."""
+    import datetime
+    newest = None
+    root = os.path.join(home, '.claude', 'plugins', 'synced')
+    try:
+        for org in os.listdir(root):
+            try:
+                with open(os.path.join(root, org, 'manifest.json'), encoding='utf-8') as f:
+                    ms = json.load(f).get('lastUpdated')
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(ms, (int, float)) and not isinstance(ms, bool) and (newest is None or ms > newest):
+                newest = ms
+    except OSError:
+        return None
+    if newest is None:
+        return None
+    return datetime.datetime.fromtimestamp(newest / 1000, datetime.timezone.utc).isoformat()
+
+
+def _when(iso: object):
+    import datetime
+    try:
+        t = datetime.datetime.fromisoformat(str(iso).replace('Z', '+00:00'))
+        return t if t.tzinfo else None
+    except ValueError:
+        return None
+
+
 def snapshot(home: str, plugin_dirs: str) -> dict:
     loaded = {}
     synced = os.path.join(home, '.claude', 'plugins', 'synced') + os.sep
@@ -127,7 +166,7 @@ def snapshot(home: str, plugin_dirs: str) -> dict:
         except OSError:
             continue
         account = account or d.startswith(synced)
-    return {'loaded': loaded, 'account': account}
+    return {'loaded': loaded, 'account': account, 'synced_at': synced_at(home) if account else None}
 
 
 def mirror_url(home: str) -> str:
@@ -176,8 +215,9 @@ def mirror_mods(cache: str) -> dict[str, str]:
     return {n: digest_files(f) for n, f in files.items()}
 
 
-def check(loaded: dict, home: str, cache: str, url: str, account: bool = False) -> dict:
-    out: dict = {'stale': [], 'fresh': [], 'missing': [], 'account': bool(account), 'not_checked': {}, 'mirror': ''}
+def check(loaded: dict, home: str, cache: str, url: str, account: bool = False, synced: object = None) -> dict:
+    out: dict = {'stale': [], 'fresh': [], 'missing': [], 'account': bool(account), 'not_checked': {}, 'mirror': '',
+                 'mirror_at': '', 'account_behind': bool(account)}
     if not isinstance(loaded, dict):
         out['not_checked']['*'] = f'malformed snapshot ({type(loaded).__name__}, expected an object)'
         return out
@@ -188,6 +228,7 @@ def check(loaded: dict, home: str, cache: str, url: str, account: bool = False) 
         fetch_mirror(cache, url)
         latest = mirror_mods(cache)
         out['mirror'] = git(cache, 'log', '-1', '--format=%s (%cI)', 'FETCH_HEAD').strip()
+        out['mirror_at'] = git(cache, 'log', '-1', '--format=%cI', 'FETCH_HEAD').strip()
     except (RuntimeError, OSError, ValueError, KeyError, tarfile.TarError, subprocess.SubprocessError) as exc:
         out['not_checked']['*'] = f'mirror unreadable: {exc}'
         return out
@@ -197,6 +238,10 @@ def check(loaded: dict, home: str, cache: str, url: str, account: bool = False) 
         (out['fresh'] if loaded[name] == latest[name] else out['stale']).append(name)
     if account:
         out['missing'] = sorted(n for n in latest if n not in loaded)
+        # Certain only when this thread synced AFTER the mirror's head commit. Unknown times stay
+        # "behind" (the old, louder answer), never a silent "fine".
+        s, m = _when(synced), _when(out['mirror_at'])
+        out['account_behind'] = not (s and m and s < m)
     # Comparing nothing must never read like "all fresh".
     if not out['stale'] and not out['fresh']:
         out['not_checked']['*'] = 'no loaded mod is shipped by the mirror, so nothing was compared'
@@ -212,7 +257,7 @@ def main() -> int:
         else:
             cache = payload.get('cache_dir') or os.path.join(home, '.cache', 'mod-freshness', 'mirror')
             result = check(payload.get('loaded') or {}, home, cache, payload.get('mirror_url') or mirror_url(home),
-                           bool(payload.get('account')))
+                           bool(payload.get('account')), payload.get('synced_at'))
     except Exception as exc:  # fail open, loudly
         result = {'stale': [], 'fresh': [], 'not_checked': {'*': f'check crashed: {exc}'}, 'mirror': ''}
     print(json.dumps(result))
@@ -333,6 +378,20 @@ def selftest() -> int:
         ok(check(tsnap['loaded'], thome, cache, url, account=True)['stale'] == ['beta'], 'account copy behind the mirror is stale')
         both = snapshot(thome, f'{checkout_beta}')['loaded']
         ok(both['beta'] == digest_files(read_dir(checkout_beta)), 'a plugin dir shadows the account copy')
+
+        # Board request #72: a thread that synced before the mirror head is not proof the account copy is behind.
+        write(f'{thome}/.claude/plugins/synced/org_1/manifest.json', json.dumps({'lastUpdated': 1795214168321}))
+        ok(snapshot(thome, '')['synced_at'] == '2026-11-20T22:36:08.321000+00:00', 'snapshot reads the thread sync time')
+        ok(snapshot(home, f'{checkout_beta}')['synced_at'] is None, 'no sync time outside the account copy')
+        r = check(tsnap['loaded'], thome, cache, url, account=True, synced='2000-01-01T00:00:00+00:00')
+        ok(r['stale'] == ['beta'] and r['account_behind'] is False, 'thread synced before the mirror head: not account_behind')
+        r = check(tsnap['loaded'], thome, cache, url, account=True, synced='2999-01-01T00:00:00+00:00')
+        ok(r['account_behind'] is True, 'thread synced after the mirror head and still stale: account_behind')
+        r = check(tsnap['loaded'], thome, cache, url, account=True, synced=None)
+        ok(r['account_behind'] is True, 'unknown sync time stays account_behind (louder, never silent)')
+        ok(check(tsnap['loaded'], thome, cache, url, account=True, synced='garbage')['account_behind'] is True,
+           'unparseable sync time stays account_behind')
+        ok(_when('2026-11-20T22:21:52+00:00') is not None and _when('2026-11-20T22:21:52') is None, 'naive times are refused')
 
         # main() end to end over stdin.
         proc = subprocess.run([sys.executable, '-I', os.path.abspath(__file__)], capture_output=True, text=True,

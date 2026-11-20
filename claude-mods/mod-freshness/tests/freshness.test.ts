@@ -8,6 +8,7 @@ import { CHECK_MS, newlyStale, notCheckedText, wakeText } from '../hooks/logic'
 const T0 = Date.parse('2026-10-22T18:00:00Z')
 const SNAP = { 'fleet-tracker': 'aaa', 'jira-closer': 'bbb' }
 const SNAP_ACCOUNT = { value: false }
+const SYNCED = '2026-11-20T21:50:00+00:00'
 
 test('each stale mod is reported once; a newly stale one is reported again', () => {
   expect(newlyStale({ stale: ['fleet-tracker'] }, [])).toEqual(['fleet-tracker'])
@@ -36,6 +37,20 @@ test('account copy (project thread): missing mods count, and the fix goes to cla
   expect(wakeText(['x'], {})).toContain('start a fresh session to pick them up')
 })
 
+test('board request #72: a thread older than the mirror change does not ask the operator', () => {
+  const v = { account: true, account_behind: false, mirror: 'Sync from bbm-infrastructure@e4e7 (2026-11-20T22:21:52Z)' }
+  const t = wakeText(['refresh-run-guard'], v)
+  expect(t).toMatch(/^\[mod:mod-freshness\] This thread started with an older copy of these mods: refresh-run-guard\./)
+  expect(t).toContain('Do NOT ask the operator')
+  expect(t).not.toContain('Tell the operator in chat')
+  // The account copy itself behind (thread synced after the mirror head): the operator is still asked.
+  const behind = wakeText(['refresh-run-guard'], { ...v, account_behind: true })
+  expect(behind).toContain('NEEDS YOU')
+  expect(behind).toContain('Check for updates')
+  // An older verdict with no account_behind keeps the loud answer, never a silent one.
+  expect(wakeText(['refresh-run-guard'], { account: true })).toContain('Check for updates')
+})
+
 test('NOT CHECKED is said, never silently read as fresh', () => {
   expect(notCheckedText({ stale: [], fresh: ['x'], not_checked: {} })).toBeUndefined()
   expect(notCheckedText({ not_checked: { '*': 'mirror unreadable: boom' } })).toContain('NOT CHECKED: mirror unreadable')
@@ -51,7 +66,7 @@ function world(on: any, verdicts: unknown[]) {
   on('process.run', (_$: any, e: any) => {
     const p = JSON.parse(String(e.init?.stdin ?? '{}'))
     stdins.push(p)
-    const out = p.mode === 'snapshot' ? { loaded: SNAP, account: SNAP_ACCOUNT.value } : verdicts.shift()
+    const out = p.mode === 'snapshot' ? { loaded: SNAP, account: SNAP_ACCOUNT.value, synced_at: SNAP_ACCOUNT.value ? SYNCED : null } : verdicts.shift()
     return { value: { exitCode: 0, stdout: JSON.stringify(out ?? {}), stderr: '' } } as any
   })
   on('ui.toast', (_$: any, e: any) => { toasts.push(e.text); return { value: undefined } as any })
@@ -71,7 +86,7 @@ test('end to end: snapshot at start, hourly check, one wake per newly stale mod'
   expect(w.stdins[0]).toEqual({ mode: 'snapshot', plugin_dirs: '/infra/claude-mods/fleet-tracker' })
 
   await w.clock.advance(CHECK_MS) // fresh: nothing said
-  expect(w.stdins[1]).toEqual({ mode: 'check', loaded: SNAP, account: false })
+  expect(w.stdins[1]).toEqual({ mode: 'check', loaded: SNAP, account: false, synced_at: null })
   expect(w.prompts).toEqual([])
 
   await w.clock.advance(CHECK_MS) // fleet-tracker changed upstream: one wake
@@ -100,7 +115,7 @@ test('a thread snapshot passes account through to the hourly check', async ($: a
     const w = world(on, [{ stale: [], fresh: ['fleet-tracker'], missing: ['pipeline-close-question'], account: true, not_checked: {} }])
     await $.session.start({ source: 'startup', cwd: '/tmp' } as any)
     await w.clock.advance(CHECK_MS)
-    expect(w.stdins[1]).toEqual({ mode: 'check', loaded: SNAP, account: true })
+    expect(w.stdins[1]).toEqual({ mode: 'check', loaded: SNAP, account: true, synced_at: SYNCED })
     await ($ as any).turn.complete({ reason: 'answer', answer: 'done' })
     await w.clock.advance(1)
     expect(w.prompts.join('\n')).toContain('Not loaded at all: pipeline-close-question')
