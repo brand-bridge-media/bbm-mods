@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { PassAEntry } from '../types'
+import type { CatalogCtx, CatalogSeen, PassAEntry } from '../types'
 import { plainView } from './plain'
 
 // refresh-run-guard (LC-1712, epic LC-1074).
@@ -34,6 +34,7 @@ function say($: any, reason: string): string {
 // `post-body` is NOT a Blog Posts field (it is link-migration's configurable default) and is not used here.
 const PRODUCTS_COLLECTION = '65fa33419d90d967c68a0963'
 const BLOG_COLLECTION = '65fa33419d90d967c68a0964'
+const BRANDS_COLLECTION = '65fa33419d90d967c68a0965'
 const BODY_FIELDS = ['intro', 'post-content', 'post-content-two', 'conclusion']
 const GO_LINK = /^https:\/\/go\.livingcozy\.com\/[A-Za-z0-9][A-Za-z0-9_\-/]*$/
 
@@ -474,6 +475,167 @@ function payloadVerdict(input: unknown, baseline: Record<string, number>): Verdi
   return { deny: deny.length ? deny.join(' | ') : undefined, ask: ask.length ? ask.join(' | ') : undefined }
 }
 
+// ---------- rule 5: Catalog & Prices may publish Products and Brands (LC-2297) ----
+//
+// Why: operator decision (2026-11-19, repeated 2026-11-20) that Catalog & Prices (LC-429) publishes the
+// Products and Brands items itself once each is verified correct, complete and current. Every other publish
+// stays the human click above. The allowance is narrow on purpose:
+//  * only a call whose EVERY action is exactly `publish_collection_items` on the Products or Brands collection
+//    id (never a name), with plain item ids and no locale list; anything else keeps the old deny;
+//  * only items whose staged fields THIS session read from Webflow after its last Webflow write, and (Products)
+//    whose Supabase context it read with CONTEXT_SQL below, exactly; and
+//  * only when hooks/catalog_publish.py gives every item PASS (product_readiness with no gaps and a price
+//    verified under 24 h; Brands: required fields, alt text that is not the bare name). NOT CHECKED blocks.
+// A hook has no credentials (LC-1017), so the evidence is what the session read, the same trust the
+// lch600-review-gate board read uses. The mod cannot tell which project a session is in: any session that
+// produces the evidence may publish these two collections.
+const CATALOG_COLLECTIONS: Record<string, string> = { [PRODUCTS_COLLECTION]: 'Products', [BRANDS_COLLECTION]: 'Brands' }
+const WEBFLOW_ID = /^[0-9a-f]{24}$/
+const MAX_CATALOG_ITEMS = 100
+const MAX_RECORDS = 1000
+const catalogSeen = atom({ plugin: 'refresh-run-guard', key: 'catalogSeen' } as const, {} as Record<string, CatalogSeen>)
+const catalogCtx = atom({ plugin: 'refresh-run-guard', key: 'catalogCtx' } as const, {} as Record<string, CatalogCtx>)
+
+// The ONE Supabase read the check trusts for a Products item's context. Matched exactly (whitespace and case
+// aside) with only the id list varying, so a hand-made `select 'x' as price_verified_at` is not evidence.
+export const CONTEXT_SQL_HEAD =
+  'select p.webflow_id, p.public_code, p.review_id, p.lc_reviewed, p.product_line_id, p.price_verified_at, ' +
+  'pl.id as line_id, pl.webflow_id as line_webflow_id, pl.review_id as line_review_id, ' +
+  'c.id is not null as card_row_found, c.card_sale_price ' +
+  'from products p left join product_lines pl on pl.id = p.product_line_id ' +
+  'left join v_product_card_price c on c.id = p.id where p.webflow_id in ('
+const norm = (q: string): string => q.toLowerCase().replace(/\s+/g, ' ').replace(/\s*([(),=])\s*/g, '$1').trim()
+const HEAD_NORM = norm(CONTEXT_SQL_HEAD)
+const ID_LIST = /^'[0-9a-f]{24}'(?:,'[0-9a-f]{24}')*\)$/
+
+export function contextSql(ids: string[]): string {
+  return `${CONTEXT_SQL_HEAD}${ids.map(i => `'${i}'`).join(', ')})`
+}
+
+/** The Webflow ids a canonical context read asked for, or null when the query is anything else. */
+export function contextSqlIds(query: unknown): string[] | null {
+  if (typeof query !== 'string' || query.length > 20_000) return null
+  const q = norm(query).replace(/;$/, '')
+  if (!q.startsWith(HEAD_NORM)) return null
+  const rest = q.slice(HEAD_NORM.length)
+  if (!ID_LIST.test(rest)) return null
+  return rest.slice(0, -1).split(',').map(s => s.slice(1, -1))
+}
+
+/** Row objects in an execute_sql result: the JSON array, also when it sits inside a `result` string. */
+function sqlRows(text: string, depth = 0): Json[] {
+  const out: Json[] = []
+  if (depth > 2) return out
+  for (const v of jsonValues(text)) {
+    if (Array.isArray(v)) out.push(...v.filter((r): r is Json => !!r && typeof r === 'object' && !Array.isArray(r)))
+    else if (v && typeof v === 'object' && typeof (v as Json).result === 'string') out.push(...sqlRows((v as Json).result, depth + 1))
+  }
+  return out
+}
+
+export type CatalogItem = { collection: string; id: string }
+
+/**
+ * The items of a publish this rule may consider, or null when the call is not exactly that shape: every
+ * action is `publish_collection_items` (plus `label`) on Products or Brands, with `request.itemIds` or
+ * `request.items[].id` (no cmsLocaleIds, no other keys), at most 100 distinct ids.
+ */
+export function catalogPublishItems(input: unknown): CatalogItem[] | null {
+  const actions = actionsOf(input)
+  if (!actions.length) return null
+  const items: CatalogItem[] = []
+  for (const a of actions) {
+    const keys = Object.keys(a).filter(k => k !== 'label')
+    if (keys.length !== 1 || keys[0] !== 'publish_collection_items') return null
+    const body = a.publish_collection_items
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null
+    if (Object.keys(body).some(k => k !== 'collection_id' && k !== 'request')) return null
+    const collection = body.collection_id
+    if (typeof collection !== 'string' || !(collection in CATALOG_COLLECTIONS)) return null
+    const req = body.request
+    if (!req || typeof req !== 'object' || Array.isArray(req)) return null
+    const reqKeys = Object.keys(req)
+    let ids: unknown[]
+    if (reqKeys.length === 1 && reqKeys[0] === 'itemIds' && Array.isArray(req.itemIds)) ids = req.itemIds
+    else if (reqKeys.length === 1 && reqKeys[0] === 'items' && Array.isArray(req.items)) {
+      ids = []
+      for (const it of req.items) {
+        if (!it || typeof it !== 'object' || Object.keys(it).some(k => k !== 'id')) return null
+        ids.push(it.id)
+      }
+    } else return null
+    if (!ids.length) return null
+    for (const id of ids) {
+      if (typeof id !== 'string' || !WEBFLOW_ID.test(id)) return null
+      if (!items.some(i => i.id === id && i.collection === collection)) items.push({ collection, id })
+    }
+  }
+  return items.length <= MAX_CATALOG_ITEMS ? items : null
+}
+
+/** A single-action staged read of a catalog collection in the primary locale: the only read recorded. */
+function catalogRead(input: unknown): string | null {
+  const actions = actionsOf(input)
+  if (actions.length !== 1) return null
+  const body = actions[0]?.list_collection_items
+  if (!body || typeof body !== 'object') return null
+  const collection = body.collection_id
+  if (typeof collection !== 'string' || !(collection in CATALOG_COLLECTIONS)) return null
+  const req = body.request
+  if (req && typeof req === 'object' && ('cmsLocaleId' in req || 'allCmsLocales' in req)) return null
+  return collection
+}
+
+function catalogItemsIn(text: string | undefined): { id: string; fieldData: Json; isArchived: boolean }[] {
+  const out: { id: string; fieldData: Json; isArchived: boolean }[] = []
+  const walk = (v: unknown, depth: number): void => {
+    if (!v || typeof v !== 'object' || depth > 8) return
+    if (Array.isArray(v)) return void v.forEach(x => walk(x, depth + 1))
+    const o = v as Json
+    if (typeof o.id === 'string' && WEBFLOW_ID.test(o.id) && o.fieldData && typeof o.fieldData === 'object' && !Array.isArray(o.fieldData)) {
+      out.push({ id: o.id, fieldData: o.fieldData, isArchived: o.isArchived === true })
+      return
+    }
+    for (const x of Object.values(o)) walk(x, depth + 1)
+  }
+  for (const v of jsonValues(text)) walk(v, 0)
+  return out
+}
+
+const cap = <T>(m: Record<string, T>): Record<string, T> => {
+  const keys = Object.keys(m)
+  return keys.length <= MAX_RECORDS ? m : (Object.fromEntries(keys.slice(keys.length - MAX_RECORDS).map(k => [k, m[k]])) as Record<string, T>)
+}
+
+type Receipt = { collection: string; id: string; verdict: string; reason: string }
+
+export function describeReceipts(receipts: Receipt[]): string {
+  return receipts.map(r => `${r.verdict} ${r.collection} ${r.id}: ${r.reason}`).join(' | ')
+}
+
+/** The check's verdict, or null when it could not run or answered junk (the caller then refuses). */
+export function parseCatalogVerdict(r: { exitCode?: number; stdout?: unknown } | undefined, items: CatalogItem[]): { allow: boolean; receipts: Receipt[] } | null {
+  if (!r || r.exitCode !== 0 || !items.length) return null
+  try {
+    const v = JSON.parse(String(r.stdout ?? '').trim())
+    if (!v || typeof v.allow !== 'boolean' || !Array.isArray(v.receipts) || !v.receipts.length) return null
+    const receipts = v.receipts.filter((x: any) => x && typeof x.verdict === 'string') as Receipt[]
+    if (receipts.length !== v.receipts.length) return null
+    // allow must agree with the receipts: one non-PASS receipt refuses, whatever `allow` says, and every
+    // requested item needs its OWN PASS receipt (one PASS must not cover two ids; independent review, PR #4067).
+    // Keyed on collection AND id: a Brands PASS never covers a Products item with the same id.
+    const passed = new Set(receipts.filter(x => x.verdict === 'PASS').map(x => `${x.collection}/${x.id}`))
+    const covered = items.every(it => passed.has(`${CATALOG_COLLECTIONS[it.collection] ?? '?'}/${it.id}`))
+    return { allow: v.allow && covered && receipts.every(x => x.verdict === 'PASS'), receipts }
+  } catch {
+    return null
+  }
+}
+
+const CATALOG_NEXT =
+  'To publish: read each item with data_cms_tool list_collection_items (one action, that collection, no locale) after your last write, ' +
+  'run the context query for Products items, fix any BLOCK, then publish again. Articles stay a human click.'
+
 // ---------- Pass A bookkeeping ------------------------------------------
 
 const PASS_A_CMD = /article_audit\.py/
@@ -579,11 +741,44 @@ function judged(e: any, field: 'query' | 'command', check: (v: unknown) => strin
   return null
 }
 
+// Runs hooks/catalog_publish.py. `$` helpers stay in this file (the plugin validator follows `$` only here).
+async function catalogCheck($: any, items: CatalogItem[]): Promise<{ allow: boolean; receipts: Receipt[] } | null> {
+  try {
+    const now = await $.clock.now()
+    const payload = { now_ms: now, items, seen: await read($, catalogSeen), ctx: await read($, catalogCtx) }
+    const r = await $.process.run(['python3', '-I', `${$.plugin.root}/hooks/catalog_publish.py`], { stdin: JSON.stringify(payload), timeoutMs: 20_000 })
+    return parseCatalogVerdict(r, items)
+  } catch {
+    return null
+  }
+}
+
 export const register: Register = on => {
   // Rule 1 ------------------------------------------------------------
-  on('tool.call', { tool: SQL_TOOL }, ($, e: any, next) => {
+  on('tool.call', { tool: SQL_TOOL }, async ($, e: any, next) => {
     const v = judged(e, 'query', sqlViolation)
-    return v ? { deny: say($, `${v} ${RECEIPT_WHY}`) } : next(e)
+    if (v) return { deny: say($, `${v} ${RECEIPT_WHY}`) }
+    const ran: any = await next(e)
+    // Rule 5 bookkeeping: a canonical catalog-context read records its rows. A failure here only loses
+    // evidence (the publish then reads NOT CHECKED), so it never touches the result.
+    try {
+      const copies = [e?.query, e?.input?.query].filter(q => q !== undefined)
+      const ids = copies.length === 1 ? contextSqlIds(copies[0]) : null
+      if (ids && ran.deny === undefined && ran.isError !== true) {
+        const at = await $.clock.now()
+        const got: Record<string, CatalogCtx> = {}
+        const dup = new Set<string>()
+        for (const row of sqlRows(typeof ran.text === 'string' ? ran.text : '')) {
+          const id = row.webflow_id
+          if (typeof id !== 'string' || !ids.includes(id)) continue
+          if (id in got) dup.add(id) // two rows for one id: neither is evidence
+          got[id] = { row, readAt: at }
+        }
+        for (const id of dup) delete got[id]
+        if (Object.keys(got).length) await update($, catalogCtx, m => cap({ ...m, ...got }))
+      }
+    } catch { /* evidence lost, result intact */ }
+    return ran
   }).catch(($, e, next) =>
     next.called ? { deny: say($, AFTER_FAIL) } : { deny: say($, 'the SQL guard failed, so this call is refused rather than unchecked.') },
   )
@@ -654,6 +849,29 @@ export const register: Register = on => {
       return { deny: say($, `unrecognized Webflow action (${unknown.join(', ')}); it is neither a known read nor a known write, so it cannot be examined.`) }
     }
     const keys = publishKeys(e)
+    const catalog = keys.length ? catalogPublishItems(e) : null
+    if (catalog) {
+      // Rule 5: a Products / Brands publish goes out only on a PASS receipt for every item.
+      const verdict = await catalogCheck($, catalog)
+      const products = catalog.filter(i => i.collection === PRODUCTS_COLLECTION).map(i => i.id)
+      const query = products.length ? ` Context query for the Products items: ${contextSql(products)}` : ''
+      if (!verdict) {
+        return { deny: say($, `NOT CHECKED: the Products/Brands readiness check could not run, so this publish is refused. ${CATALOG_NEXT}${query}`) }
+      }
+      if (!verdict.allow) {
+        return { deny: say($, `Products/Brands publish refused; every item needs PASS. Receipts: ${describeReceipts(verdict.receipts)}. ${CATALOG_NEXT}${query}`) }
+      }
+      const ranPub: any = await next(e)
+      if (ranPub.deny !== undefined) return ranPub
+      return {
+        ...ranPub,
+        context: [
+          ...(ranPub.context ?? []),
+          say($, `Products/Brands publish allowed (LC-2297). Receipts: ${describeReceipts(verdict.receipts)}. ` +
+            'Check publishedItemIds against the ids sent and read any errors before reporting it live.'),
+        ],
+      }
+    }
     if (keys.length) {
       return {
         deny: say(
@@ -685,11 +903,22 @@ export const register: Register = on => {
           }
         }
         if (Object.keys(written).length) await update($, pills, m => ({ ...m, ...written }))
+        // Rule 5: any Webflow write may have changed a staged catalog item, so every staged read is void.
+        await update($, catalogSeen, () => ({}))
         await paintStatus($)
       } else {
         const seen: Record<string, number> = {}
         for (const v of jsonValues(ran.text)) harvest(v, seen)
         if (Object.keys(seen).length) await update($, pills, m => ({ ...m, ...seen }))
+        const collection = catalogRead(e)
+        if (collection) {
+          const at = await $.clock.now()
+          const got: Record<string, CatalogSeen> = {}
+          for (const it of catalogItemsIn(ran.text)) {
+            got[it.id] = { collection, fieldData: it.fieldData, isArchived: it.isArchived, readAt: at }
+          }
+          if (Object.keys(got).length) await update($, catalogSeen, m => cap({ ...m, ...got }))
+        }
       }
       return ran
     } catch {
@@ -709,6 +938,8 @@ export const register: Register = on => {
       return { decision: 'deny', reason: say($, `unrecognized Webflow action (${unknown.join(', ')}); it cannot be examined.`) }
     }
     const keys = publishKeys(e.input)
+    // Rule 5: a Products / Brands publish is judged in tool.call, where the readiness check runs.
+    if (keys.length && catalogPublishItems(e.input)) return next(e)
     if (keys.length) {
       return {
         decision: 'deny',
