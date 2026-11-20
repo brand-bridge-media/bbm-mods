@@ -1,0 +1,9 @@
+{
+  "name": "roominate-order-guard",
+  "version": "0.1.0",
+  "description": "Refuses every Roominate call that makes or changes an image unless this session has claimed a queued pick_images order, and refuses any call that would pass that order's token ceiling (LC-2296). Read-only Roominate tools stay open.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
