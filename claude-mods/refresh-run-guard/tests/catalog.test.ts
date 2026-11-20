@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 
-import { catalogPublishItems, contextSql, contextSqlIds, parseCatalogVerdict } from '../hooks/register'
+import { catalogNearMiss, catalogPublishItems, contextSql, contextSqlIds, parseCatalogVerdict } from '../hooks/register'
 
 // Rule 5 (LC-2297): Catalog & Prices may publish Products and Brands items on a PASS receipt per item;
 // every other publish stays a human click. The decision itself lives in hooks/catalog_publish.py and is
@@ -184,6 +184,61 @@ test('the publish shape is exact: id not name, plain ids, no locales, no extra k
     { actions: [{ publish_collection_items: { collection_id: BRANDS, request: { itemIds: [B1] } }, publish_site: {} }] },
     { actions: [{ publish_collection_items: { collection_id: BRANDS, request: { itemIds: Array.from({ length: 101 }, (_, i) => i.toString(16).padStart(24, '0')) } } }] },
   ]) expect(catalogPublishItems(bad)).toBeNull()
+})
+
+// LC-2309 (2026-11-20): the real refused call bundled a card update with the Products publish. Still refused
+// (a write in the same call means no read can follow it), but the refusal must say "split it", not "Pass A".
+const bundled = () => ({
+  tool: CMS,
+  actions: [
+    { label: 'ready', update_collection_items: { collection_id: PRODUCTS, request: { items: [{ id: P1, isDraft: false, fieldData: {} }] } } },
+    { label: 'publish', publish_collection_items: { collection_id: PRODUCTS, request: { items: [{ id: P1 }] } } },
+  ],
+})
+
+test('a Products publish bundled with a write is refused with split instructions, never the Pass A text, and nothing runs', async ($: any, on: any) => {
+  const w = world(on, { list: { [PRODUCTS]: [{ id: P1, fieldData: goodProduct }] }, sql: [ctxRow('2026-11-20T11:00:00Z')] })
+  await $.tool.call(read(PRODUCTS) as any)
+  await $.tool.call({ tool: SQL, query: contextSql([P1]) } as any)
+  const r: any = await $.tool.call(bundled() as any)
+  expect(r.deny).toContain('also carries update_collection_items')
+  expect(r.deny).toContain('own call')
+  expect(r.deny).not.toContain('Pass A')
+  expect(w.runs.length).toBe(0)
+  expect(published(w)).toBe(false)
+  expect(w.reached.some(e => e.actions?.some((a: any) => a.update_collection_items))).toBe(false)
+})
+
+test('tool.check refuses the bundled call with the same split wording', async ($: any, on: any) => {
+  on('tool.check', () => ({ decision: 'allow' }) as any)
+  const r: any = await $.tool.check({ tool: CMS, input: { actions: bundled().actions } } as any)
+  expect(r.decision).toBe('deny')
+  expect(r.reason).toContain('own call')
+  expect(r.reason).not.toContain('Pass A')
+})
+
+test('split correctly, the same Products items go out on PASS', async ($: any, on: any) => {
+  const w = world(on, {
+    list: { [PRODUCTS]: [{ id: P1, fieldData: goodProduct }] },
+    sql: [ctxRow('2026-11-20T11:00:00Z')],
+    check: PASS(P1, 'Products'),
+  })
+  await $.tool.call({ tool: CMS, actions: [bundled().actions[0]] } as any)
+  await $.tool.call(read(PRODUCTS) as any)
+  await $.tool.call({ tool: SQL, query: contextSql([P1]) } as any)
+  const r: any = await $.tool.call({ tool: CMS, actions: [bundled().actions[1]] } as any)
+  expect(r.deny).toBeUndefined()
+  expect(published(w)).toBe(true)
+  expect(w.runs.length).toBe(1)
+})
+
+test('near-miss wording: other collections, bad request shape, and calls with no catalog publish', () => {
+  const pub = (collection: string, request: object) => ({ publish_collection_items: { collection_id: collection, request } })
+  expect(catalogNearMiss({ actions: [pub(PRODUCTS, { itemIds: [P1] })] })).toBeNull()
+  expect(catalogNearMiss({ actions: [pub(BLOG, { itemIds: [P1] })] })).toBeNull()
+  expect(catalogNearMiss({ actions: [{ publish_site: { siteId: 's' } }] })).toBeNull()
+  expect(catalogNearMiss({ actions: [pub(BRANDS, { itemIds: [B1] }), pub(BLOG, { itemIds: [B1] })] })).toContain('other than Products or Brands')
+  expect(catalogNearMiss({ actions: [pub(BRANDS, { itemIds: [B1], cmsLocaleIds: ['l'] })] })).toContain('plain item ids')
 })
 
 test('the context query is matched exactly, ids aside', () => {

@@ -573,6 +573,33 @@ export function catalogPublishItems(input: unknown): CatalogItem[] | null {
   return items.length <= MAX_CATALOG_ITEMS ? items : null
 }
 
+/**
+ * Why a call that publishes Products or Brands items is NOT rule 5's shape, or null when the call is rule 5's
+ * shape or publishes no Products/Brands items at all. It only words the refusal; it never allows anything.
+ *
+ * Why it exists (LC-2309, 2026-11-20): Catalog & Prices sent a card update and the Products publish in ONE
+ * call. Rule 5 rightly refused it (the publish needs a fresh read AFTER the last write, which a bundled write
+ * makes impossible), but the refusal was the article text ("needs a Pass A receipt"), so the session read it
+ * as "the guard does not know about Products" and filed a mod-change request. Review this by 2027-02-20:
+ * if no session has hit it by then, fold the wording into CATALOG_NEXT and drop the function.
+ */
+export function catalogNearMiss(input: unknown): string | null {
+  const actions = actionsOf(input)
+  const touchesCatalog = actions.some(a => {
+    const b = a.publish_collection_items
+    return !!b && typeof b === 'object' && typeof b.collection_id === 'string' && b.collection_id in CATALOG_COLLECTIONS
+  })
+  if (!touchesCatalog || catalogPublishItems(input)) return null
+  const others = [...new Set(actions.flatMap(a => Object.keys(a).filter(k => k !== 'label' && k !== 'publish_collection_items')))]
+  if (others.length) return `also carries ${others.join(', ')}, and a Products/Brands publish must be a call of its own`
+  const foreign = actions.some(a => {
+    const id = a.publish_collection_items?.collection_id
+    return !(typeof id === 'string' && id in CATALOG_COLLECTIONS)
+  })
+  if (foreign) return 'also publishes a collection other than Products or Brands (articles stay a human click)'
+  return 'does not send plain item ids (request.itemIds, or request.items with only an id each; no locales, no other keys, 1 to 100 ids of 24 hex characters)'
+}
+
 /** A single-action staged read of a catalog collection in the primary locale: the only read recorded. */
 function catalogRead(input: unknown): string | null {
   const actions = actionsOf(input)
@@ -635,6 +662,12 @@ export function parseCatalogVerdict(r: { exitCode?: number; stdout?: unknown } |
 const CATALOG_NEXT =
   'To publish: read each item with data_cms_tool list_collection_items (one action, that collection, no locale) after your last write, ' +
   'run the context query for Products items, fix any BLOCK, then publish again. Articles stay a human click.'
+
+// The refusal for a Products/Brands publish that misses rule 5's shape: says what to change, not "Pass A".
+function nearMissDeny(keys: string[], miss: string): string {
+  return `publish-shaped Webflow call (${keys.join(', ')}). It publishes Products/Brands items, but not in the shape rule 5 (LC-2297) ` +
+    `accepts: this call ${miss}. Send any Webflow writes first, as their own call. ${CATALOG_NEXT}`
+}
 
 // ---------- Pass A bookkeeping ------------------------------------------
 
@@ -873,6 +906,8 @@ export const register: Register = on => {
       }
     }
     if (keys.length) {
+      const miss = catalogNearMiss(e)
+      if (miss) return { deny: say($, nearMissDeny(keys, miss)) }
       return {
         deny: say(
           $,
@@ -941,6 +976,8 @@ export const register: Register = on => {
     // Rule 5: a Products / Brands publish is judged in tool.call, where the readiness check runs.
     if (keys.length && catalogPublishItems(e.input)) return next(e)
     if (keys.length) {
+      const miss = catalogNearMiss(e.input)
+      if (miss) return { decision: 'deny', reason: say($, nearMissDeny(keys, miss)) }
       return {
         decision: 'deny',
         reason: say(
