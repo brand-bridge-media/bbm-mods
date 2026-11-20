@@ -164,7 +164,7 @@ def ask_text(rel: str, state: str = "none") -> str:
         "1. Post the plan (about a minute): execute_sql `select public.ask_track('ci-speed', 'speed-review', 'PLAN: "
         "<ticket>: <what you will change and why; the files; seconds added per PR and which check it replaces; "
         "anything it loosens; runner label and worst-case runtime; rollout and back-out>', '<your session id>', "
-        "'<ticket>');`, then send_message the `ring` it returns and run `mark_delivered`. No execute_sql? "
+        "'<ticket>', p_asker_track => '<your project desk>');`, then send_message the `ring` it returns and run `mark_delivered`. No execute_sql? "
         "send_message the ci-speed desk (its session is `reached_at` in public.v_track_desk_health) a message "
         "starting `PLAN:` with the same content.\n"
         f"2. Check your plan against the rubric in {RUBRIC} while you wait; do work that does not touch these files.\n"
