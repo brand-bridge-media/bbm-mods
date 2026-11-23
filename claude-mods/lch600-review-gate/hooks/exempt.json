@@ -1,0 +1,5 @@
+{
+  "_why": "Which PRs skip the LCH-600 review gate: the speed program's own work (incidents, LCH-600's children). Review by 2027-02-23: the exemption exists because that work IS the review desk's own backlog, and gating it would loop. `prefixes`: whole Jira projects that stay exempt (a title key or a `<prefix><N>-` branch of that project). `keys`: single tickets exempt by exact key (the LCH-600 epic and its children after the Jira move to project LC, where a project prefix would exempt every LC PR). After the move: add the epic and child keys to `keys`, then drop `LCH` from `prefixes` once LCH is locked. A key must match whole (LC-23 is not LC-2300). An unreadable or malformed file falls back to prefixes [LCH] only.",
+  "prefixes": ["LCH"],
+  "keys": []
+}

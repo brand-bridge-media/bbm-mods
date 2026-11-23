@@ -27,7 +27,9 @@ MODE. paths.json `mode`: `shadow` (the default while it beds in) only warns, wit
 `[mod:lch600-review-gate] SHADOW would-deny`, which register.ts toasts so session-close counts it;
 `enforce` denies. The CI step that makes this authoritative is LC-2209; the mod is the early warning.
 
-EXEMPT. A PR title that STARTS with an LCH key, or a branch named `lch<N>-...` (incidents, LCH-600's work).
+EXEMPT. A PR title that STARTS with an exempt key, or a branch named `<key without the dash>-...` (incidents, LCH-600's
+work). Exempt keys come from hooks/exempt.json (`prefixes`: whole projects, `keys`: single tickets; LCH-794); an
+unreadable file means LCH only, as before.
 Pushing a branch is never gated: sessions push to save work in an ephemeral container.
 
 WHAT IT CANNOT SEE. A PreToolUse hook gets no transcript, so register.ts records the Supabase reads this gate
@@ -47,6 +49,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -54,8 +57,11 @@ import transcript_reader  # noqa: E402
 
 TAG = "[mod:lch600-review-gate]"
 PATHS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paths.json")
-EXEMPT_TITLE = re.compile(r"^\s*LCH-\d+\b", re.I)
-EXEMPT_BRANCH = re.compile(r"^lch-?\d+", re.I)
+EXEMPT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exempt.json")
+EXEMPT_DEFAULT = (frozenset(), frozenset({"LCH"}))  # (keys, prefixes) when exempt.json cannot be read
+EXEMPT_TITLE = re.compile(r"^\s*([A-Z][A-Z0-9]*)-(\d+)\b", re.I)
+EXEMPT_BRANCH = re.compile(r"^([a-z][a-z0-9]*?)-?(\d+)(?!\d)", re.I)
+EXEMPT_KEY = re.compile(r"^[A-Z][A-Z0-9]*-\d+$", re.I)
 # LC-2265: the review is a row on the cross-track request board (LC-2257), so the PR line names that row.
 LINE_RE = re.compile(r"^\s*LCH-600-Review:\s*request\s+#?(\d+)\s+closed\b", re.I | re.M)
 # A skip carries its reason in the PR body, where anyone reading the PR sees it (it was a Jira comment before).
@@ -270,9 +276,30 @@ def payload_rules(payload: dict, rules: dict) -> dict:
     return repo_rules(rules, str(inp.get("owner") or ""), str(inp.get("repo") or ""))
 
 
-def is_exempt(title, head) -> bool:
+def load_exempt(path: str = EXEMPT_FILE) -> tuple[frozenset, frozenset]:
+    """(exact ticket keys, project prefixes), upper-case. Any problem with the file gives the old LCH-only default."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        keys, prefixes = data["keys"], data["prefixes"]
+        if not (isinstance(keys, list) and isinstance(prefixes, list)):
+            return EXEMPT_DEFAULT
+        if not all(isinstance(k, str) and EXEMPT_KEY.match(k.strip()) for k in keys):
+            return EXEMPT_DEFAULT
+        if not all(isinstance(p, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", p.strip()) for p in prefixes):
+            return EXEMPT_DEFAULT
+        return frozenset(k.strip().upper() for k in keys), frozenset(p.strip().upper() for p in prefixes)
+    except Exception:  # noqa: BLE001 - fail safe: never break the hook over this file
+        return EXEMPT_DEFAULT
+
+
+def is_exempt(title, head, exempt: tuple[frozenset, frozenset] | None = None) -> bool:
+    keys, prefixes = exempt if exempt is not None else load_exempt()
     branch = str(head or "").split(":", 1)[-1].strip()
-    return bool(EXEMPT_TITLE.match(str(title or "")) or EXEMPT_BRANCH.match(branch))
+    for m in (EXEMPT_TITLE.match(str(title or "")), EXEMPT_BRANCH.match(branch)):
+        if m and (m.group(1).upper() in prefixes or f"{m.group(1)}-{m.group(2)}".upper() in keys):
+            return True
+    return False
 
 
 def review_lines(body: str) -> list[tuple[str, str]]:
@@ -829,6 +856,43 @@ def _selftest() -> int:
     check("exempt: LC branch is not", is_exempt("t", "lc612-fix"), False)
     check("exempt: project-thread branch is not", is_exempt("LC-1 t", "claude/project-thread-x"), False)
     check("exempt: nothing given", is_exempt(None, None), False)
+    cfg = (frozenset({"LC-2300"}), frozenset({"LCH"}))
+    check("exempt cfg: listed LC key by title", is_exempt("LC-2300 tune runner", "x", cfg), True)
+    check("exempt cfg: listed LC key by branch", is_exempt("t", "lc2300-tune-runner", cfg), True)
+    check("exempt cfg: listed LC key by owner-prefixed branch", is_exempt("t", "o:lc-2300-tune", cfg), True)
+    check("exempt cfg: unlisted LC key by title", is_exempt("LC-2301 other work", "x", cfg), False)
+    check("exempt cfg: unlisted LC key by branch", is_exempt("t", "lc2301-other", cfg), False)
+    check("exempt cfg: LC-23 is not LC-2300 (title)", is_exempt("LC-23 other", "x", cfg), False)
+    check("exempt cfg: lc23 is not LC-2300 (branch)", is_exempt("t", "lc23-other", cfg), False)
+    check("exempt cfg: LC-230 is not LC-2300 (title)", is_exempt("LC-230 other", "x", cfg), False)
+    check("exempt cfg: LC-23000 is not LC-2300 (title)", is_exempt("LC-23000 other", "x", cfg), False)
+    check("exempt cfg: LC-23000 is not LC-2300 (branch)", is_exempt("t", "lc23000-x", cfg), False)
+    check("exempt cfg: listed key mid-title is not", is_exempt("fix (LC-2300)", "x", cfg), False)
+    check("exempt cfg: LCH still exempt", is_exempt("LCH-9 x", "y", cfg), True)
+    pfx = (frozenset(), frozenset({"LC"}))
+    check("exempt cfg: whole-project prefix by title", is_exempt("LC-1 anything", "x", pfx), True)
+    check("exempt cfg: whole-project prefix by branch", is_exempt("t", "lc1-x", pfx), True)
+    check("exempt cfg: prefix does not match a longer project", is_exempt("LCH-1 x", "y", pfx), False)
+    check("exempt cfg: empty config exempts nothing", is_exempt("LCH-1 x", "lch1-x", (frozenset(), frozenset())), False)
+    check("exempt default: shipped file loads", load_exempt()[1] >= {"LCH"}, True)
+    check("exempt default: LCH title, no config arg", is_exempt("LCH-794 x", "y"), True)
+    check("exempt default: unlisted LC key, no config arg", is_exempt("LC-2999 x", "lc2999-y"), False)
+    with tempfile.TemporaryDirectory() as xd:
+        def xfile(text):
+            f = os.path.join(xd, "e.json")
+            with open(f, "w") as fh:
+                fh.write(text)
+            return f
+        check("exempt file: good file read", load_exempt(xfile('{"prefixes":["lch"],"keys":["lc-2300"]}')),
+              (frozenset({"LC-2300"}), frozenset({"LCH"})))
+        for label, text in (("not json", "{nope"), ("keys missing", '{"prefixes":["LCH"]}'),
+                            ("keys not a list", '{"prefixes":["LCH"],"keys":"LC-1"}'),
+                            ("prefixes not a list", '{"prefixes":"LCH","keys":[]}'),
+                            ("bad key",'{"prefixes":["LCH"],"keys":["LC-"]}'),
+                            ("bad prefix", '{"prefixes":["LC-"],"keys":[]}'),
+                            ("non-string key", '{"prefixes":["LCH"],"keys":[5]}')):
+            check(f"exempt file: {label} falls back", load_exempt(xfile(text)), EXEMPT_DEFAULT)
+        check("exempt file: missing falls back", load_exempt(os.path.join(xd, "none.json")), EXEMPT_DEFAULT)
 
     check("lines parsed", review_lines("x\nLCH-600-Review: request 7 closed\n  lch-600-review: Request #12 Closed"),
           [("request", "7"), ("request", "12")])
@@ -1102,7 +1166,6 @@ def _selftest() -> int:
     check("replay: failed name-status gives no hits", replay("d", rules, run=lambda a: (0, "s\tLC-1\n") if a[1] == "log"
           else (1, "M\t.github/workflows/deploy.yml\n")), [])
 
-    import tempfile
     with tempfile.TemporaryDirectory() as td:
         good = json.load(open(PATHS_FILE, encoding="utf-8"))
         for label, data in (("bad mode", dict(good, mode="loud")),
