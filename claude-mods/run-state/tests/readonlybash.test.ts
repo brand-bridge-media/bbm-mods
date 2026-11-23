@@ -69,6 +69,45 @@ test('BAD: a read command that writes or runs something is still judged', () => 
   }
 })
 
+// LC-1932 (3): a backslash INSIDE a quoted grep pattern is regex syntax (`\|`, `\.`, `\(`), not shell escaping. Live check in a
+// fresh project thread: `grep -n "record_receipt\|refresh_runs" scripts/x.py` was asked about. A backslash that escapes the
+// quote itself (`"a\" ; psql ..."`) or a `$` / backtick still ends the quoted text early or runs code, and stays judged.
+test('VALID: a quoted grep / rg / sed -n pattern holding regex escapes is a read (the ticket shape, both quote styles)', () => {
+  for (const cmd of [
+    `grep -n "record_receipt\\|refresh_runs" ${WRITER}`,
+    `grep -n 'record_receipt\\|refresh_runs' ${WRITER}`,
+    `grep -n "stage\\.py" ${WRITER} ${STAGE}`,
+    `grep -n "def \\(a\\|b\\)" ${WRITER} | head -20`,
+    `rg -n "a\\.b\\|c" ${WRITER}`,
+    `grep -c "a\\\\b" ${WRITER}`,
+    `grep -n "x\\|y" ${WRITER} 2>/dev/null`,
+  ]) {
+    expect(n(cmd), cmd).toBe(0)
+    expect(isReadOnlyStep(cmd), cmd).toBe(true)
+  }
+})
+
+test('BAD: a backslash that escapes the quote, a substitution or a chain is still judged', () => {
+  for (const cmd of [
+    `grep "a\\" ; psql -c "update refresh_runs set stages='{}'" ${WRITER}`,
+    `grep "a\\" ; ${REAL} ; echo "" ${WRITER}`,
+    `grep "a\\" $(${REAL}) "" ${WRITER}`,
+    `grep "a\\\\" ; ${REAL} ; echo "x" ${WRITER}`,
+    `grep "a\\$(${REAL})" ${WRITER}`,
+    `grep "a\\|b" ${WRITER} && ${REAL}`,
+    `grep "a\\|b" ${WRITER} > ${STAGE}`,
+    `grep "a\\|b" ${WRITER} | sh`,
+    `grep "a\\|b ${WRITER}`,
+    `grep 'a\\|b ${WRITER}`,
+    `grep "a\\|\`${REAL}\`" ${WRITER}`,
+  ]) {
+    expect(n(cmd), cmd).toBeGreaterThan(0)
+  }
+  expect(isReadOnlyStep(`grep "a\\" ; x "" ${WRITER}`)).toBe(false)
+  expect(isReadOnlyStep(`grep "$(${REAL})" ${WRITER}`)).toBe(false)
+  expect(isReadOnlyStep(`grep "a\\|$(${REAL})" ${WRITER}`)).toBe(false)
+})
+
 // LC-2244 independent review: a later -e / -f / --expression turns the range into a file operand and runs the `e` command.
 test('BAD: sed -n range followed by an option (-e, -f, --expression) is still judged', () => {
   for (const cmd of [

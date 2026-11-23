@@ -471,7 +471,11 @@ const SED_RANGE = /^sed\s+-n\s+(?:'[0-9$]+(?:,[0-9$]+)?p'|"[0-9$]+(?:,[0-9$]+)?p
 // `-e '1e cmd'` / `-f` / `--expression` (which makes the range a file and runs the `e` command) is never read-only.
 export function isReadOnlyStep(seg: string): boolean {
   const cleaned = maskQuotedSeparators(seg.replace(/[0-9]?>&[0-9]|\b2>\s*\/dev\/null/g, ' '))
-  const blanked = cleaned.replace(/"[^"$`\\]*"|'[^']*'/g, '""')
+  // Review by 2027-02-23: a grep pattern with `\|` must not be mistaken for a receipt write in an unattended session.
+  // LC-1932 (3): inside double quotes a backslash before anything but `"`, `$`, a backtick or a newline is regex syntax (`\|`,
+  // `\.`, `\(`), consumed as a pair (so `\\` is one escaped backslash). `\"` / `\$` / `\`` are not matched, so the quote does not
+  // blank, the backslash stays visible and the step is judged. Single quotes never escape: `'a\|b'` was already plain text.
+  const blanked = cleaned.replace(/"(?:[^"$`\\\n]|\\[^"$`\n])*"|'[^']*'/g, '""')
   if (/[#$`;&<>(){}\\]/.test(blanked)) return false
   const stages = cleaned.split('|').map(s => s.trim())
   return stages.every(s => !/--output|--ext-diff|--textconv|--pre\b/.test(s) && (READ_STAGE.test(s) || SED_RANGE.test(s)))

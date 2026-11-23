@@ -31,6 +31,14 @@ says what to do then: record it with mark_delivered(id, false, CROSS_PROJECT_NOT
 on the other side's own scheduled board sweep, which is how desks and askers in other
 projects find their work. The attempted send still satisfies the Stop check.
 
+A DESK WITH A DOORBELL NEEDS NO RING (LC-2378). Since LC-2326 the board itself rings each desk's
+project through that desk's doorbell task, and the asking desk's on an answer. For those desks the
+board returns `{kind: doorbell, track, message}` with no session_id: nothing to send, nothing to
+mark (the ring log v_track_desk_rings records each doorbell and its HTTP result). This mod then only tells the session
+to give the user that one line. Before this, the session tried a send_message that always failed
+across projects, and its "inactive, next board sweep" wording reached the operator on request #147
+while the doorbell had already rung and the desk had claimed it.
+
 Fails open: unreadable input prints nothing and exits 1 (visible, never blocking).
 
 Self-test: python3 track-doorbell.py --selftest
@@ -79,17 +87,23 @@ def _text(resp) -> str:
     return text
 
 
-def doorbells(resp) -> tuple[list[dict], list[str]]:
-    """(session doorbells, operator notes) found in one execute_sql result.
+def doorbells(resp) -> tuple[list[dict], list[str], list[dict]]:
+    """(session doorbells, operator notes, board doorbells) found in one execute_sql result.
 
-    A session doorbell is {request_id, session_id, message, kind: ring|ring_back}.
+    A session doorbell is {request_id, session_id, message, kind: ring|ring_back}: the session must send it.
+    A board doorbell is {track, message}: the board already rang that desk (LC-2378); only the line is relayed.
     """
     text = _text(resp)
-    found, seen = [], set()
+    found, seen, rung = [], set(), []
     for kind, raw in DOORBELL.findall(text):
         try:
             obj = json.loads(raw)
         except ValueError:
+            continue
+        if obj.get("kind") == "doorbell":
+            item = {"track": str(obj.get("track") or "the other desk"), "message": str(obj.get("message") or "")}
+            if item not in rung:
+                rung.append(item)
             continue
         sid = obj.get("session_id")
         if not isinstance(sid, str) or not sid.strip():
@@ -103,16 +117,22 @@ def doorbells(resp) -> tuple[list[dict], list[str]]:
         found.append({"kind": kind, "session_id": sid, "message": msg,
                       "request_id": m.group(1) if m else None})
     notes = [n.replace('\\n', ' ') for n in TELL_OPERATOR.findall(text)]
-    return found, notes
+    return found, notes, rung
 
 
 def post_tool_note(payload: dict) -> str | None:
     if not SQL_TOOL.search(str(payload.get("tool_name") or "")):
         return None
-    bells, notes = doorbells(payload.get("tool_response"))
-    if not bells and not notes:
+    bells, notes, rung = doorbells(payload.get("tool_response"))
+    if not bells and not notes and not rung:
         return None
     lines = []
+    for d in rung:
+        line = d["message"] or f"the {d['track']} doorbell rings them within minutes."
+        lines.append(
+            f"{TAG} Delivered by the {d['track']} doorbell: no send_message and no mark_delivered needed "
+            "(the board's ring log records the doorbell and its result). Tell the user only this, word for word: "
+            f"\"{line}\" Do not say the other side is inactive, unreachable or waiting for a board sweep.")
     for b in bells:
         rid = b["request_id"] or "<request id>"
         lines.append(
@@ -190,20 +210,33 @@ def _selftest() -> int:
     sql = "mcp__Supabase__execute_sql"
 
     # -- doorbells() on every shape the MCP returns ----------------------------
-    b, n = doorbells(ask)
+    b, n, _ = doorbells(ask)
     ck(len(b) == 1 and b[0]["session_id"] == "session_DESK" and b[0]["request_id"] == "7"
        and b[0]["kind"] == "ring", "ask_track ring found with its request id")
     ck(doorbells(json.dumps(ask))[0] == b, "string result read")
     wrapped = ("Below is the result <untrusted-data>" + json.dumps(json.dumps(ask)) + "</untrusted-data>")
     ck(doorbells(wrapped)[0] == b, "escaped, wrapped result read")
-    ck(doorbells(worker) == ([], []), "a worker ring needs no message")
+    ck(doorbells(worker) == ([], [], []), "a worker ring needs no message")
     ck(doorbells(back)[0][0]["kind"] == "ring_back" and doorbells(back)[0][0]["session_id"] == "session_ASKER",
        "respond ring_back found")
     ck(doorbells(paused)[1] and "NEEDS YOU" in doorbells(paused)[1][0], "tell_operator found")
-    ck(doorbells([{"ring": {"kind": "session", "session_id": ""}}]) == ([], []), "empty session id ignored")
-    ck(doorbells("[]") == ([], []) and doorbells({"o": object()}) == ([], []), "nothing / unserialisable -> silent")
+    ck(doorbells([{"ring": {"kind": "session", "session_id": ""}}]) == ([], [], []), "empty session id ignored")
+    ck(doorbells("[]") == ([], [], []) and doorbells({"o": object()}) == ([], [], []), "nothing / unserialisable -> silent")
     ck(len(doorbells(ask + ask)[0]) == 1, "the same doorbell twice is one")
 
+    # -- LC-2378: a desk with a doorbell --------------------------------------
+    line = "Posted as request #147 for tools-services; their doorbell rings them within minutes."
+    door = [{"ask_track": {"request_id": 147, "status": "open", "ring": {
+        "kind": "doorbell", "track": "tools-services", "message": line}}}]
+    door_back = [{"respond": {"request_id": 147, "ring_back": {
+        "kind": "doorbell", "track": "incidents",
+        "message": "Request #147 is answered; the incidents doorbell rings them within minutes."}}}]
+    b, n, rung = doorbells(door)
+    ck(b == [] and n == [] and rung == [{"track": "tools-services", "message": line}],
+       "doorbell ring: nothing to send, one line to relay (LC-2378)")
+    ck(doorbells(json.dumps(json.dumps(door)))[2] == rung, "doorbell ring read from an escaped result")
+    ck(doorbells(door_back)[0] == [] and doorbells(door_back)[2][0]["track"] == "incidents",
+       "doorbell ring_back: nothing to send (LC-2378)")
     # -- PostToolUse ------------------------------------------------------------
     r = evaluate({"hook_event_name": "PostToolUse", "tool_name": sql, "tool_response": ask})
     ck(r and r[0] == "context" and "session_DESK" in r[1] and "mark_delivered(7, true)" in r[1]
@@ -211,6 +244,17 @@ def _selftest() -> int:
     ck(r and "another Claude project" in r[1] and "mark_delivered(7, false, '" + CROSS_PROJECT_NOTE + "')" in r[1],
        "ring note carries the cross-project fallback with this request's id (LC-2278)")
     ck("'" not in CROSS_PROJECT_NOTE, "the note is safe inside a single-quoted SQL literal (LC-2278)")
+    r = evaluate({"hook_event_name": "PostToolUse", "tool_name": sql, "tool_response": door})
+    ck(r and r[0] == "context" and r[1].startswith(TAG) and f'"{line}"' in r[1],
+       "doorbell -> relay the one line word for word (LC-2378)")
+    ck(r and "Ring now" not in r[1] and "send_message to session" not in r[1]
+       and "mark_delivered(" not in r[1] and CROSS_PROJECT_NOTE not in r[1],
+       "doorbell -> no ring demand, no failed-delivery note (LC-2378)")
+    ck(r and "Do not say the other side is inactive, unreachable or waiting for a board sweep." in r[1],
+       "doorbell -> forbids the inactive / board-sweep wording that confused the operator (LC-2378)")
+    r = evaluate({"hook_event_name": "PostToolUse", "tool_name": sql, "tool_response": ask})
+    ck(r and "Ring now" in r[1] and "Delivered by" not in r[1],
+       "a desk with no doorbell still gets the ring demand (LC-2378 valid case)")
     r = evaluate({"hook_event_name": "PostToolUse", "tool_name": sql, "tool_response": paused})
     ck(r and "NEEDS YOU" in r[1], "pause -> NEEDS YOU note")
     ck(evaluate({"hook_event_name": "PostToolUse", "tool_name": "mcp__x__list_tables",
@@ -255,6 +299,13 @@ def _selftest() -> int:
                  a("2", "SendMessage", {"to": "session_ASKER", "message": "..."}), u("2", "ok")]
     ck(evaluate({"hook_event_name": "Stop", "stop_hook_active": False, "transcript_rows": back_rows}) is None,
        "ring_back sent via SendMessage passes")
+    dr = [prompt, a("1", sql, {}), u("1", door), a("2", sql, {}), u("2", door_back)]
+    ck(evaluate({"hook_event_name": "Stop", "stop_hook_active": False, "transcript_rows": dr}) is None,
+       "doorbell rings never block the stop (LC-2378)")
+    mixed = [prompt, a("1", sql, {}), u("1", door + ask)]
+    r = evaluate({"hook_event_name": "Stop", "stop_hook_active": False, "transcript_rows": mixed})
+    ck(r and "session_DESK" in r[1] and "tools-services" not in r[1],
+       "a session ring beside a doorbell ring still blocks, for the session one only (LC-2378)")
     ck(evaluate({"hook_event_name": "Stop", "stop_hook_active": False}) is None, "no transcript -> pass")
     ck(evaluate({}) is None, "unknown event silent")
 

@@ -202,7 +202,7 @@
     {
       "name": "track-doorbell",
       "source": "./claude-mods/track-doorbell",
-      "description": "Cross-track request board (LC-2257): after an execute_sql result carrying a ring or ring_back for a session, says to message that session now and mark_delivered; blocks a turn's end once when the ring was never sent."
+      "description": "Cross-track request board (LC-2257): after an execute_sql result carrying a ring or ring_back for a session, says to message that session now and mark_delivered; blocks a turn's end once when the ring was never sent. A desk with a doorbell needs no ring: the session only relays the board's one line (LC-2378)."
     },
     {
       "name": "roominate-order-guard",
