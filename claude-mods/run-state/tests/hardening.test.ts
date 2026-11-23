@@ -73,8 +73,9 @@ test('(f) only the writer itself (or echo/printf/cat/tee) can be exempt: any oth
 test('cat / tee / echo / printf segments only print or write text', () => {
   expect(n('cat webflow/bulk-operations/refresh-receipt-writer/write_stage_receipt.py')).toBe(0)
   expect(n(`printf '%s' '${W}' | cat`)).toBe(1) // a pipe makes the whole command not plain
-  // The real call makes the command not exempt, so the cat that merely names the script is judged too (2, was 1).
-  expect(n(`ls && cat webflow/bulk-operations/refresh-receipt-writer/write_stage_receipt.py && ${W}`)).toBe(2)
+  // The real call makes the command not exempt, but the cat that merely names the script is a read (LC-1932: 1, was 2);
+  // only the real call is judged.
+  expect(n(`ls && cat webflow/bulk-operations/refresh-receipt-writer/write_stage_receipt.py && ${W}`)).toBe(1)
 })
 
 // ---- review of #1626 at c7cdeb1 (H1 / H2): a comment is not code, and its apostrophe is not a quote.

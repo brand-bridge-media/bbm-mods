@@ -307,6 +307,23 @@ comments can itself hide code (`` echo `echo a # b`; curl ... ``). Its splitter 
 NotebookEdit never reach refresh-run-guard (it hooks Bash, SQL and the Webflow tools only), so a file whose content
 quotes the URL was never denied by it; a test pins that.
 
+**Unquoted heredoc bodies (run-state only, LC-1732).** A cat/tee heredoc with an UNQUOTED terminator (`cat > plugin.json <<EOF`)
+is treated as data too when its body has no `$(`, backtick or backslash, nothing before the operator on its line is a quote
+or other shell syntax, and every earlier line's quotes are closed: `run-state` rewrites the operator to its quoted form
+before the plain test (`quoteSafeHeredocs`, outside the shared PLAIN-COMMAND block, so refresh-run-guard is unchanged).
+The all-or-nothing rule applies as before, so a body is still judged when any other step is not on the allow-list.
+Reason: a scaffolding heredoc that only DESCRIBED `refresh_runs` or the receipt writers made a child session with no
+Supabase MCP ask a question nobody could answer. Review by 2027-02-23: this exemption exists so documentation text is not
+mistaken for a receipt write.
+
+**Read-only commands over the writer (run-state only, LC-1932 part 2).** A step that merely reads a file naming the writer
+(`grep -n def .../write_stage_receipt.py`, `sed -n '1,80p' ...`) is not a receipt write (`isReadOnlyStep`). Every `|` stage must be
+grep / egrep / fgrep / rg (no `--pre`) / head / tail / wc / ls / cat / nl / file / stat, `sed -n` with a plain line range, or
+`git log|show|diff|blame|status|ls-files`, with no `--output`, `--ext-diff` or `--textconv`; after quoted text is blanked the step may hold
+no `# $ backtick ; & < > ( ) { } \` (only `2>&1` and `2>/dev/null` pass). Anything else is judged. The writer actually run, in any
+chain, is still a write. Review by 2027-02-23: this rule exists so reading the writer's source in an unattended session is not
+mistaken for running it. Not changed: with no readable plan a real write still asks and, with nobody to answer, is refused.
+
 ### draft-session (LC-1714)
 
 Pin a session to a run: `/draft-start <run_id> <article_id> <slug> [v1|v2|standard]` (first three required), or set the

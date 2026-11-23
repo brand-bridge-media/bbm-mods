@@ -51,9 +51,12 @@ test('the reviewer\'s heredoc bypasses are judged: unquoted bodies expand, proce
   expect(n(`cat > f <<EOF\n\`${W}\`\nEOF`)).toBe(1)
   expect(n(`tee >(bash) <<EOF\n${W}\nEOF`)).toBe(1)
   expect(n(`tee >(bash) <<'EOF'\n${W}\nEOF`)).toBe(1)
-  // An unquoted terminator is never exempt, even when the body looks like plain text.
-  expect(n(`cat > f <<EOF\n${W}\nEOF`)).toBe(1)
-  expect(n(`cat > f <<-EOF\n\t${W}\n\tEOF`)).toBe(1)
+  // LC-1732: an unquoted terminator whose body has no expansion is data, like a quoted one (see heredocmention.test.ts),
+  // but only when nothing later runs the file; with a runner step the body is still judged.
+  expect(n(`cat > f <<EOF\n${W}\nEOF`)).toBe(0)
+  expect(n(`cat > f <<-EOF\n\t${W}\n\tEOF`)).toBe(0)
+  expect(n(`cat > f <<EOF\n${W}\nEOF\nsh f`)).toBe(1)
+  expect(n(`cat > f <<-EOF\n\t${W}\n\tEOF\nsh f`)).toBe(1)
 })
 
 test('interpreters fed code, eval/source and chained invocations are judged', () => {

@@ -409,9 +409,38 @@ function stepIsExempt(step: string): boolean {
   return BENIGN_STEP.some(re => re.test(step))
 }
 
+// LC-1732. A cat/tee heredoc with an UNQUOTED terminator whose body holds nothing the shell would expand is data exactly
+// like a quoted one: `cat > plugin.json <<EOF` that merely describes refresh_runs or names write_stage_receipt.py wrote a
+// file, it ran nothing. The shared PLAIN-COMMAND block only drops quoted bodies, so the operator is rewritten to its
+// quoted form HERE (outside the shared block, so refresh-run-guard keeps its own behaviour) and the all-or-nothing rule
+// then applies unchanged: the body is dropped only if every other step is benign, else the whole command is still judged.
+// Body is safe only when it has no `$(`, backtick or backslash (those are the expansions an unquoted body would run),
+// the line has no quote or other shell syntax before the operator, and every earlier line's quotes are closed.
+const UNQUOTED_HEREDOC_LINE =
+  /^((?:[^'"`$\\#<|&;(){}]*(?:&&|;)\s*)*)(cat|tee)\b([^'"`$\\#<|&;(){}]*)<<(-?)([A-Za-z_][A-Za-z0-9_]*)([^'"`$\\#<|&;(){}]*)$/
+
+function quoteSafeHeredocs(command: string): string {
+  if (!command.includes('<<')) return command
+  const lines = command.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const m = UNQUOTED_HEREDOC_LINE.exec(lines[i])
+    if (!m) continue
+    const term = m[5]
+    const dash = m[4] === '-'
+    const end = lines.findIndex((l, k) => k > i && (dash ? l.replace(/^\t+/, '') : l).trimEnd() === term)
+    if (end < 0) continue
+    const body = lines.slice(i + 1, end).join('\n')
+    if (/\$\(|`|\\/.test(body)) continue
+    if (!scanShell(lines.slice(0, i).join('\n')).closed) continue
+    lines[i] = `${m[1]}${m[2]}${m[3]}<<${m[4]}'${term}'${m[6]}`
+    i = end
+  }
+  return lines.join('\n')
+}
+
 // The steps to judge: none when the whole command is exempt, else the command split plainly (no exemption at all).
 function segments(command: string): string[] {
-  const view = plainView(command)
+  const view = plainView(quoteSafeHeredocs(command))
   if (view.plain) {
     const steps = maskQuotedSeparators(view.text)
       .split(SPLIT)
@@ -430,10 +459,27 @@ const runInBash = (seg: string): string | undefined => {
   return slug ? slug[1].toLowerCase() : undefined
 }
 
+// LC-1932 (2). A command that only READS the writer's source (`grep -n def .../write_stage_receipt.py`, `sed -n '1,80p'
+// .../write_stage_receipt.py`) names the script but runs nothing, yet it was read as a receipt write and raised a question in a
+// session nobody watches. A step is read-only when every `|` stage is a short read command (grep family, rg without `--pre`,
+// head, tail, wc, ls, cat, nl, file, stat, `sed -n` with a plain line range, git log|show|diff|blame|status|ls-files) and,
+// after quoted text is blanked, nothing is left that could write or run anything: no `>` `<` `;` `&` `$` backtick, group,
+// brace or backslash (`2>&1` and `2>/dev/null` are the only redirects let through). Anything else is judged as before.
+const READ_STAGE = /^(?:(?:grep|egrep|fgrep|head|tail|wc|ls|cat|nl|file|stat)|rg|git\s+(?:log|show|diff|blame|status|ls-files))(?=\s|$)/
+const SED_RANGE = /^sed\s+-n\s+(?:'[0-9$]+(?:,[0-9$]+)?p'|"[0-9$]+(?:,[0-9$]+)?p"|[0-9$]+(?:,[0-9$]+)?p)\s+\S/
+export function isReadOnlyStep(seg: string): boolean {
+  const cleaned = maskQuotedSeparators(seg.replace(/[0-9]?>&[0-9]|\b2>\s*\/dev\/null/g, ' '))
+  const blanked = cleaned.replace(/"[^"$`\\]*"|'[^']*'/g, '""')
+  if (/[#$`;&<>(){}\\]/.test(blanked)) return false
+  const stages = cleaned.split('|').map(s => s.trim())
+  return stages.every(s => !/--output|--ext-diff|--textconv|--pre\b/.test(s) && (READ_STAGE.test(s) || SED_RANGE.test(s)))
+}
+
 export function receiptWritesInBash(command: string): WriteTarget[] {
   const out: WriteTarget[] = []
   for (const seg of segments(command)) {
     if (!KNOWN_WRITERS.some(w => seg.includes(w))) continue
+    if (isReadOnlyStep(seg)) continue
     if (seg.includes('write_stage_receipt.py')) {
       const stage = /--stage[ =]+([0-9]+(?:\.[0-9]+)?)/.exec(seg)
       const part = /--part[ =]+["']?([A-Za-z0-9_]+)/.exec(seg)
