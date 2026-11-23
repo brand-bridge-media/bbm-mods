@@ -29,7 +29,7 @@ Protocol: `python3 -I where-we-stand.py` reads ONE JSON object from stdin,
   parse_jira       {tickets, fired, collected} | {error}     -> {evidence}
   parse_prs        {asked, items:[{number, text|error}]} | {error} -> {evidence}
   render           {topic, today, evidence, terms?, tickets?} -> {card, verdict, receipts}
-  normalize        {tickets?, terms?, kind?}                 -> {kind, topic, tickets, terms}  (on-demand tool)
+  normalize        {tickets?, terms?, prs?, kind?}           -> {kind, topic, tickets, terms, prs}  (on-demand tool)
   branch_ticket    {branch}                                  -> {tickets}  (the session's own ticket)
   gate             {transcript_path, stop_hook_active, cards} -> {block?}   (wws_gate, then wws_needs_you)
   t2_prs           {transcript_path}                         -> {prs}     (PRs a NEEDS YOU banner asks T2 approval for)
@@ -73,6 +73,13 @@ def _tickets(vals) -> list:
 
 def _terms(vals) -> list:
     return [v for v in dict.fromkeys(str(x).lower() for x in vals or []) if TERM.match(v)]
+
+
+def _prs(vals) -> list:
+    """PR numbers as ints, from 694, "694" or "#694"; at most 5 (the card's PR cap); anything else is dropped."""
+    if not isinstance(vals, list):
+        return []
+    return list(dict.fromkeys(int(str(v).strip().lstrip("#")) for v in vals if re.fullmatch(r"#?\d{1,7}", str(v).strip())))[:5]
 
 
 def _arr(vals: list, cast: str = "text") -> str:
@@ -352,8 +359,10 @@ def normalize(p: dict) -> dict:
     """A hand-made lookup request (the on-demand tool): only validated tickets and terms survive, and
     `kind` defaults so that a job name is never demanded as an article."""
     tickets, terms = _tickets(p.get("tickets")), _terms(p.get("terms"))
+    # LCH-554: PR numbers are a lookup subject of their own, so a PR-only status claim has a request the tool accepts.
+    prs = _prs(p.get("prs"))
     kind = p.get("kind") if p.get("kind") in KINDS else ("ticket-status" if tickets and not terms else "diagnosis")
-    return {"kind": kind, "topic": " ".join(tickets + terms)[:80], "tickets": tickets, "terms": terms}
+    return {"kind": kind, "topic": " ".join(tickets + terms + [f"#{n}" for n in prs])[:80], "tickets": tickets, "terms": terms, "prs": prs}
 
 
 def branch_ticket(branch) -> dict:
@@ -613,9 +622,16 @@ def _selftest() -> int:
     ck(run3.returncode == 0 and "error" in json.loads(run3.stdout), "main: garbage on stdin is reported as an error and exits 0 (a lookup never stops a session)")
     run4 = subprocess.run([sys.executable, "-I", me], input="[1,2]", capture_output=True, text=True, timeout=30)
     ck(json.loads(run4.stdout) == {"error": "unknown cmd None"}, "main: a JSON array is not a request")
-    ck(normalize({"tickets": ["lc-1345", "bad key"], "terms": ["Catalog-Ingest", "x'y"]}) == {"kind": "diagnosis", "topic": "LC-1345 catalog-ingest", "tickets": ["LC-1345"], "terms": ["catalog-ingest"]}, "normalize: validated, kind defaults to diagnosis when terms are present")
+    ck(normalize({"tickets": ["lc-1345", "bad key"], "terms": ["Catalog-Ingest", "x'y"]}) == {"kind": "diagnosis", "topic": "LC-1345 catalog-ingest", "tickets": ["LC-1345"], "terms": ["catalog-ingest"], "prs": []}, "normalize: validated, kind defaults to diagnosis when terms are present")
     ck(normalize({"tickets": ["LC-1"]})["kind"] == "ticket-status" and normalize({"terms": ["some-slug"], "kind": "article-status"})["kind"] == "article-status", "normalize: ticket-only defaults to ticket-status; an explicit kind is kept")
     ck(normalize({"terms": ["some-slug"], "kind": "drop table"})["kind"] == "diagnosis", "normalize: an unknown kind is ignored")
+    ck(normalize({"prs": [694, "#770", "x", "1; drop", 694]}) == {"kind": "diagnosis", "topic": "#694 #770", "tickets": [], "terms": [], "prs": [694, 770]}, "normalize (LCH-554): a PR-only request keeps validated, deduplicated numbers and names them in the topic")
+    rows = [{"type": "user", "message": {"role": "user", "content": "q"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "#2065, #2066 merged."}]}}]
+    blocked = wws_gate.evaluate({"transcript_rows": rows, "cards": []}) or ""
+    req = json.loads(blocked.split("lookup with ")[1].split(" (add")[0])
+    got = normalize(req)
+    ck(got["topic"] and got["prs"] == [2065, 2066] and wws_gate.evaluate({"transcript_rows": rows, "cards": [{"topic": got["topic"], "tickets": got["tickets"], "terms": got["terms"], "prs": got["prs"]}]}) is None, "LCH-554 round trip: the request the gate block asks for passes normalize, and the card it yields covers the reply")
+    ck(normalize({"prs": "694"})["prs"] == [] and normalize({"prs": [1, 2, 3, 4, 5, 6, 7]})["prs"] == [1, 2, 3, 4, 5], "normalize: prs must be a list, capped at 5")
     ck(branch_ticket("lc1893-where-we-stand") == {"tickets": ["LC-1893"]} and branch_ticket("claude/lch528-mods") == {"tickets": ["LCH-528"]} and branch_ticket("bbm84-x") == {"tickets": ["BBM-84"]}, "branch_ticket: the ticket a branch names")
     ck(branch_ticket("main") == {"tickets": []} and branch_ticket("feature/clean-stuff") == {"tickets": []} and branch_ticket(None) == {"tickets": []} and branch_ticket("lc-1893") == {"tickets": []}, "branch_ticket: no ticket, no card")
     gate_rows = [{"type": "user", "message": {"role": "user", "content": "q"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "LC-9 is Done."}]}}]

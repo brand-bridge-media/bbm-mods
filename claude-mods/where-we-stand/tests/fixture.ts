@@ -53,7 +53,7 @@ export function world(on: any, w: World = {}) {
       discover: { tickets: w.tickets ?? [], prs: w.prs ?? [] },
       parse_jira: { evidence: { ok: !p.error, from: 'jira', error: p.error } },
       parse_prs: { evidence: { ok: !p.error, from: 'github' } },
-      normalize: { kind: p.kind ?? 'diagnosis', topic: [...(p.tickets ?? []), ...(p.terms ?? [])].join(' '), tickets: p.tickets ?? [], terms: p.terms ?? [] },
+      normalize: { kind: p.kind ?? 'diagnosis', topic: [...(p.tickets ?? []), ...(p.terms ?? []), ...(p.prs ?? []).map((n: number) => `#${n}`)].join(' '), tickets: p.tickets ?? [], terms: p.terms ?? [], prs: p.prs ?? [] },
       branch_ticket: { tickets: w.ownTicket ? [w.ownTicket] : [] },
       moot_refs: w.mootRefsBroken ? {} : { needed: !!w.mootNeeded, tickets: ['LC-1755'], runs: ['f312eb7b'], slugs: ['best-kid-pet-friendly-sofas'] },
       gate: w.gate ?? {},

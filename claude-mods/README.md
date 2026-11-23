@@ -172,7 +172,9 @@ the re-send, at most 3 times a session.
 
 Ways in: a recognised trigger (once per topic, three per session, nothing for a topic the session already read in the knowledge tables);
 the session's own ticket from its branch name at session start; the `lookup` tool (`mcp__where-we-stand__lookup`), on demand and not capped;
-the gate's block message names that tool and the exact arguments.
+the gate's block message names that tool and the exact arguments (tickets, terms and, since LCH-554, `prs`: a PR-only claim such as "#2065 merged" is
+answered by `{"prs": [2065]}`, which reads those PRs from GitHub alone and records them so the gate counts them covered).
+Review by 2027-02-23: the gate's block message must only ask for a lookup the tool accepts (LCH-554); the round-trip test in `where-we-stand.py --selftest` pins it.
 
 What a card never does: summarise (every line is a raw read: a comment quoted verbatim with gaps marked `[...]`, `merged=true head_sha=...`,
 the last-published timestamp, a cron schedule), pick a side in a conflict (production wins ties, CLAUDE.md section 6, and the card says so),

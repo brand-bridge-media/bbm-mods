@@ -88,9 +88,13 @@ def evaluate(payload: dict) -> str | None:
     shown = ", ".join(missing[:MAX_SHOWN]) + (f" (+{len(missing) - MAX_SHOWN} more)" if len(missing) > MAX_SHOWN else "")
     tickets = [m for m in missing if re.fullmatch(r"[A-Z][A-Z0-9]+-\d+", m)]
     terms = [m for m in missing if not m.startswith("#") and m not in tickets]
+    prs = [int(m[1:]) for m in missing if m.startswith("#")]  # claims() only yields `#<digits>`
+    # LCH-554: name only the arrays that are not empty. The lookup refuses a request with no ticket, term or PR, and a PR-only
+    # claim used to be sent back with `{"tickets": [], "terms": []}`. PR numbers now go in `prs`.
+    args = ", ".join(f'"{k}": {v!r}' for k, v in (("tickets", tickets), ("terms", terms), ("prs", prs)) if v)
     return (f"[mod:where-we-stand] This reply states a status with no where-we-stand card for: {shown}. A title, a census line or "
             "an earlier turn is not a read of the source. Call the tool mcp__where-we-stand__lookup with "
-            f"{{\"tickets\": {tickets!r}, \"terms\": {terms!r}}} (add \"kind\": \"article-status\" for a slug), or read the Jira issue / query the "
+            f"{{{args}}} (add \"kind\": \"article-status\" for a slug), or read the Jira issue / query the "
             "surface, which injects the card. Then re-send the reply using the card's facts and dates, or mark the claim 'not checked'.").replace("'", '"')
 
 
@@ -137,6 +141,11 @@ def _selftest() -> int:
     why = evaluate(pay)
     ck(why is not None and why.startswith("[mod:where-we-stand] ") and "LC-1345, #694, most-comfortable-couches" in why, "an uncovered reply is blocked, naming every subject")
     ck('"tickets": ["LC-1345"]' in why and '"terms": ["most-comfortable-couches"]' in why, "the block says exactly which tool call produces the card")
+    ck('"prs": [694]' in why, "a PR claim is asked for through the prs input of the tool")
+    prow = [{"type": "user", "message": {"role": "user", "content": "q"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "#2065, #2066 merged."}]}}]
+    only = evaluate({"transcript_rows": prow, "cards": []})
+    ck(only is not None and "{\"prs\": [2065, 2066]}" in only and "tickets" not in only.split("with ")[1].split(" (add")[0] and "[]" not in only, "LCH-554: a PR-only claim names a request the lookup accepts, with no empty arrays")
+    ck(evaluate({"transcript_rows": prow, "cards": [{"tickets": [], "terms": [], "prs": [2065, 2066]}]}) is None, "LCH-554: the card that lookup produces covers the PRs, so the reply passes")
     ck(evaluate({**pay, "stop_hook_active": True}) is None, "the stop after a block always passes")
     ck(evaluate({**pay, "cards": [{"tickets": ["LC-1345"], "prs": [694], "terms": ["most-comfortable-couches"]}]}) is None, "a covered reply passes")
     part = evaluate({**pay, "cards": [{"tickets": ["LC-1345"], "prs": [], "terms": []}]})

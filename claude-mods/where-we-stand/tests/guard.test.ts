@@ -161,6 +161,20 @@ test('the lookup tool answers on demand, and is not held to the three-card limit
   expect(w.cmds.filter(c => c.cmd === 'render')).toHaveLength(5)
 })
 
+test('LCH-554: the lookup tool takes PR numbers alone, reads only those PRs, and records them so the gate sees them covered', async ($: any, on: any) => {
+  const w = world(on)
+  on('classic.Stop', () => ({}))
+  const r: any = await $.tool.call({ tool: 'mcp__where-we-stand__lookup', prs: [2065, 2066] } as any)
+  expect(r.result).toMatch(/^\[mod:where-we-stand\] WHERE WE STAND/)
+  expect(w.mcp.map(m => [m.tool, m.args.pullNumber])).toEqual([['pull_request_read', 2065], ['pull_request_read', 2066]])
+  expect(w.cmds.some(c => c.cmd === 'sql_knowledge' || c.cmd === 'sql_production')).toBe(false)
+  const done = w.cmds.filter(c => c.cmd === 'render')
+  expect(done).toHaveLength(1)
+  w.cmds.length = 0
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/t.jsonl' })
+  expect(w.cmds.find(c => c.cmd === 'gate').cards).toEqual([{ topic: '#2065 #2066', tickets: [], terms: [], prs: [2065, 2066], at: expect.any(Number) }])
+})
+
 test('the lookup tool refuses an empty request instead of reading everything', async ($: any, on: any) => {
   const w = world(on)
   const r: any = await $.tool.call({ tool: 'mcp__where-we-stand__lookup' } as any)

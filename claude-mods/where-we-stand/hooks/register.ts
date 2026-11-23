@@ -33,7 +33,7 @@ type Moot = { verdict?: string; reason?: string; tickets?: Record<string, string
 type Entry = { topic: string; tickets: string[]; terms: string[]; prs: number[]; at?: number; moot?: Moot }
 type Session = { done: string[]; seen: string[]; cards: number; ledger: Entry[]; tries: Record<string, number>; broken?: boolean; nudged?: boolean; mootBlocks?: number }
 type Made = { text: string; broken: boolean }
-type Topic = { kind: string; topic: string; tickets: string[]; terms: string[] }
+type Topic = { kind: string; topic: string; tickets: string[]; terms: string[]; prs?: number[] }
 
 // A lookup runs its own MCP calls; this stops them re-triggering the mod that made them.
 let busy = false
@@ -235,6 +235,13 @@ async function mootSlice($: any, o: Opts, tickets: string[], jira: unknown): Pro
 
 // The whole lookup. Each source is read and parsed on its own; nothing here decides a verdict.
 async function lookup($: any, o: Opts, t: Topic): Promise<{ card: string; entry?: Entry; broken?: boolean } | undefined> {
+  // LCH-554: a request that names only PRs (the gate's block for "#2065 merged") reads those PRs from GitHub and nothing else.
+  if (t.prs?.length && !t.tickets.length && !t.terms.length) {
+    const github = await githubSlice($, o, t.prs)
+    const out = await py($, { cmd: 'render', topic: t.topic, terms: [], tickets: [], today: new Date().toISOString().slice(0, 10), evidence: { github } })
+    if (!out?.card) return undefined
+    return { card: `[mod:where-we-stand] ${out.card}`, entry: { topic: t.topic, tickets: [], terms: [], prs: t.prs.slice(0, MAX_PRS), at: Date.now(), moot: out.moot } }
+  }
   const k = await py($, { cmd: 'sql_knowledge', terms: t.terms, tickets: t.tickets })
   const kr = k?.sql ? await sql($, o, k.sql) : { error: 'knowledge query not built' }
   const knowledge = (await py($, { cmd: 'parse_knowledge', ...kr, terms: t.terms, tickets: t.tickets }))?.evidence
@@ -251,7 +258,8 @@ async function lookup($: any, o: Opts, t: Topic): Promise<{ card: string; entry?
   const jira = await jiraSlice($, o, found.tickets ?? t.tickets)
   // A second look once the tickets are read: PR numbers in their newest comments are cited evidence too.
   const again = (await py($, { cmd: 'discover', tickets: t.tickets, knowledge, production, jira })) ?? found
-  const github = await githubSlice($, o, again.prs ?? found.prs ?? [])
+  const prList = [...new Set([...(t.prs ?? []), ...(again.prs ?? found.prs ?? [])])].slice(0, MAX_PRS)
+  const github = await githubSlice($, o, prList)
   // LC-1907: a decision the newest comment still calls open is checked against the runs and articles it names (and the runs that
   // list the ticket), which only a second read of production can answer: the first one ran before any comment was read.
   const mootProduction = await mootSlice($, o, found.tickets ?? t.tickets, jira)
@@ -259,7 +267,7 @@ async function lookup($: any, o: Opts, t: Topic): Promise<{ card: string; entry?
   const out = await py($, { cmd: 'render', topic: t.topic, terms: t.terms, tickets: found.tickets ?? t.tickets, today: new Date().toISOString().slice(0, 10), evidence: { knowledge, jira, github, production, ...(mootProduction ? { moot_production: mootProduction } : {}) } })
   if (!out?.card) return undefined
   // What this card covers, for the gate: the tickets it read, the terms it searched, the PRs it checked.
-  const entry: Entry = { topic: t.topic, tickets: found.tickets ?? t.tickets, terms: t.terms, prs: (again.prs ?? found.prs ?? []).slice(0, MAX_PRS), at: Date.now(), moot: out.moot }
+  const entry: Entry = { topic: t.topic, tickets: found.tickets ?? t.tickets, terms: t.terms, prs: prList, at: Date.now(), moot: out.moot }
   return { card: `[mod:where-we-stand] ${out.card}`, entry }
 }
 
@@ -363,6 +371,7 @@ export const register: Register = (on, options) => {
           type: 'object',
           properties: {
             tickets: { type: 'array', items: { type: 'string' }, description: 'Jira keys, e.g. LC-1345' },
+            prs: { type: 'array', items: { type: 'number' }, description: 'PR numbers of this repo, e.g. 2065; reads each from GitHub (merged, base, sha)' },
             terms: { type: 'array', items: { type: 'string' }, description: 'lowercase slugs, job names or error classes, e.g. most-comfortable-couches, catalog-ingest' },
             kind: { type: 'string', enum: ['ticket-status', 'diagnosis', 'article-status'], description: 'article-status when a term is an article slug or run id' },
           },
@@ -373,8 +382,8 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'mcp__where-we-stand__lookup' }, async ($, e: any) => {
-    const t = await py($, { cmd: 'normalize', tickets: e.tickets, terms: e.terms, kind: e.kind })
-    if (!t?.topic) return { result: '[mod:where-we-stand] Give at least one valid Jira key (tickets) or slug / job name (terms).' }
+    const t = await py($, { cmd: 'normalize', tickets: e.tickets, terms: e.terms, prs: e.prs, kind: e.kind })
+    if (!t?.topic) return { result: '[mod:where-we-stand] Give at least one valid Jira key (tickets), slug / job name (terms) or PR number (prs).' }
     busy = true
     try {
       const made = await produce($, o, t, false)
