@@ -73,6 +73,15 @@ function closesLines(body: string): string {
   return body.split('\n').filter(l => /\b(closes|fixes|resolves)\b/i.test(l)).join(' ')
 }
 
+// LCH-794 (operator decision 2026-11-23): infrastructure breakage is a GitHub issue in
+// brand-bridge-media/bbm-health-issues, not a Jira LCH ticket. A PR naming one (`bbm-health-issues#N`, its URL,
+// or `Fixes brand-bridge-media/bbm-health-issues#N`) is closed out on GitHub, never through a Jira close.
+const HEALTH = /\b(?:https?:\/\/github\.com\/brand-bridge-media\/bbm-health-issues\/issues\/|bbm-health-issues#)(\d{1,6})\b/gi
+
+function healthRefs(s: string): string {
+  return [...new Set([...s.matchAll(HEALTH)].map(m => `bbm-health-issues#${m[1]}`))].join(' ')
+}
+
 // The PR's own identity: title, head branch and Closes/Fixes/Resolves lines of
 // the body. undefined when the text is not a PR object we recognise.
 function prFields(text: string): string | undefined {
@@ -80,7 +89,7 @@ function prFields(text: string): string | undefined {
     const pr = JSON.parse(text) as { title?: unknown; head?: { ref?: unknown }; body?: unknown }
     if (typeof pr.title !== 'string') return undefined
     const closes = closesLines(String(pr.body ?? ''))
-    return `${pr.title} ${String(pr.head?.ref ?? '')} ${closes}`
+    return `${pr.title} ${String(pr.head?.ref ?? '')} ${closes} ${healthRefs(String(pr.body ?? ''))}`
   } catch { return undefined }
 }
 
@@ -100,7 +109,7 @@ export const register: Register = on => {
       const m = textOf(ran.result).match(/"number"\s*:\s*(\d+)|\/pull\/(\d+)/)
       const num = m?.[1] ?? m?.[2]
       const closes = closesLines(String(e.body ?? ''))
-      if (num) await update($, titles, t => ({ ...t, [prId(e, num)]: `${String(e.title ?? '')} ${String(e.head ?? '')} ${closes}` }))
+      if (num) await update($, titles, t => ({ ...t, [prId(e, num)]: `${String(e.title ?? '')} ${String(e.head ?? '')} ${closes} ${healthRefs(String(e.body ?? ''))}` }))
       return ran
     }
 
@@ -122,7 +131,7 @@ export const register: Register = on => {
           const text = (r.content ?? []).map(c => textOf((c as { text?: unknown }).text ?? c)).join(' ')
           const pr = prFields(text)
           if (r.isError || pr === undefined) unread = true
-          else source = pr
+          else source = `${pr} ${healthRefs(source)}`
         } catch { unread = true }
       }
       const keys = keysIn(source)
@@ -137,7 +146,13 @@ export const register: Register = on => {
             `Find the ticket it served and transition it to Done or post a state comment.`)],
         }
       }
-      if (keys.length === 0) return ran
+      const health = healthRefs(source)
+      const healthSay = health
+        ? [say($, `${id} references ${health}: a GitHub issue in brand-bridge-media/bbm-health-issues, not a Jira ticket, ` +
+            `so this project verifies and closes the GitHub issue (read it and its newest comment, check live state, then close it ` +
+            `with the evidence${queued ? ' once the merge lands' : ''}); do not transition or comment on Jira for it.`)]
+        : []
+      if (keys.length === 0) return healthSay.length ? { ...ran, context: [...(ran.context ?? []), ...healthSay] } : ran
 
       await update($, pending, list => [
         ...list.filter(p => !keys.includes(p.key)),
@@ -151,7 +166,7 @@ export const register: Register = on => {
         : `${id} references ${keys.join(', ')}. Before this turn ends, for each: read the ticket's ` +
           `NEWEST comment and its done-criteria, check live state, then either transition it to Done ` +
           `(this PR finished it) or post a one-line state comment (what shipped, what remains).`
-      return { ...ran, context: [...(ran.context ?? []), say($, ask)] }
+      return { ...ran, context: [...(ran.context ?? []), say($, ask), ...healthSay] }
     }
 
     if (JIRA_TOUCH.test(tool)) {

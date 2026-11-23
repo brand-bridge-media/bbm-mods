@@ -24,8 +24,9 @@ import sys
 KEY = re.compile(r'"key"\s*:\s*"([A-Z][A-Z0-9]+-\d+)"')
 
 START = ("[mod:session-title-nudge] Name this session by its ticket: `<TICKET> — <3-6 word "
-         "summary>` (LC / BBM / LCH / LCC; the ticket most of the work serves) via "
-         "set_session_title. Untracked: `<PROJ>-TBD — …`, renamed once the ticket exists. "
+         "summary>` (LC / BBM; the ticket most of the work serves) via set_session_title. "
+         "Infrastructure issues live in brand-bridge-media/bbm-health-issues, not Jira: name those "
+         "`HEALTH-<issue#> — …`. Untracked: `<PROJ>-TBD — …`, renamed once the ticket exists. "
          "No project: `NOJIRA — …`.")
 
 
@@ -57,6 +58,9 @@ def _selftest() -> int:
 
     r = evaluate({"hook_event_name": "SessionStart"})
     ck(r and r[0] == "SessionStart" and "-TBD" in r[1], "SessionStart injects the convention")
+    # LCH-794: the project list is LC / BBM plus HEALTH-<issue#>; LCH and LCC are no longer suggested.
+    ck(r and "(LC / BBM;" in r[1] and "`HEALTH-<issue#> — …`" in r[1] and "bbm-health-issues" in r[1], "LCH-794: the list names LC / BBM and HEALTH-<issue#>")
+    ck(r and "LCH" not in r[1] and "LCC" not in r[1], "LCH-794: LCH and LCC are dropped from the suggested list")
     resp = {"issues": {"nodes": [{"key": "LCH-528", "fields": {}}]}}
     r = evaluate({"hook_event_name": "PostToolUse", "tool_name": "mcp__Atlassian__createJiraIssue",
                   "tool_response": resp})

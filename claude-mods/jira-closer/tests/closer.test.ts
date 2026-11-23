@@ -203,3 +203,61 @@ test('v2 comment on a different ticket leaves the merged PR ticket pending (bad 
   await $.tool.call({ tool: 'mcp__Atlassian_MCP__addOrEditJiraIssueComment', cloudId: 'x', issueIdOrKey: 'LC-1', commentBody: 'x' })
   expect(String((await $.classic.Stop({ stop_hook_active: false })).block ?? '')).toContain('LC-2118')
 })
+
+// LCH-794: a PR that names a bbm-health-issues issue is closed out on GitHub, never through a Jira close.
+test('a PR with `Fixes brand-bridge-media/bbm-health-issues#N` says the project closes the GitHub issue, and Stop does not hold', async ($: any, on: any) => {
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('mcp.call', () => ({ value: prJson({ title: 'chore: fix probe', head: { ref: 'b' }, body: 'Fixes brand-bridge-media/bbm-health-issues#31' }) }))
+  on('classic.Stop', () => ({}))
+  const r = await $.tool.call({ tool: 'mcp__github__merge_pull_request', owner: 'o', repo: 'r', pullNumber: 31 })
+  const ctx = String(r.context ?? '')
+  expect(ctx).toContain('bbm-health-issues#31')
+  expect(ctx).toContain('this project verifies and closes the GitHub issue')
+  expect(ctx).toContain('[mod:jira-closer]')
+  expect(ctx).not.toContain('transition it to Done')
+  expect((await $.classic.Stop({ stop_hook_active: false })).block).toBeUndefined()
+})
+
+test('a bare `bbm-health-issues#N` and the full issue URL are both recognised', async ($: any, on: any) => {
+  on('tool.call', () => ({ result: 'ok', text: 'ok' }))
+  on('classic.Stop', () => ({}))
+  let body = 'See bbm-health-issues#12 for context'
+  on('mcp.call', () => ({ value: prJson({ title: 'x', head: { ref: 'b' }, body }) }))
+  expect(String((await $.tool.call({ tool: 'mcp__github__merge_pull_request', owner: 'o', repo: 'r', pullNumber: 40 })).context ?? '')).toContain('bbm-health-issues#12')
+  body = 'https://github.com/brand-bridge-media/bbm-health-issues/issues/77'
+  expect(String((await $.tool.call({ tool: 'mcp__github__merge_pull_request', owner: 'o', repo: 'r', pullNumber: 41 })).context ?? '')).toContain('bbm-health-issues#77')
+})
+
+test('a PR with a Jira key AND a health issue keeps the Jira hold and adds the health line', async ($: any, on: any) => {
+  engineBeneath(on)
+  on('mcp.call', () => ({ value: prJson({ title: 'LC-2376 SLA clock', head: { ref: 'b' }, body: 'Fixes bbm-health-issues#5' }) }))
+  const r = await $.tool.call({ ...merge, pullNumber: 8 })
+  const ctx = String(r.context ?? '')
+  expect(ctx).toContain('LC-2376')
+  expect(ctx).toContain('this project verifies and closes the GitHub issue')
+  expect(String((await $.classic.Stop({ stop_hook_active: false })).block ?? '')).toContain('LC-2376')
+})
+
+test('a queued PR naming a health issue says to close it once the merge lands', async ($: any, on: any) => {
+  on('tool.call', () => ({ result: { content: [] } }))
+  on('classic.Stop', () => ({}))
+  on('mcp.call', () => ({ value: prJson({ title: 'fix probe', head: { ref: 'b' }, body: 'Fixes bbm-health-issues#3' }) }))
+  const r = await $.tool.call({ tool: 'mcp__github__enable_pr_auto_merge', owner: 'o', repo: 'r', pullNumber: 9 })
+  expect(String(r.context ?? '')).toContain('once the merge lands')
+})
+
+test('a PR this session opened keeps its body reference through the title fetch', async ($: any, on: any) => {
+  on('mcp.call', () => ({ value: prJson({ title: 'chore: fix probe', head: { ref: 'b' }, body: 'no reference here' }) }))
+  on('tool.call', { tool: /^mcp__/ }, (_$: any, e: any) => ({ result: { content: [{ type: 'text', text: /create_pull_request$/.test(e.tool) ? 'https://github.com/o/r/pull/52' : 'ok' }] } }))
+  on('classic.Stop', () => ({}))
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', owner: 'o', repo: 'r', title: 'chore: fix probe', head: 'b', body: 'See https://github.com/brand-bridge-media/bbm-health-issues/issues/52' })
+  const r = await $.tool.call({ tool: 'mcp__github__merge_pull_request', owner: 'o', repo: 'r', pullNumber: 52 })
+  expect(String(r.context ?? '')).toContain('bbm-health-issues#52')
+})
+
+test('the repo name alone, with no issue number, is not a health issue reference', async ($: any, on: any) => {
+  engineBeneath(on)
+  on('mcp.call', () => ({ value: prJson({ title: 'chore: x', head: { ref: 'b' }, body: 'files go to bbm-health-issues now' }) }))
+  const r = await $.tool.call({ ...merge, pullNumber: 10 })
+  expect(r.context).toBeUndefined()
+})

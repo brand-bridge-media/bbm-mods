@@ -36,6 +36,11 @@ ARTICLE_STATUS = re.compile(r"\b(?:published|live|deployed|merged|shipped)\b", r
 SLUG = re.compile(r"\b[a-z0-9]+(?:-[a-z0-9]+){2,}\b")
 HEDGE = re.compile(r"\b(?:not checked|unchecked|unverified|not verified|haven'?t (?:checked|verified|read)|have not (?:checked|verified|read)|cannot confirm|can'?t confirm)\b", re.IGNORECASE)
 FENCE = re.compile(r"```.*?```", re.DOTALL)
+# LCH-794: infrastructure breakage is a GitHub issue in brand-bridge-media/bbm-health-issues, not a Jira ticket. It is a subject
+# of its own (`bbm-health-issues#N`), read through the GitHub issue path, and never sent to the Jira lookup.
+HEALTH_REPO = "bbm-health-issues"
+HEALTH = re.compile(r"(?:\bhttps?://github\.com/brand-bridge-media/bbm-health-issues/issues/|\b(?:brand-bridge-media/)?bbm-health-issues#)(\d{1,6})\b", re.IGNORECASE)
+ISSUE_READ = re.compile(r"(?:^|__)issue_read$")
 MAX_SHOWN = 5
 
 
@@ -50,6 +55,9 @@ def claims(reply: str) -> list:
             if not sent.strip() or HEDGE.search(sent):
                 continue
             found: list = []
+            if STATUS.search(sent):
+                found += [f"{HEALTH_REPO}#{n}" for n in HEALTH.findall(sent)]
+            sent = HEALTH.sub(" ", sent)  # the issue number is not a PR number, the repo name is not a slug
             if STATUS.search(sent):
                 found += wws_card.keys_in(sent)
             if PR_STATUS.search(sent):
@@ -67,7 +75,16 @@ def _in_topic(subject: str, topic: str) -> bool:
     return re.search(r"(?<![A-Za-z0-9-])" + re.escape(subject) + r"(?![A-Za-z0-9-])", topic, re.IGNORECASE) is not None
 
 
-def covered(subject: str, cards: list) -> bool:
+def health_read(subject: str, rows: list) -> bool:
+    """True when the session read that GitHub issue (`issue_read`, repo bbm-health-issues, issue_number N)."""
+    n = subject.split("#", 1)[-1]
+    return any(ISSUE_READ.search(name) and str(inp.get("repo", "")).lower() == HEALTH_REPO
+               and str(inp.get("issue_number", inp.get("issueNumber", ""))) == n for name, inp, _ in tr.tool_uses(rows))
+
+
+def covered(subject: str, cards: list, rows: list | None = None) -> bool:
+    if subject.startswith(HEALTH_REPO + "#"):
+        return health_read(subject, rows or [])
     for c in cards or []:
         if subject.startswith("#"):
             if subject[1:].isdigit() and int(subject[1:]) in [int(n) for n in c.get("prs") or [] if str(n).isdigit()]:
@@ -81,21 +98,30 @@ def evaluate(payload: dict) -> str | None:
     """Block reason, or None to let the turn end."""
     if payload.get("stop_hook_active"):
         return None
-    reply = tr.final_reply_text(tr.rows_for(payload))
-    missing = [s for s in claims(reply) if not covered(s, payload.get("cards") or [])]
+    rows = tr.rows_for(payload)
+    reply = tr.final_reply_text(rows)
+    missing = [s for s in claims(reply) if not covered(s, payload.get("cards") or [], rows)]
     if not missing:
         return None
     shown = ", ".join(missing[:MAX_SHOWN]) + (f" (+{len(missing) - MAX_SHOWN} more)" if len(missing) > MAX_SHOWN else "")
     tickets = [m for m in missing if re.fullmatch(r"[A-Z][A-Z0-9]+-\d+", m)]
-    terms = [m for m in missing if not m.startswith("#") and m not in tickets]
+    health = [m for m in missing if m.startswith(HEALTH_REPO + "#")]
+    terms = [m for m in missing if not m.startswith("#") and m not in tickets and m not in health]
     prs = [int(m[1:]) for m in missing if m.startswith("#")]  # claims() only yields `#<digits>`
     # LCH-554: name only the arrays that are not empty. The lookup refuses a request with no ticket, term or PR, and a PR-only
     # claim used to be sent back with `{"tickets": [], "terms": []}`. PR numbers now go in `prs`.
     args = ", ".join(f'"{k}": {v!r}' for k, v in (("tickets", tickets), ("terms", terms), ("prs", prs)) if v)
+    gh = ""
+    if health:
+        gh = (f" {', '.join(health)}: not a Jira ticket, read the GitHub issue (issue_read, owner brand-bridge-media, repo {HEALTH_REPO}, "
+              "its issue number, newest comment included); it is never looked up in Jira.")
+    if not args:
+        return (f"[mod:where-we-stand] This reply states a status with no read of the source for: {shown}.{gh} Then re-send the reply "
+                "using what the issue says and its dates, or mark the claim 'not checked'.").replace("'", '"')
     return (f"[mod:where-we-stand] This reply states a status with no where-we-stand card for: {shown}. A title, a census line or "
             "an earlier turn is not a read of the source. Call the tool mcp__where-we-stand__lookup with "
             f"{{{args}}} (add \"kind\": \"article-status\" for a slug), or read the Jira issue / query the "
-            "surface, which injects the card. Then re-send the reply using the card's facts and dates, or mark the claim 'not checked'.").replace("'", '"')
+            f"surface, which injects the card.{gh} Then re-send the reply using the card's facts and dates, or mark the claim 'not checked'.").replace("'", '"')
 
 
 def _selftest() -> int:
@@ -156,6 +182,22 @@ def _selftest() -> int:
     many = [{"type": "user", "message": {"role": "user", "content": "q"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": " ".join(f"LC-{i} is Done." for i in range(1, 9))}]}}]
     big = evaluate({"transcript_rows": many, "cards": []})
     ck(big is not None and "(+3 more)" in big and "LC-5" in big and "LC-6" not in big.split("card for:")[1].split(".")[0], "a long list is capped")
+    # LCH-794: a health issue is a subject of its own, read from GitHub, never sent to the Jira lookup.
+    ck(claims("bbm-health-issues#12 is open.") == ["bbm-health-issues#12"], "LCH-794: bbm-health-issues#N with a status word is a claim, and only that (no PR #12, no slug)")
+    ck(claims("https://github.com/brand-bridge-media/bbm-health-issues/issues/7 is closed.") == ["bbm-health-issues#7"], "LCH-794: the full issue URL is the same subject")
+    ck(claims("Fixes brand-bridge-media/bbm-health-issues#31, merged.") == ["bbm-health-issues#31"], "LCH-794: the Fixes owner/repo#N form is the same subject")
+    ck(claims("I read bbm-health-issues#12 yesterday.") == [], "LCH-794: a health reference with no status word is not a claim")
+    ck(claims("bbm-health-issues#12 is open and LC-5 is Done and PR #694 merged.") == ["bbm-health-issues#12", "LC-5", "#694"], "LCH-794: Jira keys and PRs in the same sentence still count")
+    hrow = lambda t: [{"type": "user", "message": {"role": "user", "content": "q"}}, {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": t}]}}]
+    hwhy = evaluate({"transcript_rows": hrow("bbm-health-issues#12 is open."), "cards": []})
+    ck(hwhy is not None and hwhy.startswith("[mod:where-we-stand] ") and "not a Jira ticket" in hwhy and "issue_read" in hwhy and "lookup" not in hwhy and '"tickets"' not in hwhy and '"terms"' not in hwhy,
+       "LCH-794: an unread health issue is sent back to the GitHub issue path, with no Jira lookup request")
+    mixed = evaluate({"transcript_rows": hrow("bbm-health-issues#12 is open and LC-5 is Done."), "cards": []})
+    ck(mixed is not None and '"tickets": ["LC-5"]' in mixed and "not a Jira ticket" in mixed and "terms" not in mixed.split("lookup with ")[1].split(" (add")[0], "LCH-794: a mixed reply asks the lookup for the Jira key only")
+    read = lambda repo, n: [{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "mcp__github__issue_read", "input": {"method": "get", "owner": "brand-bridge-media", "repo": repo, "issue_number": n}}]}}]
+    ck(evaluate({"transcript_rows": read(HEALTH_REPO, 12) + hrow("bbm-health-issues#12 is open."), "cards": []}) is None, "LCH-794: a session that read the GitHub issue may state its status")
+    ck(evaluate({"transcript_rows": read(HEALTH_REPO, 13) + hrow("bbm-health-issues#12 is open."), "cards": []}) is not None, "LCH-794: reading a different issue number does not cover it")
+    ck(evaluate({"transcript_rows": read("bbm-infrastructure", 12) + hrow("bbm-health-issues#12 is open."), "cards": []}) is not None, "LCH-794: reading issue 12 of another repo does not cover it")
     for f in fails:
         print("FAIL:", f)
     print(f"wws_gate selftest: {total[0] - len(fails)}/{total[0]} checks passed")
