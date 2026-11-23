@@ -5,7 +5,7 @@
 // Decisions live here (pure, tested); ./register.ts gathers facts through the session's MCP servers and acts.
 
 export const OWN = '[mod:slowness-report]'
-export const EPIC = 'LCH-600'
+export const EPIC = 'LC-2484' // the LCH-600 epic, moved to LC on 2026-11-23 (LCH-794); the old key still redirects
 export const CLOUD_ID = '6a32dd03-81a6-42d8-a7c0-e2f3a045696d'
 
 const MIN = 60_000
