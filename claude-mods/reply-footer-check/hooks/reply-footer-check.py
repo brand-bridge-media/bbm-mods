@@ -155,12 +155,41 @@ def touched_keys(rows: list[dict]) -> set[str]:
     return seen
 
 
+# Review by 2027-02-23: in a project thread (mods load there since LC-2200) the person sees only the text argument of
+# `mcp__hearthbot__post_message`; the trailing assistant text is never shown, so the footer must be read from the former
+# (LC-2206, same rule as idle-backstop-guard's final_reply).
+THREAD_REPLY_TOOL = "hearthbot__post_message"
+SILENT_TOOL = "hearthbot__no_reply_needed"
+
+
+def _turn_tool_uses(rows: list[dict]) -> list[tuple[str, dict]]:
+    last = max((i for i, r in enumerate(rows) if tr._is_prompt(r)), default=-1)
+    return [(str(b.get("name") or ""), b["input"] if isinstance(b.get("input"), dict) else {})
+            for r in rows[last + 1:] if r.get("type") == "assistant" and not r.get("isSidechain")
+            for b in tr._blocks(r) if b.get("type") == "tool_use"]
+
+
+def final_reply(rows: list[dict]) -> str:
+    """What the person reads: this turn's LAST post_message text when it has one, else the trailing text (CLI)."""
+    posted = [i["text"] for n, i in _turn_tool_uses(rows)
+              if n.endswith(THREAD_REPLY_TOOL) and isinstance(i.get("text"), str)]
+    return posted[-1] if posted else tr.final_reply_text(rows)
+
+
+def silent_turn(rows: list[dict]) -> bool:
+    """A thread turn that ended in no_reply_needed with no post_message: nothing was shown, nothing to check."""
+    names = [n for n, _ in _turn_tool_uses(rows)]
+    return any(n.endswith(SILENT_TOOL) for n in names) and not any(n.endswith(THREAD_REPLY_TOOL) for n in names)
+
+
 def evaluate(payload: dict, today: dt.date | None = None) -> str | None:
     """Block reason, or None to let the turn end."""
     if payload.get("stop_hook_active"):
         return None
     rows = tr.load(payload.get("transcript_path"))
-    reply = tr.final_reply_text(rows)
+    if silent_turn(rows):
+        return None
+    reply = final_reply(rows)
     if not reply.strip():
         return None  # no prose this turn (tool-only or empty); nothing to footer
     legacy = legacy_allowed(payload, rows, today)
@@ -335,6 +364,57 @@ def _selftest() -> int:
            "after the window the reason does not offer the old form")
     finally:
         os.unlink(p)
+    # Project threads (LC-2206): the person reads only the post_message text.
+    PM, NR = "mcp__hearthbot__post_message", "mcp__hearthbot__no_reply_needed"
+    GOOD = "done\nNoted separately: nothing found."
+
+    def thread(*steps: tuple[str, object]) -> str:
+        rows = [{"type": "user", "message": {"content": "go"}}]
+        for i, (kind, val) in enumerate(steps):
+            blk = ({"type": "text", "text": val} if kind == "text" else
+                   {"type": "tool_use", "id": f"p{i}", "name": kind, "input": val})
+            rows.append({"type": "assistant", "message": {"content": [blk]}})
+        fh = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        fh.write("\n".join(json.dumps(r) for r in rows))
+        fh.close()
+        return fh.name
+
+    for label, steps, want_block in (
+        ("valid: post_message has the footer, trailing text has none",
+         (("text", "thinking"), (PM, {"text": GOOD}), ("text", "Posted the summary.")), False),
+        ("bad: post_message has no footer", ((PM, {"text": "done, no footer"}),), True),
+        ("bad: footer only in the trailing text", ((PM, {"text": "done"}), ("text", GOOD)), True),
+        ("the LAST post_message is the reply (earlier one valid, last bad)",
+         ((PM, {"text": GOOD}), (PM, {"text": "more"})), True),
+        ("the LAST post_message is the reply (earlier bad, last valid)",
+         ((PM, {"text": "more"}), (PM, {"text": GOOD})), False),
+        ("silent turn: no_reply_needed is not checked", ((NR, {}), ("text", "no footer here")), False),
+        ("no_reply_needed plus a post_message is still checked", ((NR, {}), (PM, {"text": "no footer"})), True),
+        ("CLI turn: no post_message falls back to trailing text", (("text", "no footer"),), True),
+        ("CLI turn: trailing text with footer passes", (("text", GOOD),), False),
+        ("non-text post_message input ignored, falls back", ((PM, {"text": 5}), ("text", GOOD)), False),
+    ):
+        p = thread(*steps)
+        try:
+            r = evaluate({"transcript_path": p}, IN)
+            ck((r is not None) == want_block, label)
+        finally:
+            os.unlink(p)
+    ck(final_reply([{"type": "user", "message": {"content": "old"}}]) == "", "empty turn: empty reply")
+    old = [{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "o", "name": PM,
+                                                          "input": {"text": GOOD}}]}},
+           {"type": "user", "message": {"content": "next"}},
+           {"type": "assistant", "message": {"content": [{"type": "text", "text": "plain"}]}}]
+    ck(final_reply(old) == "plain", "a post_message from an earlier turn is not this turn's reply")
+    ck(not silent_turn([{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "z", "name": NR, "input": {}}]}}] + old[1:]),
+       "an earlier turn's no_reply_needed does not count")
+    ck(final_reply([{"type": "user", "message": {"content": "p"}},
+                    {"type": "assistant", "isSidechain": True, "message": {"content": [
+                        {"type": "tool_use", "id": "s", "name": PM, "input": {"text": GOOD}}]}},
+                    {"type": "assistant", "message": {"content": [{"type": "text", "text": "plain"}]}}]) == "plain",
+       "a subagent's post_message is not the reply")
+
     ck(evaluate({}) is None, "no transcript -> pass")
     ck("[mod:reply-footer-check]" in (evaluate({"transcript_path": transcript("x", [])}) or ""),
        "reason carries the mod callout")
