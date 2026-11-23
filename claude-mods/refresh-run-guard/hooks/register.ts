@@ -154,8 +154,47 @@ export function isDraftFindingsMerge(query: unknown): boolean {
   return keys.length > 0 && keys.every(k => (DRAFT_FINDINGS_KEYS as readonly string[]).includes(k))
 }
 
+// ---------- rule 1 exception: the link-only tracker edit (LC-2244) -------
+//
+// Twin of `isLinkOnlyEdit` in claude-mods/run-state/hooks/logic.ts (PR #4384); a mod cannot import another mod, so the
+// matching logic is copied and the two must stay identical. Repointing a barrier's packet link
+// (`human_action.requested.artifact_url`) is not a receipt: the Refresh progress tracker reads it and the operator clicks it.
+// Exactly ONE statement of this shape is let through, judged on the WHOLE query (anchored, so no second statement, comment
+// or CTE rides along):
+//   update [public.]refresh_run_sections set human_action = jsonb_set(human_action, '{requested,artifact_url}', <one http(s)
+//   URL literal>) [, updated_at = now()] where <id = uuid> | <run_id = uuid and section_key = 'key'> [returning cols] [;]
+// Any other column, json path, `||`, `#-`, computed value, WHERE that does not pin one row, or second statement falls
+// through to rule 1. Review by 2027-02-23: this exemption exists so the operator's tracker never keeps a stale packet link
+// because a refusal had nobody to answer it.
+const LINK_URL = String.raw`https?:\/\/[^\s'"\\;]+`
+const LINK_SET = new RegExp(
+  String.raw`^human_action\s*=\s*jsonb_set\s*\(\s*(?:coalesce\s*\(\s*human_action\s*,\s*'\{\}'(?:::jsonb)?\s*\)|human_action)\s*,\s*` +
+  String.raw`'\{requested\s*,\s*artifact_url\}'(?:::text\[\])?\s*,\s*` +
+  String.raw`(?:to_jsonb\s*\(\s*'${LINK_URL}'(?:::text)?\s*\)|'"${LINK_URL}"'(?:::jsonb)?)\s*(?:,\s*(?:true|false)\s*)?\)` +
+  String.raw`(?:\s*,\s*updated_at\s*=\s*now\(\s*\))?$`,
+  'i',
+)
+const LINK_UPDATE = /^update\s+(?:public\.)?refresh_run_sections\s+set\s+(.+?)\s+where\s+(.+?)(?:\s+returning\s+[a-z_*,\s]+)?$/i
+const LINK_ID = /^(?:refresh_run_sections\.)?(id|run_id)\s*=\s*'[0-9a-f-]{36}'$/i
+const LINK_KEY = /^(?:refresh_run_sections\.)?section_key\s*=\s*'[a-z0-9_]+'$/i
+
+export function isLinkOnlyEdit(query: unknown): boolean {
+  if (typeof query !== 'string' || query.length > MAX_CHECKED) return false
+  const seg = query.trim().replace(/;\s*$/, '')
+  const m = LINK_UPDATE.exec(seg.trim().replace(/\s+/g, ' '))
+  if (!m || !LINK_SET.test(m[1])) return false
+  const terms = m[2].split(/\s+and\s+/i)
+  const ids = terms.filter(t => /^(?:refresh_run_sections\.)?id\s*=/i.test(t))
+  const runs = terms.filter(t => /^(?:refresh_run_sections\.)?run_id\s*=/i.test(t))
+  const keys = terms.filter(t => LINK_KEY.test(t))
+  if (!terms.every(t => LINK_ID.test(t) || LINK_KEY.test(t))) return false
+  // One row is pinned: the row id itself, or the run AND the section.
+  return ids.length === 1 || (runs.length === 1 && keys.length === 1)
+}
+
 export function sqlViolation(query: unknown): string | null {
   if (isDraftFindingsMerge(query)) return null
+  if (isLinkOnlyEdit(query)) return null
   if (typeof query !== 'string') return 'query was not a string, so it could not be checked'
   if (query.trim() === '') return 'query was empty, so there was nothing to check'
   if (query.length > MAX_CHECKED) return 'query was too large to check'
