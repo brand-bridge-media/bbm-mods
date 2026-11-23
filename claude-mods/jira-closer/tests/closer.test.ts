@@ -178,3 +178,28 @@ test('other labels, or an update that keeps the PR a draft, change nothing', asy
   expect(c.context).toBeUndefined()
   expect((await $.classic.Stop({ stop_hook_active: false })).block).toBeUndefined()
 })
+
+// LC-2118: the v2 Atlassian server (mcp__Atlassian_MCP__) must settle a ticket exactly as v1 does.
+test('v2 addOrEditJiraIssueComment settles the ticket, as v1 addCommentToJiraIssue does', async ($: any, on: any) => {
+  engineBeneath(on)
+  await $.tool.call({ ...merge, commit_title: 'LC-2118 move to v2' })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__addOrEditJiraIssueComment', cloudId: 'x', issueIdOrKey: 'LC-2118', commentBody: 'state' })
+  expect((await $.classic.Stop({ stop_hook_active: false })).block).toBeUndefined()
+})
+
+test('v2 executeWrite{editJiraIssue} settles the ticket; a runner call for another operation does not', async ($: any, on: any) => {
+  engineBeneath(on)
+  await $.tool.call({ ...merge, commit_title: 'LC-2118 move to v2' })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__executeWrite', cloudId: 'x', name: 'createIssueLink', inputs: { issueIdOrKey: 'LC-2118' } })
+  const held = await $.classic.Stop({ stop_hook_active: false })
+  expect(String(held.block ?? '')).toContain('LC-2118')
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__executeWrite', cloudId: 'x', name: 'editJiraIssue', inputs: { issueIdOrKey: 'LC-2118' } })
+  expect((await $.classic.Stop({ stop_hook_active: false })).block).toBeUndefined()
+})
+
+test('v2 comment on a different ticket leaves the merged PR ticket pending (bad case still caught)', async ($: any, on: any) => {
+  engineBeneath(on)
+  await $.tool.call({ ...merge, commit_title: 'LC-2118 move to v2' })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__addOrEditJiraIssueComment', cloudId: 'x', issueIdOrKey: 'LC-1', commentBody: 'x' })
+  expect(String((await $.classic.Stop({ stop_hook_active: false })).block ?? '')).toContain('LC-2118')
+})

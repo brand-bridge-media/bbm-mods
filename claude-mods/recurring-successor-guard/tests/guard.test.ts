@@ -49,7 +49,26 @@ test('an unrelated call never starts the check', async ($: any, on: any) => {
   expect(w.reached.length).toBe(1)
 })
 
-test('the ticket and transitions the session read are handed to the check as transcript rows', async ($: any, on: any) => {
+// LC-2118: the v2 Atlassian server (mcp__Atlassian_MCP__).
+test('v2: a transition the check denies never reaches the tool', async ($: any, on: any) => {
+  const w = world(on, { stdout: DENY })
+  const r: any = await $.tool.call({ tool: 'mcp__Atlassian_MCP__transitionJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5', transitionId: '41' })
+  expect(String(r.deny ?? r.text)).toContain('[mod:recurring-successor-guard] REFUSED')
+  expect(w.reached.length).toBe(0)
+})
+
+test('v2: the executeRead/executeWrite runner calls and the primary getJiraIssue are handed over as rows; another server\'s runner is not', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__getJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5' })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__executeRead', cloudId: 'c', name: 'getTransitionsForJiraIssue', inputs: { issueIdOrKey: 'LC-5' } })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__executeWrite', cloudId: 'c', name: 'createJiraIssue', inputs: { description: 'Successor of LC-5' } })
+  await $.tool.call({ tool: 'mcp__Other__executeRead', name: 'x', inputs: {} })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__transitionJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5', transitionId: '41' })
+  const sent = JSON.parse(w.runs[0]!.stdin)
+  expect(sent.transcript_rows.length).toBe(6)
+})
+
+test('the ticket and transitions the session read are handed to the check as transcript rows',async ($: any, on: any) => {
   const w = world(on, { stdout: '' })
   await $.tool.call({ tool: 'mcp__Atlassian__getJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5' })
   await $.tool.call({ tool: 'mcp__Atlassian__getTransitionsForJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5' })

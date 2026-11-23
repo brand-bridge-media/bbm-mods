@@ -46,7 +46,29 @@ test('jira met: comment on the ticket the session served', async ($, on) => {
   expect(await closeOut($)).not.toContain('no comment on LC-1713')
 })
 
-test('run unmet: refresh_runs read back in_progress', async ($, on) => {
+// LC-2118: the v2 Atlassian server settles the Jira obligation exactly as v1 does.
+test('jira met (v2): addOrEditJiraIssueComment on the ticket the session served', async ($, on) => {
+  setup(on)
+  await call($, 'mcp__Atlassian_MCP__transitionJiraIssue', { issueIdOrKey: 'LC-1713' })
+  await call($, 'mcp__Atlassian_MCP__addOrEditJiraIssueComment', { issueIdOrKey: 'LC-1713', commentBody: 'done' })
+  expect(await closeOut($)).not.toContain('no comment on LC-1713')
+})
+
+test('jira met (v2): the executeWrite runner carrying the comment counts', async ($, on) => {
+  setup(on)
+  await call($, 'mcp__Atlassian_MCP__transitionJiraIssue', { issueIdOrKey: 'LC-1713' })
+  await call($, 'mcp__Atlassian_MCP__executeWrite', { name: 'addOrEditJiraIssueComment', cloudId: 'c', inputs: { issueIdOrKey: 'LC-1713', commentBody: 'done' } })
+  expect(await closeOut($)).not.toContain('no comment on LC-1713')
+})
+
+test('jira unmet (v2): transitioned, never commented; a runner call for another operation is no comment', async ($, on) => {
+  setup(on)
+  await call($, 'mcp__Atlassian_MCP__transitionJiraIssue', { issueIdOrKey: 'LC-1713' })
+  await call($, 'mcp__Atlassian_MCP__executeWrite', { name: 'createIssueLink', cloudId: 'c', inputs: { issueIdOrKey: 'LC-1713' } })
+  expect(await closeOut($)).toContain('no comment on LC-1713')
+})
+
+test('run unmet: refresh_runs read back in_progress',async ($, on) => {
   mock.store(on)
   on('tool.call', () => ({ result: [{ id: RUN, status: 'in_progress' }], text: JSON.stringify([{ id: RUN, status: 'in_progress' }]) }) as any)
   await call($, MCP('execute_sql'), { project_id: 'p', query: `select id, status from refresh_runs where id = '${RUN}'` })

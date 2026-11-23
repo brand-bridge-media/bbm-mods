@@ -112,9 +112,18 @@ def permit(rows: list[dict]) -> str:
         if RUNNER_TOOL.match(name) and inp.get("name") in COMMENT_OPS and isinstance(inp.get("inputs"), dict):
             name, inp = "mcp__Atlassian__" + str(inp["name"]), inp["inputs"]
         if COMMENT_TOOL.match(name) and SKIP.match(str(inp.get("commentBody") or inp.get("body") or "")) \
-                and isinstance(gate._json(text), dict) and gate._json(text).get("id"):
+                and _comment_landed(text):
             return "granted"
     return state
+
+
+def _comment_landed(text) -> bool:
+    """Jira returned the new comment's id: v1 {"id": ...}; v2 (LC-2118) {"data": {"commentId": ...}}."""
+    obj = gate._json(text)
+    if not isinstance(obj, dict):
+        return False
+    data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+    return bool(obj.get("id") or obj.get("commentId") or data.get("commentId") or data.get("id"))
 
 
 def _run(argv: list) -> tuple[int, str]:
@@ -333,6 +342,29 @@ def _selftest() -> int:
     check("granted: a direct comment's own body counts, not a nested runner-shaped field", permit(_row_calls(
         (add, {"issueIdOrKey": "LC-1", "commentBody": "Skipping LCH-600 review: incident hotfix",
                "name": "addCommentToJiraIssue", "inputs": {"commentBody": "no"}}, '{"id": "1"}'))), "granted")
+    # LC-2118: v2 addOrEditJiraIssueComment answers {"data": {"commentId": ...}} (captured 2026-11-23 on LC-1968).
+    add2 = "mcp__Atlassian_MCP__addOrEditJiraIssueComment"
+    v2ok = '{"data":{"message":"Comment added to LC-1968 successfully","commentId":"203273","body":"x","appliedContentFormat":"markdown"}}'
+    skip = "Skipping LCH-600 review: incident hotfix"
+    check("granted: v2 stated skip (data.commentId)", permit(_row_calls(
+        (add2, {"issueIdOrKey": "LC-1", "commentBody": skip}, v2ok))), "granted")
+    check("granted: v1 stated skip still reads id", permit(_row_calls(
+        (add, {"issueIdOrKey": "LC-1", "commentBody": skip}, '{"id": "7"}'))), "granted")
+    check("nothing: v2 skip quoted mid-text", permit(_row_calls(
+        (add2, {"issueIdOrKey": "LC-1", "commentBody": "maybe " + skip}, v2ok))), "none")
+    check("nothing: v2 skip write that did not land", permit(_row_calls(
+        (add2, {"issueIdOrKey": "LC-1", "commentBody": skip}, '{"error": true}'))), "none")
+    check("nothing: v2 data with no comment id", permit(_row_calls(
+        (add2, {"issueIdOrKey": "LC-1", "commentBody": skip}, '{"data":{"message":"nope"}}'))), "none")
+    check("nothing: a result that is not JSON", permit(_row_calls(
+        (add2, {"issueIdOrKey": "LC-1", "commentBody": skip}, "Comment added"))), "none")
+    check("nothing: a result that is a JSON list", permit(_row_calls(
+        (add2, {"issueIdOrKey": "LC-1", "commentBody": skip}, '[{"commentId": "1"}]'))), "none")
+    check("nothing: v2 data that is not an object", permit(_row_calls(
+        (add2, {"issueIdOrKey": "LC-1", "commentBody": skip}, '{"data":"x"}'))), "none")
+    check("granted: v2 skip through the executeWrite runner", permit(_row_calls(
+        (run, {"name": "addOrEditJiraIssueComment", "cloudId": "c", "inputs": {"issueIdOrKey": "LC-1",
+               "commentBody": skip}}, v2ok))), "granted")
     check("nothing: a reason under 10 characters (review finding 4)", permit(_row_calls(
         (add, {"issueIdOrKey": "LC-1", "commentBody": "Skipping LCH-600 review: x"}, '{"id": "1"}'))), "none")
     check("nothing: a skip with no reason", permit(_row_calls(

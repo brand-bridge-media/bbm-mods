@@ -130,3 +130,20 @@ test('LCH-720: a closed cause owner sends the occurrence to the epic, with a not
   expect(occurrenceBody(r, timing(r, C, now), now, closed.note)).toContain('- Routing: cause owner LCH-603 is closed')
   expect(occurrenceBody(r, timing(r, C, now), now)).not.toContain('Routing')
 })
+
+// LC-2118: the occurrence is written through the v2 Atlassian server (the v1 one is removed 2027-03-01).
+test('the report writes its comment through the v2 server with addOrEditJiraIssueComment and no commentId', async ($: any, on: any) => {
+  const calls: { server: string, tool: string, args: any }[] = []
+  on('clock.now', () => ({ value: T0 }) as any)
+  on('mcp.call', (_$: any, e: any) => {
+    calls.push({ server: e.server, tool: e.tool, args: e.args })
+    return { value: { isError: false, content: [{ type: 'text', text: '{"issues":{"nodes":[{"fields":{"status":{"statusCategory":{"key":"indeterminate"}}}}]}}' }] } } as any
+  })
+  const r: any = await $.tool.call({ tool: 'mcp__slowness-report__report', subject: 's', stage: 'runner_queue', cause: 'c', evidence: 'e', fix: 'f' })
+  expect(String(r.result ?? r.text)).toContain('recorded one occurrence')
+  const write = calls.find(c => /Comment/.test(c.tool))!
+  expect(write.server).toBe('Atlassian_MCP')
+  expect(write.tool).toBe('addOrEditJiraIssueComment')
+  expect(write.args.commentId).toBeUndefined()
+  expect(calls.every(c => c.server === 'Atlassian_MCP')).toBe(true)
+})

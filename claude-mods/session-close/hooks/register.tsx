@@ -133,15 +133,24 @@ const hasTiming = (i: any): boolean =>
   ['delay_minutes', 'at', 'run_once_at', 'cron_expression', 'delaySeconds', 'cron', 'recurring']
     .some(k => i?.[k] !== undefined && i?.[k] !== null && i?.[k] !== '')
 
-function observe(l: Ledger, tool: string, input: any, resultText: string): Ledger {
-  const name = shortName(tool)
+function observe(l: Ledger, tool: string, rawInput: any, resultText: string): Ledger {
+  let name = shortName(tool)
+  let input = rawInput
+  // LC-2118: the v2 Atlassian server (mcp__Atlassian_MCP__) carries operations outside its primary tools through
+  // the executeRead/executeWrite/executeDestructive runner {name, inputs}: judge that as the named operation.
+  if (/^mcp__Atlassian\w*__execute(Read|Write|Destructive)$/.test(tool) && typeof rawInput?.name === 'string'
+      && rawInput.inputs && typeof rawInput.inputs === 'object') {
+    name = rawInput.name
+    input = rawInput.inputs
+  }
   const blob = blobOf(input)
   const next: Ledger = { ...l, runs: { ...l.runs } }
 
   // Jira: a comment on a ticket (session-handoff SKILL.md:189 treats tickets
   // moved in the session as the thread's record; the operator's rule is do -> verify
   // -> update ticket).
-  if (name === 'addCommentToJiraIssue') {
+  // v1 names it addCommentToJiraIssue; v2 addOrEditJiraIssueComment (a comment with no commentId is an add).
+  if (name === 'addCommentToJiraIssue' || name === 'addOrEditJiraIssueComment') {
     const k = keyIn(input?.issueIdOrKey)
     next.commented = add(next.commented, k)
     const body = String(input?.commentBody ?? '')

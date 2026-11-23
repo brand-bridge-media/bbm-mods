@@ -5,7 +5,7 @@ export type Ledger = {
   lastNudgeTurn: number
   // Jira keys the session worked on (transitioned, edited, or named by its branch / commit / PR).
   served: string[]
-  // Jira keys that got an addCommentToJiraIssue.
+  // Jira keys that got an addCommentToJiraIssue (v1) or addOrEditJiraIssueComment (v2).
   commented: string[]
   // Non-trivial-work signals: Webflow writes, merged PRs, commits, PRs opened.
   webflowWrites: number

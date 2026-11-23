@@ -9,7 +9,9 @@ import { blockReason, contextOf, decisionOf, parseOut, resultText, runArgs, toas
 // recurring ticket with no successor is how a monthly check silently stops. A PreToolUse hook gets
 // no transcript, so this mod records the calls the check reads (the ticket, its transitions, any
 // successor) and hands them over as transcript rows. Logic and tests: ./recurring-successor-guard.py.
-const RECORD = /^(mcp__.*__(getJiraIssue|getTransitionsForJiraIssue|createJiraIssue|create_trigger|send_later)|CronCreate)$/
+// LC-2118: the v2 Atlassian server has no primary getTransitions tool and may create tickets through its
+// executeRead / executeWrite runner {name, inputs}; the python judge unwraps those, so record them too.
+const RECORD = /^(mcp__.*__(getJiraIssue|getTransitionsForJiraIssue|createJiraIssue|create_trigger|send_later)|mcp__Atlassian\w*__execute(Read|Write)|CronCreate)$/
 const MAX_ROWS = 200
 const MAX_TEXT = 20_000
 const rows = atom({ plugin: 'recurring-successor-guard', key: 'rows' } as const, [] as Row[])

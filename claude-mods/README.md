@@ -134,6 +134,16 @@ file under `claude-mods/` is not found).
 | `slowness-report` | Change-to-live clock (LCH-600). Starts a clock on every PR a session opens (`create_pull_request`) or arms (`enable_pr_auto_merge`, timed from the PR's `created_at`); polls every 3 min; once, past 30 min unmerged, wakes the session with the PR's check-run picture and asks it to MEASURE where the time went and call `mcp__slowness-report__report` (subject, stage, cause, evidence, fix). **Never creates a ticket** (operator decision 2026-11-05): it adds one dated `SLOWNESS OCCURRENCE` comment with the PR reference on the ticket that owns the cause (`CAUSE_TICKETS` in `hooks/logic.ts`: runner_queue LCH-618, train_wait and train_recheck LCH-697, everything else including reviewer the epic; LCH-720 moved them off the closed LCH-603/614/595), so recurrence is the comment count per cause. Before writing it reads the owner's Jira status: a closed owner sends the occurrence to the epic with a `Routing:` line naming the stale entry, so a closed ticket can never swallow a report again (an unreadable status keeps the owner and says NOT CHECKED). One PR is one occurrence. `/slow [what]` does the same on the operator's demand. Known limit: the clock stops at merge, not deploy. | LCH-600 |
 | `price-freshness` | Operator decision (2026-11-18, LC-2245): a refresh never checks a price. When a run's final picks are recorded, Catalog & Prices refreshes every price older than 1 day and stages it in the CMS (queue: LC-2246, enqueued in the database so headless runs need no mod). This mod is the chat side: `refresh prices for <article>` (slug or livingcozy.com URL) or `mcp__price-freshness__request` asks the queue on demand; the session is woken once every PRID is final (`PRICES READY`, or `PRICES DONE WITH FLAGS` with flagged PRIDs first; `PRICES NOT DONE` past 45 min); a queue that cannot answer is `NOT CHECKED`, never ready. Inside a refresh it WARNs (never denies) on a hand price check of a brand page. Fails open. |
 
+### Atlassian v1 to v2 (LC-2118)
+
+The v1 Atlassian connector (`mcp__Atlassian__`, `/v1/mcp`) is removed 2027-03-01; the v2 server is `mcp__Atlassian_MCP__`.
+Every Jira-aware mod recognises both servers (by tool-name suffix, or `^mcp__Atlassian\w*__` where a server prefix is needed) and the v2
+spellings: the comment write is `addOrEditJiraIssueComment` (no `commentId` = add), comments are read with `listJiraIssueComments`,
+and any other operation arrives through `executeRead` / `executeWrite` / `executeDestructive` `{name, inputs}`, which the mods unwrap.
+Changed: `jira-closer`, `recurring-successor-guard` (also `transitionId` / `transitionName`), `session-close`, `slowness-report`
+(now writes through the `Atlassian_MCP` server), and the project hooks `jira-write-needs-read.py` / `jira-proposal-needs-knowledge.py`.
+Review by 2027-02-23: delete the v1 spellings once the v1 connector is gone (nothing then calls them).
+
 ### where-we-stand (LC-1893)
 
 Why: the knowledge existed three times and nothing delivered it at the moment a session was diagnosing or stating a status

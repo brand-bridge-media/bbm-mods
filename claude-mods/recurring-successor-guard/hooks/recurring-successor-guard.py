@@ -45,9 +45,26 @@ def _json(text: str):
         return None
 
 
+RUNNERS = re.compile(r"^mcp__Atlassian\w*__execute(Read|Write|Destructive)$")
+
+
+def _norm(name: str, inp):
+    """LC-2118: the v2 Atlassian server (mcp__Atlassian_MCP__, v1 is removed 2027-03-01) carries operations
+    outside its primary tools through a runner: executeRead {name: "getTransitionsForJiraIssue", inputs}.
+    Judge that as mcp__Atlassian__getTransitionsForJiraIssue(inputs); every other call is returned as is."""
+    if RUNNERS.match(name or "") and isinstance(inp, dict) and isinstance(inp.get("name"), str) \
+            and isinstance(inp.get("inputs"), dict):
+        return "mcp__Atlassian__" + inp["name"], inp["inputs"]
+    return name, inp if isinstance(inp, dict) else {}
+
+
 def _results(rows: list[dict], tool_suffix: str, key: str) -> list[str]:
-    return [text for name, inp, text in tr.tool_calls_with_results(rows)
-            if name.endswith(tool_suffix) and str(inp.get("issueIdOrKey", "")).upper() == key]
+    out = []
+    for name, inp, text in tr.tool_calls_with_results(rows):
+        name, inp = _norm(name, inp)
+        if name.endswith(tool_suffix) and str(inp.get("issueIdOrKey", "")).upper() == key:
+            out.append(text)
+    return out
 
 
 def _issue_text(rows: list[dict], key: str) -> str | None:
@@ -68,6 +85,9 @@ def _done_ids(rows: list[dict], key: str) -> set[str] | None:
             cat = (((t or {}).get("to") or {}).get("statusCategory") or {}).get("key")
             if cat == "done":
                 found.add(str(t.get("id")))
+                # v2 transitionJiraIssue may name the transition instead of giving its id.
+                if isinstance(t.get("name"), str):
+                    found.add("name:" + t["name"].strip().lower())
     return found
 
 
@@ -75,17 +95,19 @@ def evaluate(tool_name: str, tool_input: dict, rows: list[dict]) -> tuple[str, s
     if not (tool_name or "").endswith("__transitionJiraIssue"):
         return None
     key = str(tool_input.get("issueIdOrKey") or "").upper()
-    tid = str((tool_input.get("transition") or {}).get("id") or "")
+    # v1 sends transition={id}; v2 sends transitionId or transitionName (LC-2118).
+    tid = str((tool_input.get("transition") or {}).get("id") or tool_input.get("transitionId") or "")
+    tname = str(tool_input.get("transitionName") or "").strip().lower()
     issue = _issue_text(rows, key)
     if not key or issue is None or not RECURRING.search(issue):
         return None
     done = _done_ids(rows, key)
-    if done is None or tid not in done:
+    if done is None or not ((tid and tid in done) or (tname and "name:" + tname in done)):
         return None
     # The successor must name this ticket ("Successor of LC-5", "Refs LC-5"), so an
     # unrelated ticket created in the same session does not count.
     if any(any(s in name.lower() for s in SUCCESSOR_TOOLS) and re.search(rf"\b{re.escape(key)}\b", json.dumps(inp).upper())
-           for name, inp, _ in tr.tool_uses(rows)):
+           for name, inp in (_norm(n, i) for n, i, _ in tr.tool_uses(rows))):
         return None
     return "deny", (
         f"[mod:recurring-successor-guard] REFUSED: {key} is recurring (label `recurring` or a "
@@ -111,12 +133,17 @@ def _selftest() -> int:
         {"id": "41", "to": {"statusCategory": {"key": "done"}}}]})
 
     def rows(issue_body: str | None, transitions: bool = True, extra: tuple = (),
-             key: str = "LC-5") -> list[dict]:
+             key: str = "LC-5", v2: bool = False) -> list[dict]:
         out: list[dict] = []
         calls = []
         if issue_body is not None:
-            calls.append(("mcp__Atlassian__getJiraIssue", {"issueIdOrKey": key}, issue_body))
-        if transitions:
+            calls.append(("mcp__Atlassian_MCP__getJiraIssue" if v2 else "mcp__Atlassian__getJiraIssue",
+                          {"issueIdOrKey": key}, issue_body))
+        if transitions and v2:
+            # v2 has no primary getTransitions tool: it goes through the executeRead runner.
+            calls.append(("mcp__Atlassian_MCP__executeRead", {"name": "getTransitionsForJiraIssue",
+                          "cloudId": "c", "inputs": {"issueIdOrKey": key}}, [{"type": "text", "text": TRANS}]))
+        elif transitions:
             calls.append(("mcp__Atlassian__getTransitionsForJiraIssue", {"issueIdOrKey": key},
                           [{"type": "text", "text": TRANS}]))
         calls.extend(extra)
@@ -154,6 +181,34 @@ def _selftest() -> int:
            f"{succ} not naming this ticket is not its successor")
     ck(v(T, close, rows(REC, extra=(("mcp__Atlassian__addCommentToJiraIssue", {}, "ok"),))) == "deny",
        "a comment is not a successor")
+    # ---- v2 server (LC-2118): the same bad case still denied, the same valid cases still passed.
+    T2 = "mcp__Atlassian_MCP__transitionJiraIssue"
+    close2 = {"cloudId": "c", "issueIdOrKey": "lc-5", "transitionId": "41"}
+    ck(v(T2, close2, rows(REC, v2=True)) == "deny", "v2: recurring + done transitionId + no successor -> deny")
+    ck(v(T2, {**close2, "transitionId": "31"}, rows(REC, v2=True)) is None, "v2: a non-done transitionId passes")
+    ck(v(T2, {"cloudId": "c", "issueIdOrKey": "lc-5", "transitionName": "Done"},
+         rows(REC, v2=True)) is None, "v2: transitionName not in the read transitions -> cannot know -> pass")
+    ck(v(T2, close2, rows(REC, v2=True, transitions=False)) is None, "v2: transitions never read -> pass")
+    ck(v(T2, close2, rows(REC, v2=True, key="LC-6")) is None, "v2: another ticket's data is not this ticket's")
+    ck(v(T2, close2, rows(REC, v2=True, extra=(("mcp__Atlassian_MCP__createJiraIssue",
+                                                  {"description": "Successor of LC-5"}, "ok"),))) is None,
+       "v2: successor via createJiraIssue naming the ticket -> pass")
+    ck(v(T2, close2, rows(REC, v2=True, extra=(("mcp__Atlassian_MCP__executeWrite", {"name": "createJiraIssue",
+         "cloudId": "c", "inputs": {"description": "Successor of LC-5"}}, "ok"),))) is None,
+       "v2: successor via the executeWrite runner naming the ticket -> pass")
+    ck(v(T2, close2, rows(REC, v2=True, extra=(("mcp__Atlassian_MCP__executeWrite", {"name": "createJiraIssue",
+         "cloudId": "c", "inputs": {"description": "unrelated LC-50"}}, "ok"),))) == "deny",
+       "v2: a runner successor not naming this ticket is not its successor")
+    ck(v(T2, close2, rows(REC, v2=True, extra=(("mcp__Atlassian_MCP__addOrEditJiraIssueComment", {}, "ok"),))) == "deny",
+       "v2: a comment is not a successor")
+    ck(v("mcp__Atlassian_MCP__editJiraIssue", close2, rows(REC, v2=True)) is None, "v2: other Jira tools untouched")
+    # a name-addressed v2 transition resolves through the done transition's own name
+    named = json.dumps({"transitions": [{"id": "41", "name": "Done", "to": {"statusCategory": {"key": "done"}}}]})
+    nrows = rows(REC, v2=True, transitions=False, extra=(("mcp__Atlassian_MCP__executeRead",
+        {"name": "getTransitionsForJiraIssue", "cloudId": "c", "inputs": {"issueIdOrKey": "LC-5"}},
+        [{"type": "text", "text": named}]),))
+    ck(v(T2, {"cloudId": "c", "issueIdOrKey": "LC-5", "transitionName": "done"}, nrows) == "deny",
+       "v2: transitionName 'done' matching a done transition + no successor -> deny")
     ck(v("mcp__Atlassian__editJiraIssue", close, rows(REC)) is None, "other Jira tools untouched")
     ck(v(T, {}, rows(REC)) is None, "missing input does not crash")
     junk = rows(REC)

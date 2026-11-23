@@ -89,7 +89,16 @@ test('a Jira skip through the executeWrite runner is recorded (review finding 2)
   expect(JSON.parse(w.runs[0]!.stdin).transcript_rows.length).toBe(2)
 })
 
-test('a query result without a ci-speed row is not recorded', async ($: any, on: any) => {
+test('a v2 Jira skip comment (addOrEditJiraIssueComment) is recorded; a v2 read is not (LC-2118)', async ($: any, on: any) => {
+  const w = world(on, { stdout: '' }, '{"data":{"commentId":"1"}}')
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__addOrEditJiraIssueComment', cloudId: 'c', issueIdOrKey: 'LC-1', commentBody: 'Skipping LCH-600 review: incident hotfix' })
+  await $.tool.call({ tool: 'mcp__Atlassian_MCP__getJiraIssue', cloudId: 'c', issueIdOrKey: 'LC-5' })
+  await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })
+  // the comment and the PR call itself are rows; the v2 read is not
+  expect(JSON.parse(w.runs[0]!.stdin).transcript_rows.length).toBe(2)
+})
+
+test('a query result without a ci-speed row is not recorded',async ($: any, on: any) => {
   const w = world(on, { stdout: '' }, '{"result": "[{\\"id\\": 1}]"}')
   await $.tool.call({ tool: SQL, project_id: 'p', query: 'select 1' })
   await $.tool.call({ tool: 'mcp__github__create_pull_request', ...PR })

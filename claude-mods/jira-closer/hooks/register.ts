@@ -27,8 +27,12 @@ const CREATE_PR = /__create_pull_request$/
 // tool call here. So those hand-offs count as QUEUED too: a ready PR, or a session adding a merge label.
 const HANDOFF = /__(update_pull_request|issue_write|update_issue)$/
 const MERGE_LABEL = /^(queue|merge-train)$/i
-const JIRA_TOUCH = /__(transitionJiraIssue|addCommentToJiraIssue|editJiraIssue)$/
-const WATCHED = /^mcp__[^_].*__(merge_pull_request|enable_pr_auto_merge|create_pull_request|update_pull_request|issue_write|update_issue|transitionJiraIssue|addCommentToJiraIssue|editJiraIssue)$/
+// LC-2118: the v1 Atlassian server (mcp__Atlassian__, removed 2027-03-01) names the comment write
+// addCommentToJiraIssue; the v2 server (mcp__Atlassian_MCP__) names it addOrEditJiraIssueComment and carries
+// other writes through the executeWrite runner {name, inputs}. Both count as touching the ticket.
+const JIRA_TOUCH = /__(transitionJiraIssue|addCommentToJiraIssue|addOrEditJiraIssueComment|editJiraIssue|executeWrite)$/
+const WATCHED = /^(mcp__[^_].*__(merge_pull_request|enable_pr_auto_merge|create_pull_request|update_pull_request|issue_write|update_issue|transitionJiraIssue|addCommentToJiraIssue|addOrEditJiraIssueComment|editJiraIssue)|mcp__Atlassian\w*__executeWrite)$/
+const RUNNER_TOUCH = /^(transitionJiraIssue|addCommentToJiraIssue|addOrEditJiraIssueComment|editJiraIssue)$/
 
 const pending = atom({ plugin: 'jira-closer', key: 'pending' } as const, [] as PendingTicket[])
 const titles = atom({ plugin: 'jira-closer', key: 'titles' } as const, {} as Record<string, string>)
@@ -151,7 +155,12 @@ export const register: Register = on => {
     }
 
     if (JIRA_TOUCH.test(tool)) {
-      const key = String(e.issueIdOrKey ?? '').toUpperCase()
+      // The v2 runner nests the call: executeWrite {name, inputs: {issueIdOrKey}}. Only the ticket-touching
+      // operations count; any other runner operation settles nothing.
+      const inputs = (e.inputs ?? {}) as Record<string, unknown>
+      const viaRunner = /__executeWrite$/.test(tool)
+      if (viaRunner && !RUNNER_TOUCH.test(String(e.name ?? ''))) return ran
+      const key = String((viaRunner ? inputs.issueIdOrKey : e.issueIdOrKey) ?? '').toUpperCase()
       // A touch on a real ticket also settles a PR whose ticket could not be
       // read; a touch naming no ticket settles nothing.
       if (!IS_KEY.test(key)) return ran

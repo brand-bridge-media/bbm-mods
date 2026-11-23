@@ -15,7 +15,9 @@ const clocks = atom({ plugin: 'slowness-report', key: 'clocks' } as const, [] as
 // Set by /slow; the next report is recorded as the operator's.
 const operatorAsked = atom({ plugin: 'slowness-report', key: 'operatorAsked' } as const, false)
 
-const JIRA = 'Atlassian'
+// LC-2118: the v2 Atlassian server. The v1 server ('Atlassian', /v1/mcp) is removed 2027-03-01; v2 names the
+// comment write addOrEditJiraIssueComment (no commentId = add) and returns getJiraIssue as issues.nodes[0].
+const JIRA = 'Atlassian_MCP'
 const pendingWakes: string[] = []
 let ticking = false
 let busy = false
@@ -103,11 +105,11 @@ async function file($: any, r: Report): Promise<string> {
   const route = routeOccurrence(owner, status)
   const ticket = route.ticket
   const body = occurrenceBody(report, t, now, route.note)
-  const sent = await mcpCall($, JIRA, 'addCommentToJiraIssue', { cloudId: CLOUD_ID, issueIdOrKey: ticket, commentBody: body, contentFormat: 'markdown' })
+  const sent = await mcpCall($, JIRA, 'addOrEditJiraIssueComment', { cloudId: CLOUD_ID, issueIdOrKey: ticket, commentBody: body, contentFormat: 'markdown' })
   if (sent.text === undefined) {
-    return `${OWN} Jira did not take the occurrence (${JIRA}.addCommentToJiraIssue said: ${sent.error ?? 'nothing'}). ` +
+    return `${OWN} Jira did not take the occurrence (${JIRA}.addOrEditJiraIssueComment said: ${sent.error ?? 'nothing'}). ` +
       `Read ${ticket}'s newest comment, then add this as a comment on ${ticket} ` +
-      `with addCommentToJiraIssue (cloudId ${CLOUD_ID}; never create a ticket for it):\n${body}`
+      `with addOrEditJiraIssueComment (no commentId; cloudId ${CLOUD_ID}; never create a ticket for it):\n${body}`
   }
   if (clock) await update($, clocks, l => l.map(c => (clockKey(c) === clockKey(clock) ? { ...c, reportedTo: ticket } : c)))
   return `${OWN} recorded one occurrence on ${ticket} (https://b-b-m.atlassian.net/browse/${ticket}), the ticket that owns "${report.stage}". ` +

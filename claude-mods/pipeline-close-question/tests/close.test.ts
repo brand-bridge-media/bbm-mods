@@ -25,6 +25,14 @@ test('a failed transition gets nothing', async ($: any, on: any) => {
   expect(r.context).toBeUndefined()
 })
 
+test('v2 server (LC-2118): a transition fires it, a comment does not', async ($: any, on: any) => {
+  on('tool.call', () => ({ result: 'ok' }))
+  const t: any = await $.tool.call({ tool: 'mcp__Atlassian_MCP__transitionJiraIssue', cloudId: 'x', issueIdOrKey: 'LCH-1', transitionId: '31' })
+  expect(String((t.context ?? []).join(' '))).toContain('[mod:pipeline-close-question]')
+  const c: any = await $.tool.call({ tool: 'mcp__Atlassian_MCP__addOrEditJiraIssueComment', cloudId: 'x', issueIdOrKey: 'LCH-1', commentBody: 'x' })
+  expect(c.context).toBeUndefined()
+})
+
 test('other Jira tools never fire it', async ($: any, on: any) => {
   on('tool.call', () => ({ result: 'ok' }))
   const r: any = await $.tool.call({ tool: 'mcp__Atlassian__addCommentToJiraIssue', cloudId: 'x', issueIdOrKey: 'LCH-1', commentBody: 'x' })
