@@ -341,6 +341,16 @@ no `# $ backtick ; & < > ( ) { } \` (only `2>&1` and `2>/dev/null` pass). Anythi
 chain, is still a write. Review by 2027-02-23: this rule exists so reading the writer's source in an unattended session is not
 mistaken for running it. Not changed: with no readable plan a real write still asks and, with nobody to answer, is refused.
 
+**Link-only edit of a barrier (run-state only, LC-2244).** Repointing the packet link the Refresh progress tracker shows is not a
+state change, and in a project thread nobody can answer a confirm, so the ask was a refusal and the tracker kept a stale link.
+`isLinkOnlyEdit` lets through exactly one statement shape and judges everything else as before: `UPDATE refresh_run_sections SET
+human_action = jsonb_set(human_action | coalesce(human_action,'{}'), '{requested,artifact_url}', <one http(s) URL literal>[, true])
+[, updated_at = now()] WHERE <id = uuid> | <run_id = uuid AND section_key = 'key'> [RETURNING cols]`. Any other column (status,
+findings, started_at, completed_at), any other json path, `||`, `#-`, a whole-object replace, a non-URL or computed value, a WHERE
+that does not pin one row (or has `or`, `in`, a subquery) is not link-only; so a second statement in the same call is judged on its
+own. The edit needs no readable plan, since it carries no receipt. Review by 2027-02-23: this exemption exists so the operator's
+tracker never keeps a stale packet link because a confirm had nobody to answer it.
+
 ### draft-session (LC-1714)
 
 Pin a session to a run: `/draft-start <run_id> <article_id> <slug> [v1|v2|standard]` (first three required), or set the

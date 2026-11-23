@@ -466,7 +466,9 @@ const runInBash = (seg: string): string | undefined => {
 // after quoted text is blanked, nothing is left that could write or run anything: no `>` `<` `;` `&` `$` backtick, group,
 // brace or backslash (`2>&1` and `2>/dev/null` are the only redirects let through). Anything else is judged as before.
 const READ_STAGE = /^(?:(?:grep|egrep|fgrep|head|tail|wc|ls|cat|nl|file|stat)|rg|git\s+(?:log|show|diff|blame|status|ls-files))(?=\s|$)/
-const SED_RANGE = /^sed\s+-n\s+(?:'[0-9$]+(?:,[0-9$]+)?p'|"[0-9$]+(?:,[0-9$]+)?p"|[0-9$]+(?:,[0-9$]+)?p)\s+\S/
+const SED_RANGE = /^sed\s+-n\s+(?:'[0-9$]+(?:,[0-9$]+)?p'|"[0-9$]+(?:,[0-9$]+)?p"|[0-9$]+(?:,[0-9$]+)?p)(?:\s+[^\s'"-]\S*)+$/
+// LC-2244 review: the operands after the range are anchored to file names that do not start with `-` or a quote, so a later
+// `-e '1e cmd'` / `-f` / `--expression` (which makes the range a file and runs the `e` command) is never read-only.
 export function isReadOnlyStep(seg: string): boolean {
   const cleaned = maskQuotedSeparators(seg.replace(/[0-9]?>&[0-9]|\b2>\s*\/dev\/null/g, ' '))
   const blanked = cleaned.replace(/"[^"$`\\]*"|'[^']*'/g, '""')
@@ -509,11 +511,43 @@ export const SQL_TOOL = /(^|__)(execute_sql|apply_migration)$/
 // Any statement that can change rows, not just the common four (COPY / MERGE / TRUNCATE also write).
 const WRITE_VERB = /\b(insert\s+into|update|upsert|delete\s+from|copy|merge\s+into|truncate)\b/i
 
+// LC-2244. Repointing a barrier's packet link is not a state change: the Refresh progress tracker reads
+// `human_action.requested.artifact_url` and the operator clicks it. In a project thread nobody can answer the confirm, so
+// the ask was a refusal and the tracker kept a stale link. "Link-only" means EXACTLY one statement of this shape and nothing
+// else: UPDATE refresh_run_sections SET human_action = jsonb_set(human_action, '{requested,artifact_url}', <one http(s) URL
+// literal>) [, updated_at = now()] WHERE <the section row named by its id, or by run_id AND section_key> [RETURNING cols].
+// Any other column (status, findings, started_at, completed_at), any other json path, `||`, `#-`, a whole-object replace, a
+// WHERE that does not pin one row, or a second statement is not link-only and keeps asking / denying as before.
+const LINK_URL = String.raw`https?:\/\/[^\s'"\\;]+`
+const LINK_SET = new RegExp(
+  String.raw`^human_action\s*=\s*jsonb_set\s*\(\s*(?:coalesce\s*\(\s*human_action\s*,\s*'\{\}'(?:::jsonb)?\s*\)|human_action)\s*,\s*` +
+  String.raw`'\{requested\s*,\s*artifact_url\}'(?:::text\[\])?\s*,\s*` +
+  String.raw`(?:to_jsonb\s*\(\s*'${LINK_URL}'(?:::text)?\s*\)|'"${LINK_URL}"'(?:::jsonb)?)\s*(?:,\s*(?:true|false)\s*)?\)` +
+  String.raw`(?:\s*,\s*updated_at\s*=\s*now\(\s*\))?$`,
+  'i',
+)
+const LINK_UPDATE = /^update\s+(?:public\.)?refresh_run_sections\s+set\s+(.+?)\s+where\s+(.+?)(?:\s+returning\s+[a-z_*,\s]+)?$/i
+const LINK_ID = /^(?:refresh_run_sections\.)?(id|run_id)\s*=\s*'[0-9a-f-]{36}'$/i
+const LINK_KEY = /^(?:refresh_run_sections\.)?section_key\s*=\s*'[a-z0-9_]+'$/i
+
+export function isLinkOnlyEdit(seg: string): boolean {
+  const m = LINK_UPDATE.exec(seg.trim().replace(/\s+/g, ' '))
+  if (!m || !LINK_SET.test(m[1])) return false
+  const terms = m[2].split(/\s+and\s+/i)
+  const ids = terms.filter(t => /^(?:refresh_run_sections\.)?id\s*=/i.test(t))
+  const runs = terms.filter(t => /^(?:refresh_run_sections\.)?run_id\s*=/i.test(t))
+  const keys = terms.filter(t => LINK_KEY.test(t))
+  if (!terms.every(t => LINK_ID.test(t) || LINK_KEY.test(t))) return false
+  // One row is pinned: the row id itself, or the run AND the section.
+  return ids.length === 1 || (runs.length === 1 && keys.length === 1)
+}
+
 export function receiptWritesInSql(tool: string, query: string, knownIds: string[]): WriteTarget[] {
   if (!SQL_TOOL.test(tool)) return []
   const out: WriteTarget[] = []
   for (const seg of query.split(';')) {
     if (!WRITE_VERB.test(seg)) continue
+    if (isLinkOnlyEdit(seg)) continue
     const touchesSections = /\brefresh_run_sections\b/i.test(seg)
     const touchesReceipts =
       /\brefresh_runs\b/i.test(seg) && /\b(stages|selection_provenance)\b/i.test(seg)

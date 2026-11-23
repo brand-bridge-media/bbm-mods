@@ -69,6 +69,24 @@ test('BAD: a read command that writes or runs something is still judged', () => 
   }
 })
 
+// LC-2244 independent review: a later -e / -f / --expression turns the range into a file operand and runs the `e` command.
+test('BAD: sed -n range followed by an option (-e, -f, --expression) is still judged', () => {
+  for (const cmd of [
+    `sed -n '1,80p' -e '1e ${REAL}' ${WRITER}`,
+    `sed -n 1,80p -e '1e ${REAL}' ${WRITER}`,
+    `sed -n '1,80p' ${WRITER} -e '1e ${REAL}'`,
+    `sed -n '1,80p' --expression='1e ${REAL}' ${WRITER}`,
+    `sed -n '1,80p' -f /tmp/x.sed ${WRITER}`,
+    `sed -n '1,80p' '-e' '1e ${REAL}' ${WRITER}`,
+    `sed -n '1,80p' '-e' '1e python3 ${WRITER}' ${WRITER}`,
+    `sed -n '1,80p' -e '1e python3 ${WRITER}' ${WRITER}`,
+  ]) {
+    expect(n(cmd), cmd).toBeGreaterThan(0)
+    expect(isReadOnlyStep(cmd), cmd).toBe(false)
+  }
+  expect(isReadOnlyStep(`sed -n '1,80p' ${WRITER} ${STAGE}`)).toBe(true)
+})
+
 test('isReadOnlyStep: a pipe stage that is not a read makes the whole step not read-only', () => {
   expect(isReadOnlyStep(`grep x ${WRITER} | head`)).toBe(true)
   expect(isReadOnlyStep(`grep x ${WRITER} | sh`)).toBe(false)
