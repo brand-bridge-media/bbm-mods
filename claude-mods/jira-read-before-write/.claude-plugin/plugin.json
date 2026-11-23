@@ -1,0 +1,9 @@
+{
+  "name": "jira-read-before-write",
+  "version": "0.1.0",
+  "description": "Refuses a Jira comment, edit or transition on a ticket whose comments this session has not read (listJiraIssueComments on the Atlassian v2 connector). Thread twin of the repo hook jira-write-needs-read.py.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}

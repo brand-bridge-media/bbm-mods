@@ -213,6 +213,11 @@
       "name": "price-freshness",
       "source": "./claude-mods/price-freshness",
       "description": "Asks Catalog & Prices (LC-2246 queue) to refresh an article's prices and stage them in the CMS: say \"refresh prices for <article>\" in chat, or call mcp__price-freshness__request. Wakes the session with the per-PRID result (ready, or flagged PRIDs first); NOT CHECKED when the queue cannot answer. Warns (never blocks) when a refresh session reads a brand page for a price. Final picks are queued in the database, so headless runs need no mod (LC-2245)."
+    },
+    {
+      "name": "jira-read-before-write",
+      "source": "./claude-mods/jira-read-before-write",
+      "description": "Refuses a Jira comment, edit or transition (also via executeWrite / executeDestructive) on a ticket whose comments this session has not read with listJiraIssueComments; the message names the call to make first. Thread twin of the repo hook jira-write-needs-read.py (LC-2118). Fails open."
     }
   ],
   "description": "Claude Code mods (plugins of function hooks) for Brand Bridge Media sessions; sources live in claude-mods/."
