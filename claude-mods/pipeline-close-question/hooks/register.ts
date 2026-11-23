@@ -8,7 +8,7 @@ const TRANSITION = /__transitionJiraIssue$/
 const LCH = /^LCH-\d+$/i
 
 export const NOTE = (key: string) =>
-  `[mod:pipeline-close-question] If ${key} is a delivery-pipeline story (a child of LCH-600) and this moved it to Done, its ` +
+  `[mod:pipeline-close-question] If ${key} is a delivery-pipeline story (a child of LC-2484) and this moved it to Done, its ` +
   'closing comment must answer: (1) will this issue recur, for this specific fault and for the kind of fault; (2) what can ' +
   'be done right now to prevent it: small items done in this session, larger ones pointed at a ticket. Post that comment ' +
   'now if it is not there (.github/PIPELINE.md, "Closing a pipeline story").'

@@ -6,7 +6,7 @@ import type { HookOut } from './py'
 import { blockReason, contextOf, decisionOf, parseOut, resultText, runArgs, toastText, toolPayload } from './py'
 
 // Why (LC-2207, operator decision 2026-11-17): every change to how code is tested, merged or deployed is
-// reviewed by LCH-600 (Deploy and CI speed) before a session opens its PR. The trigger is the files a PR
+// reviewed by LC-2484 (Deploy and CI speed) before a session opens its PR. The trigger is the files a PR
 // changes, not the project the session runs in, so stray chats are covered too. Since LC-2265 (operator
 // decision 2026-11-19) the review is a request on the cross-track request board (LC-2257), not a Jira comment
 // exchange. A PreToolUse hook gets no transcript, so this mod records the calls its checks need and hands them

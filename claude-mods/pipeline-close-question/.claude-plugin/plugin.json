@@ -1,7 +1,7 @@
 {
   "name": "pipeline-close-question",
   "version": "0.1.0",
-  "description": "Advisory only, never denies: after a session transitions an LCH ticket, reminds it that a delivery-pipeline story (a child of LCH-600) closes only with a comment answering (1) will this recur, for this fault and for its kind, and (2) what can be done now to prevent it, small items done in the same session and larger ones ticketed (LCH-676).",
+  "description": "Advisory only, never denies: after a session transitions an LCH ticket, reminds it that a delivery-pipeline story (a child of LC-2484) closes only with a comment answering (1) will this recur, for this fault and for its kind, and (2) what can be done now to prevent it, small items done in the same session and larger ones ticketed (LCH-676).",
   "author": {
     "name": "Brand Bridge Media"
   }

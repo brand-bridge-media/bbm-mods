@@ -18,7 +18,7 @@ a short "does the diff match the plan" check, so the total review time does not 
 SCOPE TEST. The same file list as the PR gate, so the two can never disagree about what is speed-sensitive. Files
 the PR gate passes as pure additions (a new dispatch-only test workflow, a new risk_tiers row, a selftest block)
 and generated files are never asked about here: they are registrations, not designs. Exempt: a branch named
-`lch<N>-...` (LCH-600's own work and incidents), the same exemption the PR gate uses.
+`lch<N>-...` (LC-2484's own work and incidents), the same exemption the PR gate uses.
 
 MODE. paths.json `plan.mode`: `enforce` (shipped, operator decision 2026-11-19: no shadow week) denies the edit;
 `shadow` is the kill switch short of disabling the mod: one `SHADOW would-ask-plan` note per session, until
@@ -160,7 +160,7 @@ READ_ANSWER = ("execute_sql `select request_id, kind, payload->>'verdict' as ver
 
 def ask_text(rel: str, state: str = "none") -> str:
     head = (f"BUILDING PERMIT (LCH-744): {rel} changes how code is tested, merged or deployed. No session builds such a "
-            "change before LCH-600 (Deploy and CI speed) approves its plan (operator decision 2026-11-19).\n")
+            "change before LC-2484 (Deploy and CI speed) approves its plan (operator decision 2026-11-19).\n")
     if state == "posted":
         return head + (
             "Your plan is posted; the permit is the desk's answer. Do work that does not touch these files meanwhile "

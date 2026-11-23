@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse gate: a PR that changes how code is tested, merged or deployed needs an LCH-600 review (LC-2207).
+"""PreToolUse gate: a PR that changes how code is tested, merged or deployed needs an LC-2484 review (LC-2207).
 
 WHAT IT DOES. On a GitHub `create_pull_request`, or an `update_pull_request` that takes a PR out of draft,
 it reads what the PR changes (the session's local clone: `git diff --name-status` plus `-U0` hunks; for an
@@ -27,7 +27,7 @@ MODE. paths.json `mode`: `shadow` (the default while it beds in) only warns, wit
 `[mod:lch600-review-gate] SHADOW would-deny`, which register.ts toasts so session-close counts it;
 `enforce` denies. The CI step that makes this authoritative is LC-2209; the mod is the early warning.
 
-EXEMPT. A PR title that STARTS with an exempt key, or a branch named `<key without the dash>-...` (incidents, LCH-600's
+EXEMPT. A PR title that STARTS with an exempt key, or a branch named `<key without the dash>-...` (incidents, LC-2484's
 work). Exempt keys come from hooks/exempt.json (`prefixes`: whole projects, `keys`: single tickets; LCH-794); an
 unreadable file means LCH only, as before.
 Pushing a branch is never gated: sessions push to save work in an ephemeral container.
@@ -457,7 +457,7 @@ def flow_text(files: list[str], ask_seconds: bool = False) -> str:
     shown = ", ".join(files[:6]) + (f" and {len(files) - 6} more" if len(files) > 6 else "")
     return (
         f"This PR changes how code is tested, merged or deployed ({shown}), so the Deploy and CI speed desk "
-        f"(LCH-600) reviews it first (operator decision 2026-11-17, LC-2207). Pushing the branch is fine. The review "
+        f"(LC-2484) reviews it first (operator decision 2026-11-17, LC-2207). Pushing the branch is fine. The review "
         f"runs on the cross-track request board: {BOARD_DOC}.\n"
         f"1. Ask: `select public.ask_track('{DESK}', '{REQUEST_TYPE}', '<what changes and why, the files, the "
         "expected effect on PR wait time, links to the stories and the branch>', '<your session id>', "
@@ -489,7 +489,7 @@ def decide(payload: dict, changes: list[dict] | None, rules: dict) -> dict | Non
     if changes is None:
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
                 f"{TAG} NOT CHECKED: could not read what this PR changes. If it touches CI, CD, deploy or "
-                f"test-runner files it still needs an LCH-600 review (LC-2207). Protocol: {BOARD_DOC}."}}
+                f"test-runner files it still needs an LC-2484 review (LC-2207). Protocol: {BOARD_DOC}."}}
     # LC-2207 waived: a missing owner/repo falls to the default rules either way ("" or "None"), an equivalent mutant.
     r = payload_rules(payload, rules)
     hit = gated_changes(changes, r)
@@ -502,7 +502,7 @@ def decide(payload: dict, changes: list[dict] | None, rules: dict) -> dict | Non
         gaps = missing_evidence(lines, transcript_reader.rows_for(payload), pr_tickets(inp.get("title"), inp.get("head")))
         if not gaps:
             return None
-        reason = ("The PR body names an LCH-600 review, but this session's board reads do not show it closed. "
+        reason = ("The PR body names an LC-2484 review, but this session's board reads do not show it closed. "
                   "Missing:\n- " + "\n- ".join(gaps) + "\nThen repeat the call. Procedure: " + BOARD_DOC)
     if rules.get("mode") == "enforce":
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -703,7 +703,7 @@ def replay_cli(argv: list[str], run=_run) -> int:
     hits = replay(since, load_rules(), run=run)
     for subject, files in hits:
         print(f"would-deny  {subject[:90]}  <- {', '.join(files[:4])}")
-    print(f"replay: {len(hits)} merge(s) since {since} would need an LCH-600 review")
+    print(f"replay: {len(hits)} merge(s) since {since} would need an LC-2484 review")
     return 0
 
 
