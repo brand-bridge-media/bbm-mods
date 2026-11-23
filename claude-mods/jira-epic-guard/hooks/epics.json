@@ -55,6 +55,11 @@
       "when": "CI and deploy, guardrail gates, tests and the mutation floor, the quality engine, servers and runners"
     },
     {
+      "key": "LC-2484",
+      "name": "Deploy and CI speed",
+      "when": "the change-to-live speed program only: how fast a change moves from PR to production (CI time, runner queues, the merge queue, deploys); moved from LCH-600 on 2026-11-23"
+    },
+    {
       "key": "LC-2141",
       "name": "Tools & Services",
       "when": "every tool and service itself: mods, hooks, skills, the knowledge system, the session fleet, and vendor accounts, plans, bills, outages, API limits, connectors and logins (Cloudflare, Supabase, GitHub, Jira, Webflow platform, Claude ...)"
