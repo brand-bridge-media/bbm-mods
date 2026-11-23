@@ -31,8 +31,9 @@ export function parseDispatch(query: string): string | null {
 /** SQL that sends the bridge's read-only status request; the secret is read inside the statement. */
 export function statusSql(w: Pick<Watch, 'workflow' | 'since'>): string {
   const body = JSON.stringify({ action: 'status', workflow: w.workflow, since: w.since }).replace(/'/g, "''")
-  return `select net.http_post(url := '${FN_URL}?secret=' || (select decrypted_secret from vault.decrypted_secrets ` +
-    `where name = 'edge_function_shared_secret'), headers := '{"Content-Type":"application/json"}'::jsonb, ` +
+  // LCH-543: the secret travels in the x-cron-secret header; request logs record the URL.
+  return `select net.http_post(url := '${FN_URL}', headers := jsonb_build_object('Content-Type', 'application/json', ` +
+    `'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'edge_function_shared_secret')), ` +
     `body := '${body}'::jsonb, timeout_milliseconds := ${STATUS_TIMEOUT_MS}) as req_id`
 }
 

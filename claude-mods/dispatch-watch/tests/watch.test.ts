@@ -24,6 +24,9 @@ test('a bridge dispatch is recognised; a status request and other SQL are not', 
 test('the status SQL reads the secret inside the statement and asks only for status', () => {
   const q = statusSql(W)
   expect(q).toContain("name = 'edge_function_shared_secret'")
+  // LCH-543: the secret rides in a header; a URL secret lands in the edge request logs.
+  expect(q).toContain("'x-cron-secret', (select decrypted_secret")
+  expect(q).not.toContain('secret=')
   expect(q).toContain('"action":"status"')
   expect(q).toContain(`"since":"${W.since}"`)
   // Never pg_net's 5 s default: a slow bridge reply pages as cron_http_timeout (incident 6b1a672a).
