@@ -1,0 +1,8 @@
+{
+  "name": "price-freshness",
+  "version": "0.2.0",
+  "description": "Asks Catalog & Prices (LC-2246 queue) to refresh an article's prices and stage them in the CMS: say \"refresh prices for <article>\" in chat, or call mcp__price-freshness__request. Wakes the session with the per-PRID result (ready, or flagged PRIDs first); NOT CHECKED when the queue cannot answer. Warns (never blocks) when a refresh session reads a brand page for a price. Final picks are queued in the database, so headless runs need no mod (LC-2245).",
+  "author": {
+    "name": "Brand Bridge Media"
+  }
+}
