@@ -246,6 +246,13 @@ step 3 says the section must cost the operator nothing. This mod is the session 
 - **Refuse**: a call that would make a T2 PR ready for review (create without `draft: true`, or `draft: false` on a draft) while a
   slot is still empty is refused with the gaps and how to fill each. `n/a: <reason>` always satisfies a slot, so it cannot trap a
   session. A body edit on a draft is never refused.
+- **Bound to the PR (LC-2310):** a captured run is stamped with the branch (empty when detached), HEAD sha and whether the tree
+  was dirty (`cd <dir> &&` prefix, else the event's cwd, else the hook's). Fill uses a run only when it ran on the PR's head branch
+  (or on no known branch) AND its commit is the PR head or an ancestor of it (test, then commit: one behind is normal; dirty or
+  clean; a run not at the head is marked `[run at <sha>]`). Runs from another branch, from a commit outside the head's history, or
+  unstamped are left out, the Tests slot stays empty, and the model is told `NOT CHECKED` with each reason. A hand-written Tests
+  line is never overwritten. Back-out: revert the PR (runs return to session-scoped). Review by 2027-02-23: the operator
+  approves T2 from this section, so it must never carry results that do not test the PR's own diff.
 - Slots, headings and rules are data in `scripts/ci/t2_evidence.json`, read at run time; nothing is copied here.
 - Logic: `hooks/t2-evidence-fill.py` (`--selftest`, mutation floor shard). Plumbing: `tests/*.test.ts`. Fails open on any error.
   Kill switch: `claude plugin disable t2-evidence-fill`, or drop it from `CLAUDE_CODE_PLUGIN_DIRS`.

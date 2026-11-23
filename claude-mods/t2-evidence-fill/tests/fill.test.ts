@@ -174,3 +174,31 @@ test('a failed test run is not captured', async ($: any, on: any) => {
   await $.tool.call({ tool: 'Bash', command: 'pytest -q' } as any)
   expect(w.sent.length).toBe(0)
 })
+
+// LC-2310: the capture carries the command's cwd (the helper stamps branch and sha from it), and a run the helper
+// left out of Tests is reported, never silent.
+test('the capture payload carries the session cwd when the event has one', async ($: any, on: any) => {
+  const w = world(on, { capture: { entry: { source: 'a.py', line: '1 passed' } } })
+  await $.tool.call({ tool: 'Bash', command: 'python3 a.py --selftest', cwd: '/work/tree' } as any)
+  expect(w.sent.find(s => s.payload.mode === 'capture')!.payload.cwd).toBe('/work/tree')
+})
+
+test('skipped runs are reported as NOT CHECKED with the reason on a draft', async ($: any, on: any) => {
+  world(on, { fill: { ...FILLED, skipped: ['a.py: ran on branch lc9-other, not lc1-x'] } })
+  const r: any = await $.tool.call(CREATE())
+  const ctx = (r.context ?? []).join('\n')
+  expect(ctx).toContain('[mod:t2-evidence-fill] NOT CHECKED')
+  expect(ctx).toContain('- a.py: ran on branch lc9-other, not lc1-x')
+})
+
+test('skipped runs are named in a refusal too', async ($: any, on: any) => {
+  world(on, { fill: { ...FILLED, deny: true, skipped: ['a.py: ran on branch lc9-other, not lc1-x'] } })
+  const d: any = await $.tool.call(CREATE({ draft: false }))
+  expect(String(d.deny)).toContain('- a.py: ran on branch lc9-other, not lc1-x')
+})
+
+test('nothing skipped, no NOT CHECKED note', async ($: any, on: any) => {
+  world(on, { fill: { ...FILLED, skipped: [] } })
+  const r: any = await $.tool.call(CREATE())
+  expect((r.context ?? []).join('\n')).not.toContain('NOT CHECKED')
+})

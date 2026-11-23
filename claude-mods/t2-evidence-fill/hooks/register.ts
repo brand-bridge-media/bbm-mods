@@ -73,6 +73,11 @@ async function readPr($: any, server: string, e: any): Promise<{ head: string; b
   } catch { return undefined }
 }
 
+/** LC-2310: why a captured run was not written into Tests (other branch, not in the head's history, unstamped). */
+function skippedList(skipped: unknown): string {
+  return (Array.isArray(skipped) ? skipped : []).map((x: unknown) => `- ${String(x)}`).join('\n')
+}
+
 function gapList(missing: unknown): string {
   return (Array.isArray(missing) ? missing : [])
     .map((m: any) => `- ${m?.[0]}: ${m?.[1]}. How: ${m?.[2]}`).join('\n')
@@ -85,7 +90,8 @@ export const register: Register = on => {
     try {
       const command = String((e as { command?: unknown }).command ?? '')
       if (ran.deny === undefined && !ran.isError && TEST_HINT.test(command)) {
-        const v = await helper($, { mode: 'capture', command, output: resultText(ran as any).slice(-20_000) })
+        const v = await helper($, { mode: 'capture', command, output: resultText(ran as any).slice(-20_000),
+          cwd: typeof (e as { cwd?: unknown }).cwd === 'string' ? (e as { cwd?: string }).cwd : undefined })
         if (v?.entry?.line) await remember($, v.entry)
       }
     } catch { /* never change the command's outcome */ }
@@ -119,6 +125,7 @@ export const register: Register = on => {
         deny: say($, `This ${out.tier} PR would leave draft with Evidence slots still empty (LC-2153: the operator approves `
           + `from this proof). Nothing was sent. Fill each slot below or write \`n/a: <reason>\`, then repeat the call, `
           + `or open it as a draft first.\n${gapList(out.missing)}\n`
+          + (skippedList(out.skipped) ? `NOT CHECKED, test runs left out of Tests (they do not test this PR's head):\n${skippedList(out.skipped)}\n` : '')
           + `Check a body before sending: python3 scripts/ci/t2_evidence.py body --file <body.md>`),
       }
     }
@@ -130,6 +137,10 @@ export const register: Register = on => {
       const notes: string[] = []
       if (rewritten && Array.isArray(out.changed) && out.changed.length) {
         notes.push(say($, `Evidence section (${out.tier}): ${out.changed.join('; ')}.`))
+      }
+      if (skippedList(out.skipped)) {
+        notes.push(`[mod:t2-evidence-fill] NOT CHECKED: these test runs were left out of Tests because they do not test this `
+          + `PR's head (LC-2310). Re-run the tests on the head commit, or write the Tests line yourself:\n${skippedList(out.skipped)}`)
       }
       if (Array.isArray(out.missing) && out.missing.length) {
         notes.push(`[mod:t2-evidence-fill] Still empty; fill these (or \`n/a: <reason>\`) with update_pull_request before `

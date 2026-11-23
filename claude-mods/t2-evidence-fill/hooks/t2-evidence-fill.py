@@ -96,6 +96,24 @@ def capture(command: str, output: str) -> dict:
     return {}
 
 
+def bind(entry: dict, command: str, cwd: str | None = None, run=None) -> dict:
+    """LC-2310: stamp a captured run with where it ran: the branch ("" when HEAD is detached, as in a worktree), the HEAD
+    sha and whether the tree had uncommitted changes. Where: a leading `cd <dir> &&` of the command, else `cwd` (the
+    session's, from the hook), else the helper's own. The sha unreadable: the entry stays unstamped, and an unstamped run
+    is never written into a PR body (it is reported as skipped)."""
+    run = run or _run
+    m = re.match(r"\s*cd\s+(\"[^\"]+\"|'[^']+'|\S+)\s*(?:&&|;)", command or "")
+    where = m.group(1).strip("\"'") if m else (cwd or os.getcwd())
+    rc, branch = run(["git", "-C", where, "rev-parse", "--abbrev-ref", "HEAD"])
+    rc2, sha = run(["git", "-C", where, "rev-parse", "HEAD"])
+    sha = sha.strip()
+    if rc2 != 0 or not sha:
+        return entry
+    branch = branch.strip() if rc == 0 and branch.strip() != "HEAD" else ""
+    rc3, dirty = run(["git", "-C", where, "status", "--porcelain", "--untracked-files=no"])
+    return {**entry, "branch": branch, "sha": sha, "dirty": rc3 == 0 and bool(dirty.strip())}
+
+
 # ---- fill: pure parts --------------------------------------------------------------------------------------------------
 
 def _strip_comments(text: str) -> str:
@@ -172,6 +190,8 @@ def counts_text(counts: list) -> str:
         if not line or src in seen:
             continue
         seen.add(src)
+        if c.get("at_head") is False or c.get("dirty"):
+            line += f" [run at {str(c.get('sha') or '')[:7]}{', tree dirty' if c.get('dirty') else ''}]"
         out.append(f"{src}: {line}" if src else line)
         if len(out) == MAX_COUNTS:
             break
@@ -250,6 +270,48 @@ def tier_of(top: str, head: str, run=_run) -> str | None:
     return None
 
 
+def head_sha(top: str, head: str, run=_run) -> str | None:
+    branch = (head or "").split(":", 1)[-1].strip()
+    for ref in (branch, f"origin/{branch}"):
+        if not branch:
+            return None
+        rc, out = run(["git", "-C", top, "rev-parse", "--verify", "--quiet", ref])
+        if rc == 0 and out.strip():
+            return out.strip()
+    return None
+
+
+def classify_counts(counts: list, head: str, sha: str | None, ancestor) -> tuple[list, list]:
+    """LC-2310: (kept, skipped reasons). A run is the PR's own when it ran on the PR's head branch (or on no known branch:
+    a worktree, a detached HEAD) AND its commit is the PR head or an ancestor of it (test, then commit, is the normal
+    order, so the stamp is usually one commit behind; dirty or clean). A run on another branch, on a commit outside the
+    head's history, or without a stamp is dropped with the reason, so the Tests slot stays empty (NOT CHECKED) and the
+    session says why, never someone else's results in what the operator approves from."""
+    branch = (head or "").split(":", 1)[-1].strip()
+    kept, skipped = [], []
+    for c in counts or []:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("source") or "a test run")
+        csha, cbranch = str(c.get("sha") or ""), str(c.get("branch") or "")
+        if not csha:
+            skipped.append(f"{name}: unstamped (no branch or commit recorded)")
+        elif cbranch and cbranch != branch:
+            skipped.append(f"{name}: ran on branch {cbranch}, not {branch or 'this PR head'}")
+        elif not sha:
+            skipped.append(f"{name}: the PR head commit could not be read")
+        elif csha == sha or ancestor(csha):
+            kept.append({**c, "at_head": csha == sha})
+        else:
+            skipped.append(f"{name}: ran at {csha[:7]}, which is not in the PR head's history")
+    return kept, skipped
+
+
+def is_ancestor(top: str, commit: str, sha: str, run=_run) -> bool:
+    rc, _ = run(["git", "-C", top, "merge-base", "--is-ancestor", commit, sha])
+    return rc == 0
+
+
 def fill(p: dict, run=_run) -> dict:
     owner, repo = str(p.get("owner") or ""), str(p.get("repo") or "")
     top = find_checkout(owner, repo, p.get("cwd"), run)
@@ -274,7 +336,10 @@ def fill(p: dict, run=_run) -> dict:
             return {"applicable": False, "why": "t2_evidence.py template gave nothing"}
         body = insert_section(body, block)
         changed.append(f"added the `## {heading}` section")
-    text = counts_text(p.get("counts") or [])
+    hsha = head_sha(top, str(p.get("head") or ""), run)
+    kept, skipped = classify_counts(p.get("counts") or [], str(p.get("head") or ""), hsha,
+                                    lambda c: bool(hsha) and is_ancestor(top, c, hsha, run))
+    text = counts_text(kept)
     if counts_label and text:
         body, did = fill_slot(body, heading, counts_label, text)
         if did:
@@ -292,7 +357,7 @@ def fill(p: dict, run=_run) -> dict:
     result, missing = parse_judge(out)
     deny = bool(p.get("ready")) and tier == T2 and result == "BLOCK" and bool(missing)
     return {"applicable": True, "tier": tier or "unreadable (treated as T2)", "body": body, "changed": changed,
-            "result": result, "missing": missing, "deny": deny}
+            "result": result, "missing": missing, "deny": deny, "skipped": skipped}
 
 
 def main_io(stdin: str) -> dict:
@@ -301,7 +366,10 @@ def main_io(stdin: str) -> dict:
         if not isinstance(p, dict):
             return {}
         if p.get("mode") == "capture":
-            return capture(str(p.get("command") or ""), str(p.get("output") or ""))
+            got = capture(str(p.get("command") or ""), str(p.get("output") or ""))
+            if got.get("entry"):
+                got = {"entry": bind(got["entry"], str(p.get("command") or ""), p.get("cwd"))}
+            return got
         if p.get("mode") == "fill":
             return fill(p)
     except Exception as e:  # noqa: BLE001  fail open: the mod lets the call through unchanged
@@ -429,8 +497,9 @@ def selftest() -> int:
         g("add", ".")
         g("commit", "-qm", "change")
         g("remote", "set-url", "origin", "https://github.com/o/bbm-infrastructure.git")
+        sha = g("rev-parse", "HEAD").stdout.strip()
         base = {"mode": "fill", "owner": "o", "repo": "bbm-infrastructure", "head": "o:lc1-x", "cwd": top,
-                "counts": [{"source": "mutate.py", "line": "31 killed"}]}
+                "counts": [{"source": "mutate.py", "line": "31 killed", "branch": "lc1-x", "sha": sha}]}
 
         r = fill({**base, "body": "## What this PR does\n\nMoves a cron.\n\n## Refs\n- LC-1\n", "ready": False})
         check("e2e T2 draft: applicable", r.get("applicable"), True)
@@ -439,6 +508,70 @@ def selftest() -> int:
         check("e2e T2 draft: Tests text", "- **Tests:** mutate.py: 31 killed" in r.get("body", ""), True)
         check("e2e T2 draft: gaps listed", [m[0] for m in r.get("missing", [])], ["What it does", "Screenshot"])
         check("e2e T2 draft: not denied", r.get("deny"), False)
+        # LC-2310: results of another PR / a commit outside the head's history / an unstamped run never reach the Tests slot,
+        # and each drop says why. A run one commit behind the head (test, then commit), dirty or clean, still counts.
+        pr_body = "## What this PR does\n\nx\n\n## Evidence\n\n- **Tests:** \n"
+        parent = g("rev-parse", "HEAD~1").stdout.strip()
+        for why, c, reason in (("another branch", {"branch": "lc2-y", "sha": sha}, "ran on branch lc2-y"),
+                               ("a commit outside the history", {"branch": "lc1-x", "sha": "0" * 40}, "not in the PR head's history"),
+                               ("another branch, ancestor sha", {"branch": "lc2-y", "sha": parent}, "ran on branch lc2-y"),
+                               ("unrelated sha, no branch", {"branch": "", "sha": "1" * 40}, "not in the PR head's history"),
+                               ("no stamp", {}, "unstamped")):
+            r = fill({**base, "body": pr_body, "ready": False, "counts": [{"source": "x.py", "line": "5 passed", **c}]})
+            check(f"e2e LC-2310 {why}: results not written", "5 passed" in r.get("body", ""), False)
+            check(f"e2e LC-2310 {why}: Tests left for the session", [m[0] for m in r.get("missing", [])].count("Tests"), 1)
+            check(f"e2e LC-2310 {why}: reason given", [reason in x for x in r.get("skipped", [])], [True])
+        r = fill({**base, "body": pr_body, "ready": False})
+        check("e2e LC-2310 own run on this branch and sha: filled", "- **Tests:** mutate.py: 31 killed" in r.get("body", ""), True)
+        check("e2e LC-2310 own run: nothing skipped", r.get("skipped"), [])
+        for why, c, tail in (("one commit behind, clean", {"branch": "lc1-x", "sha": parent, "dirty": False}, f"[run at {parent[:7]}]"),
+                             ("one commit behind, dirty", {"branch": "lc1-x", "sha": parent, "dirty": True}, f"[run at {parent[:7]}, tree dirty]"),
+                             ("detached HEAD at an ancestor", {"branch": "", "sha": parent}, f"[run at {parent[:7]}]"),
+                             ("detached HEAD at the head", {"branch": "", "sha": sha}, "5 passed")):
+            r = fill({**base, "body": pr_body, "ready": False, "counts": [{"source": "x.py", "line": "5 passed", **c}]})
+            check(f"e2e LC-2310 {why}: filled", f"- **Tests:** x.py: 5 passed" in r.get("body", "") and tail in r.get("body", ""), True)
+            check(f"e2e LC-2310 {why}: nothing skipped", r.get("skipped"), [])
+        check("bind: stamped with branch, sha, clean", bind({"source": "s", "line": "1 passed"}, "pytest", top),
+              {"source": "s", "line": "1 passed", "branch": "lc1-x", "sha": sha, "dirty": False})
+        with open(os.path.join(top, "a.sql"), "w") as fh:
+            fh.write("changed")
+        check("bind: uncommitted change is recorded", bind({"s": 1}, "pytest", top).get("dirty"), True)
+        check("bind: a detached HEAD keeps the sha, no branch", (lambda b: (b.get("branch"), b.get("sha")))(
+            bind({"s": 1}, "x", "/x", lambda a, cwd=None, stdin=None: (0, "HEAD") if "--abbrev-ref" in a else (0, "abc"))),
+            ("", "abc"))
+        check("bind: cd prefix picks the checkout", bind({"source": "s"}, f"cd {top} && pytest", "/nonexistent").get("sha"), sha)
+        check("bind: no checkout, no stamp", bind({"source": "s"}, "pytest", tmp), {"source": "s"})
+        check("bind: failed sha not stamped", bind({"s": 1}, "x", "/x", lambda a, cwd=None, stdin=None:
+                                                   (0, "b") if "--abbrev-ref" in a else (1, "s")), {"s": 1})
+        check("bind: empty sha not stamped", bind({"s": 1}, "x", "/x", lambda a, cwd=None, stdin=None:
+                                                  (0, "b") if "--abbrev-ref" in a else (0, " ")), {"s": 1})
+        # classify_counts, unit level
+        st = {"source": "a", "branch": "b", "sha": "s1"}
+        kc = lambda cs, head="b", hs="s1", anc=lambda c: False: classify_counts(cs, head, hs, anc)  # noqa: E731
+        check("classify: same sha kept", kc([st])[0], [{**st, "at_head": True}])
+        check("classify: ancestor kept, flagged behind", kc([{**st, "sha": "s0"}], anc=lambda c: c == "s0")[0],
+              [{**st, "sha": "s0", "at_head": False}])
+        check("classify: non-ancestor dropped with reason", kc([{**st, "sha": "s0"}])[1],
+              ["a: ran at s0, which is not in the PR head's history"])
+        check("classify: other branch dropped even at the head sha", kc([{**st, "branch": "c"}]),
+              ([], ["a: ran on branch c, not b"]))
+        check("classify: unknown branch matches on sha", kc([{**st, "branch": ""}])[0], [{**st, "branch": "", "at_head": True}])
+        check("classify: unstamped dropped", kc([{"source": "a"}]), ([], ["a: unstamped (no branch or commit recorded)"]))
+        check("classify: unreadable head commit keeps nothing", kc([st], hs=None),
+              ([], ["a: the PR head commit could not be read"]))
+        check("classify: owner prefix on the head", kc([st], head="o:b")[0], [{**st, "at_head": True}])
+        check("classify: junk skipped silently", kc([None, "x", st])[0], [{**st, "at_head": True}])
+        check("classify: unnamed run still named", kc([{"sha": "s1", "branch": "z"}])[1], ["a test run: ran on branch z, not b"])
+        sh = lambda out: (lambda argv, cwd=None, stdin=None: out)  # noqa: E731
+        check("head_sha: empty head", head_sha("/x", "", sh((0, "abc"))), None)
+        check("head_sha: empty output is not a sha", head_sha("/x", "b", sh((0, " \n"))), None)
+        check("head_sha: found", head_sha("/x", "o:b", sh((0, "abc\n"))), "abc")
+        check("head_sha: failing rev-parse", head_sha("/x", "b", sh((1, "abc"))), None)
+        check("is_ancestor: yes", is_ancestor("/x", "a", "b", sh((0, ""))), True)
+        check("is_ancestor: no", is_ancestor("/x", "a", "b", sh((1, ""))), False)
+        check("is_ancestor: unknown object", is_ancestor("/x", "a", "b", sh((128, ""))), False)
+        with open(os.path.join(top, "a.sql"), "w") as fh:
+            fh.write("x")
         r = fill({**base, "body": "body", "ready": True})
         check("e2e T2 ready with gaps: denied", r.get("deny"), True)
         full = "## Evidence\n- **What it does:** moves it\n- **Tests:** 4/4\n- **Screenshot:** n/a: nothing visible\n"
@@ -453,8 +586,10 @@ def selftest() -> int:
         check("e2e unreadable tier: says so", "unreadable" in str(r.get("tier")), True)
         r = fill({**base, "repo": "other-repo", "body": "body", "ready": True})
         check("e2e other repo: left alone", r.get("applicable"), False)
-        check("main_io capture", main_io(json.dumps({"mode": "capture", "command": "pytest", "output": "3 passed"})),
-              {"entry": {"source": "pytest", "line": "3 passed"}})
+        got = main_io(json.dumps({"mode": "capture", "command": "pytest", "output": "3 passed", "cwd": top}))["entry"]
+        check("main_io capture: cd prefix stamps that checkout", main_io(json.dumps(
+            {"mode": "capture", "command": f"cd {top} && pytest", "output": "3 passed", "cwd": tmp}))["entry"].get("sha"), sha)
+        check("main_io capture",(got["source"], got["line"], got["branch"], got["sha"]), ("pytest", "3 passed", "lc1-x", sha))
         check("main_io junk fails open", main_io("not json").get("applicable"), False)
         check("main_io unknown mode", main_io('{"mode": "x"}'), {})
 
@@ -535,7 +670,8 @@ def selftest() -> int:
               True)
         rc = subprocess.run([sys.executable, "-I", os.path.abspath(__file__)], input='{"mode": "capture", "command": "pytest",'
                             ' "output": "2 passed"}', capture_output=True, text=True, timeout=30)
-        check("CLI: stdin JSON in, JSON out", json.loads(rc.stdout or "{}"), {"entry": {"source": "pytest", "line": "2 passed"}})
+        got = json.loads(rc.stdout or "{}").get("entry", {})
+        check("CLI: stdin JSON in, JSON out", (got.get("source"), got.get("line")), ("pytest", "2 passed"))
 
     # The real judge and template, when this file sits in a checkout that has them (bbm-infrastructure after LC-2153).
     real = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
