@@ -19,7 +19,9 @@ receipt is PASS. NOT CHECKED never counts as a pass.
             and products.price_verified_at is under 24 hours old.
   Brands    the staged fieldData has name, brand-url, full-size-image and full-size-image-alt-text,
             the alt text is not the bare brand name; brand-logo set needs its own alt text (not
-            the name); discount-available on needs discount and discount-message
+            the name); discount-available on is judged by the article audit's own
+            brand_discount_rule.findings() (LC-2129, LC-2370): discount-message always, the
+            discount code only when the message tells the reader to use one
             (article-technical-audit §4b, the REQ / COND rows a publish can break).
   Both      the Webflow read is under 60 minutes old and the item is not archived.
 
@@ -47,6 +49,7 @@ PRICE_MAX_AGE_MS = 24 * 60 * 60 * 1000    # the operator's rule: price verified 
 CLOCK_SKEW_MS = 5 * 60 * 1000             # a verified-at in the future beyond this is wrong data
 MAX_ITEMS = 100                           # Webflow's own per-call publish limit
 READINESS_REL = os.path.join("webflow", "bulk-operations", "_shared")
+DISCOUNT_RULE_REL = os.path.join("webflow", "bulk-operations", "article-audit")
 
 PASS, BLOCK, NOT_CHECKED = "PASS", "BLOCK", "NOT CHECKED"
 
@@ -104,6 +107,25 @@ def find_readiness(roots: list[str]):
                   "was found (looked in: " + ", ".join(roots) + ")")
 
 
+def find_discount_rule(roots: list[str]):
+    """brand_discount_rule (LC-2129) from the first clone that has it, or (None, why).
+
+    Imported, never copied: the article audit and this publish check must judge a discount the
+    same way. A private copy here is how a code-free sale passed the audit yet stayed blocked at
+    publish for six days (LC-2370)."""
+    for root in roots:
+        d = os.path.join(root, DISCOUNT_RULE_REL)
+        if os.path.isfile(os.path.join(d, "brand_discount_rule.py")):
+            if d not in sys.path:
+                sys.path.insert(0, d)
+            try:
+                return importlib.import_module("brand_discount_rule"), ""
+            except Exception as e:  # noqa: BLE001 - any import failure becomes a NOT CHECKED receipt  ratchet-ok: LC-2370 recorded as NOT CHECKED, never a pass
+                return None, f"brand_discount_rule.py could not be imported from {d} ({type(e).__name__}: {e})"
+    return None, ("no bbm-infrastructure clone with webflow/bulk-operations/article-audit/brand_discount_rule.py "
+                  "was found (looked in: " + ", ".join(roots) + ")")
+
+
 def default_roots() -> list[str]:
     out: list[str] = []
     for r in (os.environ.get("CLAUDE_PROJECT_DIR", ""), os.getcwd()):
@@ -117,7 +139,9 @@ def default_roots() -> list[str]:
     return out
 
 
-def brand_gaps(fd: dict) -> list[str]:
+def brand_gaps(fd: dict, dr=None) -> list[str]:
+    """Field gaps a Brands publish can break. `dr` is brand_discount_rule; the caller loads it
+    only when discount-available is on, and refuses as NOT CHECKED when it cannot."""
     gaps: list[str] = []
     name = fd.get("name")
     for f in ("name", "brand-url"):
@@ -137,9 +161,11 @@ def brand_gaps(fd: dict) -> list[str]:
         elif _same(logo_alt, name):
             gaps.append("brand-logo-alt-text is the bare brand name")
     if fd.get("discount-available") is True:
-        for f in ("discount", "discount-message"):
-            if _blank(fd.get(f)):
-                gaps.append(f"discount-available is on but {f} is empty")
+        # LC-2129 rule, shared with the article audit: the message is always required; the code
+        # (`discount`) only when the message tells the reader to use one. A code-free sitewide sale
+        # must never be "fixed" by typing a made-up code into `discount` (LC-2370).
+        for _rule, slug, problem, _fix in dr.findings(fd.get("discount-message"), fd.get("discount"), _blank):
+            gaps.append(f"{slug}: {problem}")
     return gaps
 
 
@@ -205,7 +231,13 @@ def decide(payload: dict, roots: Optional[list[str]] = None) -> dict:
             continue
         fd = rec["fieldData"]
         if coll == BRANDS:
-            g = brand_gaps(fd)
+            dr = None
+            if fd.get("discount-available") is True:
+                dr, dr_why = find_discount_rule(roots if roots is not None else default_roots())
+                if dr is None:
+                    receipts.append(_receipt(coll, iid, NOT_CHECKED, dr_why))
+                    continue
+            g = brand_gaps(fd, dr)
             receipts.append(_receipt(coll, iid, BLOCK, "; ".join(g)) if g
                             else _receipt(coll, iid, PASS, "required fields present; alt text is not the bare name"))
             continue
@@ -356,6 +388,30 @@ def _selftest() -> int:  # noqa: C901 — a flat list of small assertions
     ck(r["allow"] is False and "discount-message" in r["receipts"][0]["reason"], "a discount with no message blocks")
     r = run([B], seenB(bfd(**{"discount-available": True, "discount": "SAVE10", "discount-message": "10% off"})))
     ck(r["allow"] is True, "a complete discount passes")
+    # LC-2370: the LC-2129 rule, both sides. A code-free sale (the 7 BFCM brands) must pass with
+    # `discount` empty; a message that names a code with `discount` empty must still block.
+    for empty in ("", None, "  "):
+        r = run([B], seenB(bfd(**{"discount-available": True, "discount": empty,
+                                  "discount-message": "Up to 40% off select items, through Nov 30"})))
+        ck(r["allow"] is True and r["receipts"][0]["verdict"] == PASS, f"a code-free sale passes with discount={empty!r}: {r}")
+    for msg in ("10% off sofas with code COZY10", "Use promo code at checkout"):
+        r = run([B], seenB(bfd(**{"discount-available": True, "discount": "", "discount-message": msg})))
+        ck(r["allow"] is False and r["receipts"][0]["verdict"] == BLOCK
+           and "discount: the discount message tells the reader to use a code" in r["receipts"][0]["reason"],
+           f"a message naming a code with the code empty blocks: {msg!r} -> {r}")
+    r = run([B], seenB(bfd(**{"discount-available": True, "discount": "", "discount-message": ""})))
+    ck(r["allow"] is False and r["receipts"][0]["reason"].count("discount-message") == 1
+       and "discount:" not in r["receipts"][0]["reason"], "no message and no code reports the message once, not the code")
+    r = run([B], seenB(bfd(**{"discount-available": False, "discount": "", "discount-message": ""})))
+    ck(r["allow"] is True, "discount-available off ignores both discount fields")
+    r = run([B], seenB(bfd(**{"discount-available": "true", "discount": "", "discount-message": ""})))
+    ck(r["allow"] is True, "only a real True turns the discount check on (Webflow switches are booleans)")
+    # The rule lives in the clone: no clone -> NOT CHECKED when a discount is on, never a pass.
+    r = run([B], seenB(bfd(**{"discount-available": True, "discount-message": "Up to 40% off"})), roots_=["/nonexistent-root"])
+    ck(r["allow"] is False and r["receipts"][0]["verdict"] == NOT_CHECKED and "brand_discount_rule" in r["receipts"][0]["reason"],
+       f"discount on with no clone is NOT CHECKED: {r}")
+    dr, why = find_discount_rule(["/nonexistent-root"] + roots)
+    ck(dr is not None and why == "" and hasattr(dr, "findings"), f"the rule is found past a root without it ({why})")
 
     # One bad item spoils the batch; the good one still gets its own PASS receipt.
     r = run([B, {"collection": BRANDS, "id": "b2"}], {**seenB(bfd()), "b2": {"collection": BRANDS, "fieldData": bfd(name=""), "readAt": NOW}})
