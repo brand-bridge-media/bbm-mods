@@ -216,7 +216,9 @@ const EXECUTOR = /\b(?:curl|wget|httpie|python[0-9.]*|node|deno|bun|npx|npm|pnpm
 // A command whose first word is a variable or a path runs something we cannot name (`$CMD ...`, `./x.sh`).
 const COMMAND_POSITION = /^\s*(?:\w+=\S+\s+)*(?:\$\{?\w+|\.{0,2}\/\S+|~\/\S+)/
 // A script NAMED for a Webflow publish is judged by its name, since its body cannot be read from here.
-const PUBLISH_SCRIPT_NAME = /webflow[\w.:\-]*(?<!un)publish|(?<!un)publish[\w.:\-]*webflow/i
+// LCH-552: "publish" followed by ed/er/es/ing is a word ("webflow_last_published"), not a script name.
+// Review by 2027-02-23: a column or sentence naming webflow and published must not read as a publish script.
+const PUBLISH_SCRIPT_NAME = /webflow[\w.:\-]*(?<!un)publish(?!ed|er|es|ing)|(?<!un)publish(?!ed|er|es|ing)[\w.:\-]*webflow/i
 // The ONE exemption: the repo's own hook file, by exact basename. A substring like `-gate` would let
 // `do_webflow_publish-gate.sh` through.
 const GATE_SCRIPT = /(?:^|\/)webflow-publish-gate\.py$/
