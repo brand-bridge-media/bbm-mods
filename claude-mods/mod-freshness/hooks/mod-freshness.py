@@ -92,13 +92,42 @@ def synced_dirs(home: str) -> dict[str, str]:
     try:
         for org in sorted(os.listdir(root)):
             base = os.path.join(root, org)
-            for entry in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+            if not os.path.isdir(base):
+                continue
+            current = current_folders(base)
+            for entry in sorted(os.listdir(base)):
                 d = os.path.join(base, entry)
                 name = plugin_name(d) if os.path.isdir(d) else None
-                if name:
-                    out[name] = d
+                if not name:
+                    continue
+                # A re-sync writes the new copy to <mod>~g<N> and can leave the old folder beside it
+                # (LC-2217, 2026-11-23: a leftover refresh-run-guard~g2 read as "stale" against a current
+                # account copy, so a thread asked the operator for a refresh already done). The manifest
+                # names the live generation; only with no manifest entry does folder order decide.
+                if name in current and entry != current[name]:
+                    continue
+                out[name] = d
     except OSError:
         pass
+    return out
+
+
+def current_folders(base: str) -> dict[str, str]:
+    """mod name -> the folder the account sync's manifest.json says is live (<name>, or <name>~g<N>)."""
+    try:
+        with open(os.path.join(base, 'manifest.json'), encoding='utf-8') as f:
+            plugins = json.load(f).get('plugins', [])
+    except (OSError, ValueError, AttributeError):
+        return {}
+    out: dict[str, str] = {}
+    for p in plugins if isinstance(plugins, list) else []:
+        name = p.get('name') if isinstance(p, dict) else None
+        if not isinstance(name, str) or not name:
+            continue
+        gen = p.get('generation')
+        folder = f'{name}~g{gen}' if isinstance(gen, int) and not isinstance(gen, bool) and gen > 1 else name
+        if os.path.isdir(os.path.join(base, folder)):
+            out[name] = folder
     return out
 
 
@@ -249,8 +278,14 @@ def check(loaded: dict, home: str, cache: str, url: str, account: bool = False, 
 
 
 def main() -> int:
+    raw = sys.stdin.read()
+    if not raw.strip():
+        # No payload at all is a caller bug, not a check result (the mod always sends one). Exit 2 so the
+        # mod reads it as NOT CHECKED, and so `--selftest` mistyped into main() can never pass as green.
+        print('usage: echo \'{"mode": "snapshot"|"check", ...}\' | mod-freshness.py   (or --selftest)', file=sys.stderr)
+        return 2
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(raw)
         home = payload.get('home') or os.path.expanduser('~')
         if payload.get('mode') == 'snapshot':
             result = snapshot(home, payload.get('plugin_dirs') or os.environ.get('CLAUDE_CODE_PLUGIN_DIRS', ''))
@@ -393,6 +428,25 @@ def selftest() -> int:
            'unparseable sync time stays account_behind')
         ok(_when('2026-11-20T22:21:52+00:00') is not None and _when('2026-11-20T22:21:52') is None, 'naive times are refused')
 
+        # LC-2217 (2026-11-23): a leftover generation folder must not shadow the live one.
+        ghome = os.path.join(tmp, 'gen')
+        gorg = f'{ghome}/.claude/plugins/synced/org_1'
+        shutil.copytree(f'{mirror}/claude-mods/beta', f'{gorg}/beta')            # live (no generation)
+        shutil.copytree(f'{mirror}/claude-mods/alpha', f'{gorg}/beta~g2')        # leftover, sorts later
+        write(f'{gorg}/beta~g2/.claude-plugin/plugin.json', json.dumps({'name': 'beta'}))
+        write(f'{gorg}/manifest.json', json.dumps({'plugins': [{'name': 'beta'}]}))
+        ok(synced_dirs(ghome)['beta'] == f'{gorg}/beta', 'manifest without generation: bare folder wins over a leftover ~g2')
+        write(f'{gorg}/manifest.json', json.dumps({'plugins': [{'name': 'beta', 'generation': 2}]}))
+        ok(synced_dirs(ghome)['beta'] == f'{gorg}/beta~g2', 'manifest generation 2: ~g2 folder wins')
+        shutil.copytree(f'{gorg}/beta', f'{gorg}/beta~g10')
+        write(f'{gorg}/manifest.json', json.dumps({'plugins': [{'name': 'beta', 'generation': 10}]}))
+        ok(synced_dirs(ghome)['beta'] == f'{gorg}/beta~g10', 'generation 10 is read, not ~g2 by folder order')
+        write(f'{gorg}/manifest.json', json.dumps({'plugins': [{'name': 'beta', 'generation': 7}]}))
+        ok(synced_dirs(ghome)['beta'] in (f'{gorg}/beta', f'{gorg}/beta~g2', f'{gorg}/beta~g10'),
+           'a manifest naming a missing folder falls back to folder order')
+        write(f'{gorg}/manifest.json', 'not json')
+        ok('beta' in synced_dirs(ghome), 'an unreadable manifest falls back to folder order')
+
         # main() end to end over stdin.
         proc = subprocess.run([sys.executable, '-I', os.path.abspath(__file__)], capture_output=True, text=True,
                               input=json.dumps({'mode': 'check', 'loaded': snap, 'home': home,
@@ -402,6 +456,8 @@ def selftest() -> int:
         proc = subprocess.run([sys.executable, '-I', os.path.abspath(__file__)], capture_output=True, text=True,
                               input='not json')
         ok(proc.returncode == 0 and '*' in json.loads(proc.stdout)['not_checked'], 'main() fails open on bad input')
+        proc = subprocess.run([sys.executable, '-I', os.path.abspath(__file__)], capture_output=True, text=True, input='')
+        ok(proc.returncode == 2 and proc.stdout == '', 'main() with no payload exits 2 (never a silent pass)')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

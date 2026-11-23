@@ -51,7 +51,7 @@ export function wakeText(stale: readonly string[], v: Verdict): string {
     return `[mod:mod-freshness] This thread loaded the claude.ai account copy of the mods, and it is behind the ` +
       `bbm-mods mirror for: ${names}.${head}${gone} A fresh thread loads the same old copy. ` +
       'Tell the operator in chat, opening with the NEEDS YOU banner: on claude.ai Plugins, run Check for updates ' +
-      'on the bbm-mods marketplace (or upload the mod zip with Add > Upload plugin), then start a new thread. ' +
+      'on the bbm-mods marketplace (if a mod is still behind after that, Remove and re-add the marketplace; never a zip upload, LC-2217), then start a new thread. ' +
       'See LC-2217. Until then, do the stale mod\'s job by hand where it matters.'
   }
   return `[mod:mod-freshness] This session is running out-of-date mod code: ${names}.${head} ` +

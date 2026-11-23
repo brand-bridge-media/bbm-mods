@@ -35,6 +35,8 @@ test('account copy (project thread): missing mods count, and the fix goes to cla
   expect(t).toContain('NEEDS YOU')
   expect(t).not.toContain('start a fresh session to pick them up')
   expect(wakeText(['x'], {})).toContain('start a fresh session to pick them up')
+  // Operator decision (2026-11-18, LC-2217): nothing on the account is uploaded by hand; the marketplace is the one route.
+  expect(t).not.toContain('Upload plugin')
 })
 
 test('board request #72: a thread older than the mirror change does not ask the operator', () => {
