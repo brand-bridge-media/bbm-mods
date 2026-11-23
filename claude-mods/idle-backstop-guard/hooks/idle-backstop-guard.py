@@ -237,6 +237,41 @@ def active_watches(text: object) -> list[str] | None:
     return [str(k) for k in v["active"]]
 
 
+# LC-2518: a PR watch the session SUBSCRIBED to needs no polling check-in. subscribe_pr_activity is server-side and
+# event-driven: merge, close, CI and review events wake the session even after it idles, so a 30-minute "is it merged
+# yet?" check-in only burns a wake. On 2026-11-23 about 35 such one-shot check-ins were created in 4 hours and the
+# operator's weekly Claude cap ran out in ~2.5 days. Fleet children and run/dispatch watches still need a check-in:
+# nothing on the server wakes a session when those finish.
+SUBSCRIBE = "__subscribe_pr_activity"
+UNSUBSCRIBE = "__unsubscribe_pr_activity"
+# ALLOWLIST (CI speed review, board request 205): only the tool's own success line counts. Anything else (empty, an
+# error, a closed or missing PR, a permission refusal, or a success that says another agent holds the events) covers nothing.
+HELD = re.compile(r"^\s*Subscribed to activity on ", re.I)
+NOT_HELD = re.compile(r"already watching|another (?:conversation|session|claude)", re.I)
+
+
+def subscribed_prs(calls: object) -> set[str]:
+    """pr-ci-watch keys (`pr:owner/repo#N`) whose events this session holds, from its own subscribe calls in order.
+    A subscribe whose reply says another agent holds the PR (or failed) does not count; a later unsubscribe removes it."""
+    held: set[str] = set()
+    rows = [c for c in calls if isinstance(c, dict)] if isinstance(calls, list) else []
+    rows.sort(key=lambda c: c.get("at_ms") if isinstance(c.get("at_ms"), (int, float)) else 0)
+    for c in rows:
+        tool = str(c.get("tool", ""))
+        if not (tool.endswith(SUBSCRIBE) or tool.endswith(UNSUBSCRIBE)):
+            continue
+        inp = c.get("input") if isinstance(c.get("input"), dict) else {}
+        n = inp.get("pullNumber")
+        if isinstance(n, bool) or not isinstance(n, int) or not inp.get("owner") or not inp.get("repo"):
+            continue
+        key = f"pr:{inp['owner']}/{inp['repo']}#{n}".lower()  # GitHub names are case-insensitive
+        if tool.endswith(UNSUBSCRIBE):
+            held.discard(key)
+        elif HELD.search(str(c.get("result") or "")) and not NOT_HELD.search(str(c.get("result") or "")):
+            held.add(key)
+    return held
+
+
 def signal_of(text: object) -> str:
     """get_session (no id) reply -> 'child' | 'top' | 'unreadable'."""
     v = _json_in(text)
@@ -420,6 +455,9 @@ def block_text(items: list[str], now_ms: int, later: int | None) -> str:
           'name "Idle backstop: check fleet and watches", initiation "own_followup", and this message:\n'
         + json.dumps(prompt)
         + "\n(A tracker, ScheduleWakeup, CronCreate or Monitor does not count: they run in the process that idles.)"
+        + ("\nFor a pr-ci-watch item, call mcp__claude-code-remote__subscribe_pr_activity on that PR instead: its merge, "
+           "close and CI events wake the session, so it needs no polling check-in (LC-2518)."
+           if any(i.startswith("pr-ci-watch ") for i in items) else "")
     )
 
 
@@ -489,6 +527,13 @@ def decide_checkin(p: dict) -> dict:
         if unreadable:
             return {"verdict": "NOT CHECKED", "reason": "could not read " + ", ".join(unreadable) + "; nothing else open", "block": None}
         return {"verdict": "PASS", "reason": "no open fleet children or watches", "block": None}
+
+    covered = subscribed_prs(p.get("calls"))
+    if covered:
+        kept = [i for i in items if not (i.startswith("pr-ci-watch ") and i[len("pr-ci-watch "):].lower() in covered)]
+        if not kept:
+            return {"verdict": "PASS", "reason": f"{len(items)} open PR watch(es), all subscribed (subscribe_pr_activity, event-driven; LC-2518)", "block": None}
+        items = kept
 
     soon, later = check_in(p.get("calls"), now)
     s_soon, s_later = server_check_in(p.get("triggers"), p.get("session"), now)
@@ -645,6 +690,28 @@ def _selftest() -> int:
     r = D(watchers=w, children=kids)
     ck("3 open watch" in r["block"], "children and watchers add up")
     ck(D(watchers={**w, "pr-ci-watch": '{"active":[],"finished":["pr:o/r#5"]}', "workflow-run-watch": '{"active":[],"finished":[]}'})["verdict"] == "PASS", "finished watches do not block")
+    # LC-2518: a subscribed PR needs no check-in; everything else still does
+    SUB = "mcp__claude-code-remote__subscribe_pr_activity"
+    UNS = "mcp__claude-code-remote__unsubscribe_pr_activity"
+    OKR = "Subscribed to activity on o/r#5. Comments, CI status changes ... will now be delivered."
+    def sub(n, res=OKR, at=NOW - MIN, tool=SUB, owner="o"):
+        return {"tool": tool, "input": {"owner": owner, "repo": "r", "pullNumber": n}, "result": res, "at_ms": at}
+    pr_only = {**w, "workflow-run-watch": '{"active":[],"finished":[]}'}
+    r = D(watchers=pr_only, calls=[sub(5)])
+    ck(r["verdict"] == "PASS" and "subscribed" in r["reason"], "subscribed PR, nothing else open -> PASS without a check-in")
+    r = D(watchers=pr_only)
+    ck(r["verdict"] == "BLOCK" and "subscribe_pr_activity" in r["block"], "unsubscribed PR still blocks and the block names the subscription")
+    ck(D(watchers=pr_only, calls=[sub(6)])["verdict"] == "BLOCK", "a subscription to a DIFFERENT PR does not cover")
+    ck(D(watchers=pr_only, calls=[sub(5, res="Subscribed, but a Claude agent is already watching this PR")])["verdict"] == "BLOCK", "a subscription another agent holds does not cover")
+    ck(D(watchers=pr_only, calls=[sub(5), sub(5, at=NOW - 1000, tool=UNS)])["verdict"] == "BLOCK", "a later unsubscribe removes the cover")
+    for bad in ("", "Permission denied", "PR is closed", "No such pull request", "Error: not found", "rate limited"):
+        ck(D(watchers=pr_only, calls=[sub(5, res=bad)])["verdict"] == "BLOCK", f"reply {bad!r} is not a held subscription")
+    ck(D(watchers={**pr_only, "pr-ci-watch": '{"active":["pr:O/R#5"],"finished":[]}'}, calls=[sub(5, owner="o")])["verdict"] == "PASS", "case differs between watcher and subscribe: still covered")
+    ck(D(watchers=pr_only, calls=[sub(5, owner="O")])["verdict"] == "PASS", "upper-case owner on the subscribe side: still covered")
+    r = D(watchers=w, calls=[sub(5)])
+    ck(r["verdict"] == "BLOCK" and "pr:o/r#5" not in r["block"] and "run:o/r:ci.yml" in r["block"] and "1 open watch" in r["block"], "a run watch still blocks; the covered PR is left out of the list")
+    ck(D(children=kids, watchers=pr_only, calls=[sub(5)])["verdict"] == "BLOCK", "an open fleet child still needs a check-in")
+    ck(subscribed_prs("junk") == set() and subscribed_prs([{"tool": SUB, "input": {"owner": "o", "repo": "r", "pullNumber": True}}]) == set(), "odd shapes cover nothing")
     # fail open
     r = D(children=None)
     ck(r["verdict"] == "NOT CHECKED" and "fleet-tracker" in r["reason"] and r["block"] is None, "children unreadable, nothing else open -> NOT CHECKED, never PASS")

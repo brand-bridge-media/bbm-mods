@@ -10,7 +10,8 @@ import type { Call, Receipt } from '../types'
 // toast. Only a clear BLOCK from the check ever stops a turn.
 const OWN = '[mod:idle-backstop-guard]'
 const SERVER = 'claude-code-remote'
-const CHECK_INS = /^mcp__.*__(send_later|create_trigger)$/
+// LC-2518: PR subscriptions are recorded too; a subscribed PR needs no polling check-in.
+const CHECK_INS = /^mcp__.*__(send_later|create_trigger|subscribe_pr_activity|unsubscribe_pr_activity)$/
 const WATCHERS = ['pr-ci-watch', 'dispatch-watch', 'workflow-run-watch']
 const MAX_CALLS = 50
 const MAX_TEXT = 4_000
