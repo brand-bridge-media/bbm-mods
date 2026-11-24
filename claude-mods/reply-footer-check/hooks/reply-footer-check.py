@@ -431,19 +431,24 @@ def _selftest() -> int:
     r = subprocess.run([sys.executable, os.path.abspath(__file__)], input="{bad",
                        capture_output=True, text=True)
     ck(r.returncode == 1 and r.stdout == "", "main(): junk input fails open and visible")
+    r = subprocess.run([sys.executable, os.path.abspath(__file__), "--bogus"], input="",
+                       capture_output=True, text=True)
+    ck(r.returncode == 1 and r.stdout == "", "main(): an unknown argument is refused, not read as a hook call")
 
     print(f"reply-footer-check selftest: {checks - fails}/{checks} checks passed")
     return 1 if fails else 0
 
 
 def main() -> int:
-    # LC-1877 equivalent mutants (guard-off / `in` -> `not in` on the next line): mutate.py judges only the exit code of
-    # `python3 reply-footer-check.py --selftest`. With this dispatch broken that command skips the selftest, reads an
-    # empty stdin, evaluates {} -> no block -> exit 0, the same code a passing selftest gives, and the selftest itself
-    # never runs so it cannot assert on it. claude-mods.yml reads the "selftest: N/N checks passed" count line, so CI
-    # fails there. Proposed waivers: main|guard-off|if '--selftest' in sys.argv -> if False and main|cmp-flip|in -> not in.
+    # LCH-847: the hook is always run with no arguments (py.ts runArgs), so any argument other than `--selftest`
+    # is refused. Without that, a mutant that breaks the `--selftest` dispatch read an empty stdin and exited 0
+    # like a passing selftest; whether it was scored killed depended on whether the sweep's stdin was open (the
+    # floor once claimed both kills, CI's /dev/null sweep said they survive). Now it lands on the refusal (exit 1).
     if "--selftest" in sys.argv:
         return _selftest()
+    if len(sys.argv) > 1:
+        sys.stderr.write(f"reply-footer-check: unexpected arguments {sys.argv[1:]}\n")
+        return 1
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}

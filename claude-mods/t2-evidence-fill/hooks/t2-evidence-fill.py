@@ -672,6 +672,9 @@ def selftest() -> int:
                             ' "output": "2 passed"}', capture_output=True, text=True, timeout=30)
         got = json.loads(rc.stdout or "{}").get("entry", {})
         check("CLI: stdin JSON in, JSON out", (got.get("source"), got.get("line")), ("pytest", "2 passed"))
+        rc = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "--bogus"], input="",
+                            capture_output=True, text=True, timeout=30)
+        check("CLI: an unknown argument is refused, not read as a hook call", (rc.returncode, rc.stdout), (1, ""))
 
     # The real judge and template, when this file sits in a checkout that has them (bbm-infrastructure after LC-2153).
     real = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
@@ -699,10 +702,13 @@ def selftest() -> int:
 
 
 if __name__ == "__main__":  # accepted survivors here: the harness runs the selftest in-process; CLI case covers it
-    # Accepted survivor (guard-off / `in` -> `not in` on the next line; LC-1877 proposed waivers): with it broken,
-    # `--selftest` skips the selftest and prints a JSON answer for an empty stdin with exit 0, the same code a passing
-    # selftest gives; mutate.py judges only that exit code and the selftest never runs to assert on it. It has no count
-    # line, and claude-mods.yml fails the job on the missing count line, so CI catches it where the selftest cannot.
+    # LCH-847: the hook always runs this with no arguments (register.ts helper), so any argument other than
+    # `--selftest` is refused. Without that, a mutant breaking the `--selftest` dispatch printed a JSON answer for an
+    # empty stdin with exit 0, like a passing selftest, and was scored killed or survived depending on whether the
+    # sweep's stdin was open. Now it lands on the refusal (exit 1), which the sweep scores as killed.
     if "--selftest" in sys.argv[1:]:
         sys.exit(selftest())
+    if len(sys.argv) > 1:
+        sys.stderr.write(f"t2-evidence-fill: unexpected arguments {sys.argv[1:]}\n")
+        sys.exit(1)
     print(json.dumps(main_io(sys.stdin.read())))

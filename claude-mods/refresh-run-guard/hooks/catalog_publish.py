@@ -38,6 +38,7 @@ import importlib
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -133,7 +134,13 @@ def default_roots() -> list[str]:
             out.append(r)
             parent = os.path.dirname(r)
             r = parent if parent != r else ""
-    for r in ("/home/claude/bbm-infrastructure", os.path.expanduser("~/bbm-infrastructure")):
+    extra = ["/home/claude/bbm-infrastructure", os.path.expanduser("~/bbm-infrastructure")]
+    # LCH-847: a CI job checks the repo out UNDER $GITHUB_WORKSPACE (the mutation shard uses caller/) and runs a
+    # scratch copy elsewhere, so none of the paths above is the clone; the workspace and its children are.
+    ws = os.environ.get("GITHUB_WORKSPACE", "")
+    if os.path.isdir(ws):                  # isdir("") is False: unset means no CI roots
+        extra += [ws] + sorted(os.path.join(ws, c) for c in os.listdir(ws) if os.path.isdir(os.path.join(ws, c)))
+    for r in extra:
         if r not in out:
             out.append(r)
     return out
@@ -286,6 +293,19 @@ def _selftest() -> int:  # noqa: C901 — a flat list of small assertions
 
     pr, why = find_readiness(roots)
     ck(pr is not None, f"product_readiness imports from the repo ({why})")
+    with tempfile.TemporaryDirectory() as ws:  # LCH-847: a CI checkout under $GITHUB_WORKSPACE (the shard's caller/)
+        os.mkdir(os.path.join(ws, "caller"))
+        old_ws = os.environ.get("GITHUB_WORKSPACE")
+        os.environ["GITHUB_WORKSPACE"] = ws
+        try:
+            got = default_roots()
+        finally:
+            if old_ws is None:
+                os.environ.pop("GITHUB_WORKSPACE", None)
+            else:
+                os.environ["GITHUB_WORKSPACE"] = old_ws
+        ck(ws in got and os.path.join(ws, "caller") in got, f"a CI workspace and its checkout are roots ({got})")
+        ck(os.path.join(ws, "caller") not in default_roots(), "a workspace no longer named is not a root")
     if pr is not None:
         # product-status must be a real Option id; take one from the module itself.
         status = sorted(pr.PRODUCT_STATUS_OPTION_IDS)[0]
