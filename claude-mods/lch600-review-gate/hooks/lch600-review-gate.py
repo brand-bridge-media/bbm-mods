@@ -233,7 +233,45 @@ def _append_passes(cfg: dict, c: dict) -> bool:
         return not c.get("removed") and selftest_block(c.get("hunks") or [])
     if rule == "json_grow":
         return json_grow(c.get("base_text"), c.get("head_text"), cfg)
+    if rule == "dispatch_only":
+        return dispatch_edit(c.get("base_text"), c.get("head_text"))
     return False
+
+
+def runs_on(lines: list[str]) -> list[str]:
+    """Every `runs-on:` value in a workflow, in order; a block value (list or map on the next lines) is kept as text."""
+    out = []
+    for i, ln in enumerate(lines):
+        m = re.match(r"^(\s*)runs-on\s*:\s*(.*?)\s*(?:#.*)?$", ln)
+        if not m:
+            continue
+        val, ind = m.group(2), len(m.group(1))
+        if not val:
+            block = []
+            for nxt in lines[i + 1:]:
+                if nxt.strip() == "" or nxt.lstrip().startswith("#"):
+                    continue
+                if len(nxt) - len(nxt.lstrip()) <= ind:
+                    break
+                block.append(nxt.strip())
+            val = "\n".join(block)
+        out.append(val)
+    return sorted(out)
+
+
+def dispatch_edit(base_text, head_text) -> bool:
+    """An edit to a dispatch-only workflow that keeps it dispatch-only and keeps its runners (LC-2207 replay
+    2026-11-24: 20 of 71 would-denies were a feature's own test-*/run-* job edited in place). New triggers or a
+    changed `runs-on` (runner capacity) stay gated; production-write risk is T2 and independent review, not this gate.
+    A side that cannot be read (connector path) is never an edit we can judge, so it stays gated."""
+    if not base_text or not head_text:
+        return False
+    base, head = base_text.splitlines(), head_text.splitlines()
+    tb, th = workflow_triggers(base), workflow_triggers(head)
+    rb = runs_on(base)
+    # No runs-on line on either side proves nothing about runners (a reusable-workflow call, or no jobs at all), so it
+    # fails closed rather than counting "none == none" as unchanged (independent review on PR #4626).
+    return bool(tb) and bool(th) and tb <= DISPATCH_TRIGGERS and th <= DISPATCH_TRIGGERS and bool(rb) and rb == runs_on(head)
 
 
 def _new_passes(cfg: dict, c: dict) -> bool:
@@ -267,7 +305,7 @@ def needs_content(path: str, status: str, r: dict) -> tuple[bool, bool]:
     if not _match(path, r["gate"]):
         return False, False
     cfg = _rule_for(path, r["new_ok"]) if status == "A" else _rule_for(path, r["append_ok"]) if status == "M" else None
-    return bool(cfg), bool(cfg and cfg["rule"] == "json_grow")
+    return bool(cfg), bool(cfg and (cfg["rule"] == "json_grow" or (status == "M" and cfg["rule"] == "dispatch_only")))
 
 
 def payload_rules(payload: dict, rules: dict) -> dict:
@@ -756,6 +794,39 @@ def _selftest() -> int:
           {"workflow_dispatch"})
     check("triggers: empty on block", workflow_triggers(["on:", "jobs:"]), None)
     check("edited run-*.yml gated", gated_changes([ch(".github/workflows/run-foo.yml")], infra), [".github/workflows/run-foo.yml"])
+    # LC-2207 (board request 238): an in-place edit of a dispatch-only test-*/run-* job passes when it stays
+    # dispatch-only and keeps its runners; anything else, or a side we cannot read, stays gated.
+    WF = "\n".join(DISPATCH)
+    WF2 = WF.replace("      a: {}", "      a: {}\n      b: {}")
+
+    def edit(path, base, head):
+        return [ch(path, removed=["x"], added=["y"], base=base, head=head)]
+    check("edit: test-*.yml stays dispatch-only, same runner, passes",
+          gated_changes(edit(".github/workflows/test-foo.yml", WF, WF2), infra), [])
+    check("edit: run-*.yml stays dispatch + call, passes", gated_changes(edit(".github/workflows/run-foo.yml",
+          WF, WF.replace("  workflow_dispatch:", "  workflow_dispatch:\n  workflow_call:")), infra), [])
+    check("edit: adds pull_request, gated", gated_changes(edit(".github/workflows/test-foo.yml",
+          WF, WF.replace("on:", "on:\n  pull_request:")), infra), [".github/workflows/test-foo.yml"])
+    check("edit: adds schedule, gated", gated_changes(edit(".github/workflows/run-foo.yml",
+          WF, WF.replace("on:", "on:\n  schedule:\n    - cron: '0 * * * *'")), infra), [".github/workflows/run-foo.yml"])
+    check("edit: base was not dispatch-only, gated", gated_changes(edit(".github/workflows/run-foo.yml",
+          WF.replace("on:", "on:\n  push:"), WF), infra), [".github/workflows/run-foo.yml"])
+    check("edit: runs-on changed, gated", gated_changes(edit(".github/workflows/test-foo.yml",
+          WF, WF.replace("runs-on: x", "runs-on: ubuntu-latest")), infra), [".github/workflows/test-foo.yml"])
+    check("edit: no base text (connector), gated", gated_changes(edit(".github/workflows/test-foo.yml", None, WF), infra),
+          [".github/workflows/test-foo.yml"])
+    check("edit: unreadable on block, gated", gated_changes(edit(".github/workflows/test-foo.yml",
+          "jobs:\n  j:\n    runs-on: x", "jobs:\n  j:\n    runs-on: x"), infra), [".github/workflows/test-foo.yml"])
+    check("runs-on: block list kept as text", runs_on(["  j:", "    runs-on:", "      - self-hosted", "      - bbm-ci", "    steps:"]),
+          ["- self-hosted\n- bbm-ci"])
+    check("runs-on: blank and comment lines inside a block are skipped",
+          runs_on(["    runs-on:", "", "      # pool", "      - a", "    steps:"]), ["- a"])
+    check("runs-on: block list change differs", runs_on(["    runs-on:", "      - a"]) == runs_on(["    runs-on:", "      - b"]), False)
+    check("content: text for an edited dispatch-only workflow", needs_content(".github/workflows/test-foo.yml", "M", infra), (True, True))
+    check("content: no text for a new dispatch-only workflow", needs_content(".github/workflows/test-foo.yml", "A", infra), (True, False))
+    check("dispatch edit: empty head refused", dispatch_edit(WF, ""), False)
+    check("dispatch edit: no runs-on on either side, gated", dispatch_edit("on:\n  workflow_dispatch:\n",
+          "on:\n  workflow_dispatch:\njobs:\n  x:\n    steps:\n      - run: echo hi\n"), False)
     check("new deploy workflow gated", gated_changes([ch(".github/workflows/deploy-x.yml", "A")], infra),
           [".github/workflows/deploy-x.yml"])
     block = ["# LC-1 new selftest", "run_one lc1_thing \\", "    python3 x.py --selftest \\", "    --quiet", ""]

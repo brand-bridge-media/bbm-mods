@@ -1,8 +1,8 @@
 {
-  "_why": "Files whose change alters how code is tested, merged or deployed (LC-2207). A PR that changes one needs an LCH-600 review first. Globs are fnmatch: * also matches /. Edit this file, not the hook. `gate`: a change here needs review. `new_ok`: a brand-new file here passes when its rule holds (dispatch_only: the workflow's `on:` has only workflow_dispatch / workflow_call). `append_ok`: a changed file here passes when its rule holds (lines: only added lines; selftest_block: only comments, blanks and `run_one <name> \\` blocks; json_grow: each `grow` list (dotted path) only gained entries and every other key is unchanged, so tier0, max_files and the rest stay frozen). `derived`: a generated file passes when its generator is unchanged (its inputs are judged on their own, and `quick` refuses a hand edit). Rules shaped by LCH-600 review on LC-2207.",
-  "_mode": "shadow = warn and toast `SHADOW would-deny`, never block. enforce = deny. Shadow ends on shadow_until: the selftest fails after that date while mode is still shadow, so the decision cannot be forgotten. LC-2265 moved the review onto the request board and the end date with it, so blocking is judged on a week of board-based reviews (set shadow_until to the merge date + 7 days when this merges). Enforce bar: in that week's replay (python3 lch600-review-gate.py --replay --since <merge date>), at most 1 would-deny that a reviewer judges a false alarm.",
+  "_why": "Files whose change alters how code is tested, merged or deployed (LC-2207). A PR that changes one needs an LCH-600 review first. Globs are fnmatch: * also matches /. Edit this file, not the hook. `gate`: a change here needs review. `new_ok`: a brand-new file here passes when its rule holds (dispatch_only: the workflow's `on:` has only workflow_dispatch / workflow_call). `append_ok`: a changed file here passes when its rule holds (dispatch_only: an edited test-*/run-* workflow whose `on:` is only workflow_dispatch / workflow_call before and after, with the same `runs-on` values (runner capacity), LC-2207 request 238; lines: only added lines; selftest_block: only comments, blanks and `run_one <name> \\` blocks; json_grow: each `grow` list (dotted path) only gained entries and every other key is unchanged, so tier0, max_files and the rest stay frozen). `derived`: a generated file passes when its generator is unchanged (its inputs are judged on their own, and `quick` refuses a hand edit). Rules shaped by LCH-600 review on LC-2207.",
+  "_mode": "shadow = warn and toast `SHADOW would-deny`, never block. enforce = deny. Shadow ends on shadow_until: the selftest fails after that date while mode is still shadow, so the decision cannot be forgotten. LC-2265 moved the review onto the request board and the end date with it, so blocking is judged on a week of board-based reviews (set to the merge date + 7 days when it merged). The 2026-11-24 replay found 20 of 71 would-denies were in-place edits of a feature's own dispatch-only test-*/run-* job, so LC-2207 (board request 238) added the dispatch_only append rule and moved shadow_until to 2026-12-04. Enforce bar: in that week's replay (python3 lch600-review-gate.py --replay --since <merge date>), at most 1 would-deny that a reviewer judges a false alarm.",
   "mode": "shadow",
-  "shadow_until": "2026-11-27",
+  "shadow_until": "2026-12-04",
   "_plan": "LCH-744 (operator decision 2026-11-19: no build without the building permit, enforced from day one, no shadow week): plan-stage half, hooks/plan_stage.py. An edit of a file this list would review (minus new_ok, append_ok and derived paths) is denied until the ci-speed desk has approved the session's PLAN (board verdict accepted or ship_after_fixes, or a stated Skipping LCH-600 review comment; LC-2265 removed the Jira request/feedback path). enforce = deny; shadow = kill switch short of disabling the mod (one note per session, selftest fails after shadow_until).",
   "plan": {"mode": "enforce", "shadow_until": "2026-11-26"},
   "repos": {
@@ -39,6 +39,12 @@
         }
       },
       "append_ok": {
+        ".github/workflows/test-*.yml": {
+          "rule": "dispatch_only"
+        },
+        ".github/workflows/run-*.yml": {
+          "rule": "dispatch_only"
+        },
         "scripts/run_selftests.sh": {
           "rule": "selftest_block"
         },
