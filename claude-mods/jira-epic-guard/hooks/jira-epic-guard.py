@@ -33,7 +33,9 @@ PROJECT = "LC"
 # brand-bridge-media/bbm-health-issues and Jira project LCH is being locked. THE ONE CONFIG VALUE:
 # the first day (YYYY-MM-DD, UTC) on which createJiraIssue in LCH is denied. Empty = guard inactive.
 # Set it in a one-line PR when the operator names the lock date; an unparseable value also means inactive.
-LCH_LOCK_DATE = ""
+# Operator decision (2026-11-24): LCH locks Wed 2026-11-25 at 22:00Z. The guard works in whole UTC days, so the first
+# full locked day is 2026-11-26 (00:00Z, two hours after the lock); until then Jira's own lock is what stops a create.
+LCH_LOCK_DATE = "2026-11-26"
 LCH_PROJECT = "LCH"
 EXEMPT_TYPES = {"epic", "sub-task", "subtask"}
 EPICS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "epics.json")
@@ -372,9 +374,12 @@ def _selftest() -> int:
         ck(p.returncode == 0 and p.stdout == "", "main(): an unrelated tool needs no data file")
 
     # LCH-794: the LCH lock. Bad case: a create in LCH on/after the lock date is denied. Valid cases: before the date, no date,
-    # junk date, another project, and a non-create call pass. The shipped value is unset, so the guard ships inactive.
+    # junk date, another project, and a non-create call pass. The shipped value is the operator's lock day (2026-11-26).
     D = datetime.date
-    ck(LCH_LOCK_DATE == "", "LCH-794: the shipped lock date is unset (guard inactive)")
+    ck(LCH_LOCK_DATE == "2026-11-26", "LCH-794: the shipped lock date is the operator's lock day")
+    ck(evaluate(CJ, {**base, "projectKey": "LCH"}, epics, None, D(2026, 11, 25)) is None
+       and evaluate(CJ, {**base, "projectKey": "LCH"}, epics, None, D(2026, 11, 26)) is not None,
+       "LCH-794: with the shipped value an LCH create passes on 11-25 and is denied from 11-26")
     lch = {**base, "projectKey": "LCH"}
 
     def dl(tool, inp, lock, today):
@@ -393,7 +398,7 @@ def _selftest() -> int:
     ck(dl(CJ, lch, "2026-12-01", D(2026, 11, 30)) is None, "LCH-794: the day before the lock date passes")
     for unset in ("", "   ", "soon", "2026-13-45", "01/12/2026"):
         ck(dl(CJ, lch, unset, D(2030, 1, 1)) is None, f"LCH-794: lock date {unset!r} (unset or unreadable) leaves the guard inactive")
-    ck(dl(CJ, lch, None, D(2030, 1, 1)) is None, "LCH-794: with the shipped (unset) value an LCH create passes")
+    ck(dl(CJ, lch, None, D(2030, 1, 1)) == lm, "LCH-794: with the shipped value an LCH create in 2030 is denied")
     for proj in ("LC", "LCC", "BBM"):
         ck(dl(CJ, {**base, "projectKey": proj, "parent": "LC-1074"}, "2026-12-01", D(2026, 12, 2)) is None, f"LCH-794: project {proj} is untouched by the lock")
     ck(dl(CJ, base, "2026-12-01", D(2026, 12, 2)) == msg and dl(CJ, base, "2026-12-01", D(2026, 12, 2)) is not None, "LCH-794: an LC create with no parent still gets the epic deny")
@@ -410,8 +415,10 @@ def _selftest() -> int:
         p = run(json.dumps({"tool_name": CJ, "tool_input": lch}), locked)
         h = json.loads(p.stdout)["hookSpecificOutput"] if p.stdout else {}
         ck(p.returncode == 0 and h.get("permissionDecision") == "deny" and "bbm-health-issues" in h.get("permissionDecisionReason", ""), "LCH-794: main() with a past lock date emits the deny")
-        p = run(json.dumps({"tool_name": CJ, "tool_input": lch}))
-        ck(p.returncode == 0 and p.stdout == "", "LCH-794: main() with the shipped unset date is silent")
+        with open(script, encoding="utf-8") as src, open(locked, "w", encoding="utf-8") as dst:
+            dst.write(re.sub(r"^LCH_LOCK_DATE = .*$", 'LCH_LOCK_DATE = ""', src.read(), count=1, flags=re.M))
+        p = run(json.dumps({"tool_name": CJ, "tool_input": lch}), locked)
+        ck(p.returncode == 0 and p.stdout == "", "LCH-794: main() with an unset lock date is silent (kill switch)")
 
     print(f"jira-epic-guard selftest: {checks - fails}/{checks} checks passed")
     return 1 if fails else 0
