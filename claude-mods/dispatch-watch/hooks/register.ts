@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { Watch } from '../types'
-import { decide, parseDispatch, watchKey, parseReply, parseReqId, POLL_MS, replySql, REPLY_STALE_MS, stampWake, statusSql, restorable } from './logic'
+import { decide, giveUp, parseDispatch, watchKey, parseReply, parseReqId, POLL_MS, replySql, REPLY_STALE_MS, stampWake, statusSql, restorable } from './logic'
 import type { Wake } from './logic'
 
 // Why (LCH-528): a dispatched workflow is watched by the mod, not by a check-in the session
@@ -92,9 +92,16 @@ async function tick($: any) {
     const now = await $.clock.now()
     for (const w of await read($, watches)) {
       if (w.reqId === undefined || now - (w.reqAt ?? 0) > REPLY_STALE_MS) {
+        const stop = giveUp(w, now)
+        if (stop) {
+          wake($, stop, now)
+          await update($, finished, l => [...l.filter(k => k !== watchKey(w.workflow)), watchKey(w.workflow)].slice(-50))
+          await update($, watches, l => l.filter(x => x.startedAt !== w.startedAt))
+          continue
+        }
         const id = parseReqId((await sql($, w, statusSql(w))) ?? '')
         await update($, watches, l => l.map(x => (x === w || x.startedAt === w.startedAt
-          ? { ...x, reqId: id ?? undefined, reqAt: now } : x)))
+          ? { ...x, reqId: id ?? undefined, reqAt: now, sendFails: id === null ? (x.sendFails ?? 0) + 1 : 0 } : x)))
         continue
       }
       const d = decide(w, parseReply((await sql($, w, replySql(w.reqId))) ?? ''), now)

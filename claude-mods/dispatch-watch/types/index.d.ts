@@ -11,6 +11,8 @@ export type Watch = {
   reqId?: number
   reqAt?: number
   warnedLong?: boolean
+  /** Status requests in a row whose request id could not be read (LCH-543). */
+  sendFails?: number
 }
 
 declare module 'claude-code' {

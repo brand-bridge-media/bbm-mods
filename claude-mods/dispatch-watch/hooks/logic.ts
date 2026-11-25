@@ -19,6 +19,26 @@ const FN_URL = 'https://tlcbwwgfqnasmiipgmmd.supabase.co/functions/v1/github-dis
 // A status poll that hit 5 s paged as cron_http_timeout (incident 6b1a672a, 2026-11-18).
 export const STATUS_TIMEOUT_MS = 30_000
 
+// LCH-543: an old copy of this mod could not read its own request ids, so it re-sent every watch's status request
+// every minute for days (about 27 watches, 1,600 requests an hour) and never read a reply. A watch now ends itself
+// after this many unreadable sends in a row, or at this age, whatever the replies say.
+export const MAX_SEND_FAILS = 3
+export const MAX_WATCH_MS = 6 * 60 * 60_000
+
+/** Why a watch must stop before sending again, or null to carry on. */
+export function giveUp(w: Pick<Watch, 'workflow' | 'startedAt' | 'sendFails'>, now: number): string | null {
+  const tag = `[mod:dispatch-watch] ${w.workflow}`
+  if ((w.sendFails ?? 0) >= MAX_SEND_FAILS) {
+    return `${tag}: ${MAX_SEND_FAILS} status requests in a row returned no request id, so I stopped watching. ` +
+      'Check the run another way.'
+  }
+  if (now - w.startedAt >= MAX_WATCH_MS) {
+    return `${tag}: watched for ${Math.round(MAX_WATCH_MS / 3_600_000)} h with no end state, so I stopped watching. ` +
+      'Check the run another way.'
+  }
+  return null
+}
+
 /** The workflow a bridge DISPATCH names, or null (a status request is not a dispatch). */
 export function parseDispatch(query: string): string | null {
   // The real bridge only: its function URL, not any http_post that mentions the name.
