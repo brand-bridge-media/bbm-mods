@@ -15,6 +15,15 @@ test('reads and reversible cleanup do not ask', () => {
     'mcp__Supabase__execute_sql', 'mcp__Stripeish__x', 'Bash', '']) expect(askFor(t)).toBeUndefined()
 })
 
+test('Roominate never asks here: roominate-order-guard owns its spend (LC-2370)', () => {
+  // An ask would stall the unattended order task, the only caller the order guard lets through.
+  for (const t of ['create_from_product', 'create_scene', 'add_product_to_room', 'edit_image', 'make_video',
+    'publish_to_store']) {
+    expect(askFor(`mcp__Roominate__${t}`)).toBeUndefined()
+    expect(MONEY_TOOLS.some(m => /roominate/i.test(m))).toBe(false)
+  }
+})
+
 test('an asking tool is toasted for the operator; a plain one passes untouched', async ($: any, on: any) => {
   const toasts: string[] = []
   const reached: string[] = []

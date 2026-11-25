@@ -2,6 +2,13 @@
 // Kept as a list, not a pattern: a broad `*__delete_*` would also ask before routine,
 // reversible cleanup (a session deleting its own scheduled check-in) and stall unattended
 // sessions. A tool named here asks; anything else is untouched.
+//
+// Roominate is deliberately NOT here (LC-2370, 2026-11-25). Its spend is governed by
+// roominate-order-guard: every Roominate writer is refused except create_from_product inside a claimed
+// `pick_images` order, capped at the operator's token ceiling written into that order (the operator's
+// yes, given once per order). An ask on top of that has nobody to answer it: the only legitimate caller
+// is the unattended "Roominate image orders" task, which sat waiting on this prompt forever (orders
+// 07c87210 and 2c796fcc, 2026-11-25). Two mods judging one tool also breaks one-job-per-mod.
 
 /** Every tool on these MCP servers moves money. */
 export const MONEY_SERVERS = ['mcp__Stripe__']
@@ -15,12 +22,6 @@ export const MONEY_TOOLS: readonly string[] = [
   'mcp__PayPal__create_payment_link',
   'mcp__Insert_Link__add_guest_post_to_cart',
   'mcp__Insert_Link__add_link_insertion_to_cart',
-  'mcp__Roominate__create_scene',
-  'mcp__Roominate__create_from_product',
-  'mcp__Roominate__add_product_to_room',
-  'mcp__Roominate__edit_image',
-  'mcp__Roominate__make_video',
-  'mcp__Roominate__publish_to_store',
   'mcp__plugin_small-business_intuit-quickbooks__qbo_sales_create_invoice',
   'mcp__plugin_small-business_intuit-quickbooks__qbo_sales_send_invoice',
   'mcp__plugin_small-business_intuit-quickbooks__qbo_sales_create_recurring_invoice',
