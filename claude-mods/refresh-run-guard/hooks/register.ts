@@ -463,7 +463,7 @@ type Verdict = { deny?: string; ask?: string }
 // whatever an earlier Webflow read in this session returned. Known loss is a deny. An unknown baseline is an
 // ASK, not a deny: a permanent block gets the guard switched off, and the converter's own guard still
 // refuses a real loss at --apply time.
-function payloadVerdict(input: unknown, baseline: Record<string, number>): Verdict {
+function payloadVerdict(input: unknown, baseline: Record<string, number>, dead: Record<string, CatalogCtx> = {}, now = 0): Verdict {
   const deny: string[] = []
   const ask: string[] = []
   for (const action of actionsOf(input)) {
@@ -471,7 +471,16 @@ function payloadVerdict(input: unknown, baseline: Record<string, number>): Verdi
       const onProducts = w.collection === PRODUCTS_COLLECTION
       if (onProducts && 'product-link' in w.fd) {
         const v = w.fd['product-link']
-        if (typeof v !== 'string' || !GO_LINK.test(v)) {
+        if (v === null || v === '') {
+          // LCH-370: a cleared link is allowed only on an UPDATE of an item this session proved dead.
+          if (!(w.kind === 'update' && w.id && deadLinkProven(dead[w.id], now))) {
+            deny.push(
+              `Products \`product-link\` may be cleared (null) only on an update of a dead product (LCH-370): no redirect_slug, ` +
+                'no affiliate_url, brand partnership_status inactive and not affiliated, proven by this exact read in the last 60 minutes: ' +
+                `${deadLinkSql([w.id || '<webflow_id>'])}. Otherwise skip and flag the card.`,
+            )
+          }
+        } else if (typeof v !== 'string' || !GO_LINK.test(v)) {
           deny.push(
             `Products \`product-link\` must be a https://go.livingcozy.com/<redirect_slug> URL (LCH-220); got ${JSON.stringify(v)}. ` +
               'Never a raw brand, canonical or affiliate URL; no valid slug means skip and flag the card, not a fallback.',
@@ -516,6 +525,12 @@ function payloadVerdict(input: unknown, baseline: Record<string, number>): Verdi
   return { deny: deny.length ? deny.join(' | ') : undefined, ask: ask.length ? ask.join(' | ') : undefined }
 }
 
+// True when a Products write in this payload clears product-link: only then is the dead-link proof (and the clock) read.
+function clearsLink(input: unknown): boolean {
+  return actionsOf(input).some(a => writes(a).some(w =>
+    w.collection === PRODUCTS_COLLECTION && 'product-link' in w.fd && (w.fd['product-link'] === null || w.fd['product-link'] === '')))
+}
+
 // ---------- rule 5: Catalog & Prices may publish Products and Brands (LC-2297) ----
 //
 // Why: operator decision (2026-11-19, repeated 2026-11-20) that Catalog & Prices (LC-429) publishes the
@@ -536,6 +551,8 @@ const MAX_CATALOG_ITEMS = 100
 const MAX_RECORDS = 1000
 const catalogSeen = atom({ plugin: 'refresh-run-guard', key: 'catalogSeen' } as const, {} as Record<string, CatalogSeen>)
 const catalogCtx = atom({ plugin: 'refresh-run-guard', key: 'catalogCtx' } as const, {} as Record<string, CatalogCtx>)
+// LCH-370: Webflow item id -> its canonical dead-link read row (DEAD_LINK_SQL_HEAD below).
+const deadLinks = atom({ plugin: 'refresh-run-guard', key: 'deadLinks' } as const, {} as Record<string, CatalogCtx>)
 
 // The ONE Supabase read the check trusts for a Products item's context. Matched exactly (whitespace and case
 // aside) with only the id list varying, so a hand-made `select 'x' as price_verified_at` is not evidence.
@@ -563,6 +580,44 @@ export function contextSqlIds(query: unknown): string[] | null {
   return rest.slice(0, -1).split(',').map(s => s.slice(1, -1))
 }
 
+// ---------- LCH-370: a dead product's link may be cleared ---------------
+//
+// Why: a product whose page is gone, with no redirect_slug, no affiliate_url and a brand that is inactive and not
+// affiliated, has NO valid go link, so the rule-4 "go link or nothing" deny left its card stuck with a link to a
+// dead page. Operator decision (2026-11-25, LCH-370, Tile Mat): clear the link and publish the card. The allowance
+// is the narrowest that fits: only `product-link: null` (or ""), only on an update of an item id, and only when
+// this session ran the exact read below within 60 minutes and its row shows all four facts. Raw brand, canonical
+// and affiliate URLs are refused exactly as before. Review by 2027-02-25: if no session has used it, retire it.
+export const DEAD_LINK_SQL_HEAD =
+  'select p.webflow_id, p.redirect_slug, p.affiliate_url, b.partnership_status, b.is_affiliated ' +
+  'from products p join brands b on b.id = p.brand_id where p.webflow_id in ('
+const DEAD_HEAD_NORM = norm(DEAD_LINK_SQL_HEAD)
+const DEAD_MAX_AGE_MS = 60 * 60 * 1000
+
+export function deadLinkSql(ids: string[]): string {
+  return `${DEAD_LINK_SQL_HEAD}${ids.map(i => `'${i}'`).join(', ')})`
+}
+
+/** The Webflow ids a canonical dead-link read asked for, or null when the query is anything else. */
+export function deadLinkSqlIds(query: unknown): string[] | null {
+  if (typeof query !== 'string' || query.length > 20_000) return null
+  const q = norm(query).replace(/;$/, '')
+  if (!q.startsWith(DEAD_HEAD_NORM)) return null
+  const rest = q.slice(DEAD_HEAD_NORM.length)
+  if (!ID_LIST.test(rest)) return null
+  return rest.slice(0, -1).split(',').map(s => s.slice(1, -1))
+}
+
+const blankish = (v: unknown): boolean => v === null || (typeof v === 'string' && v.trim() === '')
+
+/** True only when a recorded dead-link row is under 60 minutes old and shows every dead fact. */
+export function deadLinkProven(rec: CatalogCtx | undefined, now: number): boolean {
+  if (!rec || typeof rec.readAt !== 'number' || now - rec.readAt > DEAD_MAX_AGE_MS || rec.readAt - now > DEAD_MAX_AGE_MS) return false
+  const r = rec.row ?? {}
+  return 'redirect_slug' in r && blankish(r.redirect_slug) && 'affiliate_url' in r && blankish(r.affiliate_url) &&
+    r.partnership_status === 'inactive' && r.is_affiliated === false
+}
+
 /** Row objects in an execute_sql result: the JSON array, also when it sits inside a `result` string. */
 function sqlRows(text: string, depth = 0): Json[] {
   const out: Json[] = []
@@ -572,6 +627,20 @@ function sqlRows(text: string, depth = 0): Json[] {
     else if (v && typeof v === 'object' && typeof (v as Json).result === 'string') out.push(...sqlRows((v as Json).result, depth + 1))
   }
   return out
+}
+
+/** One row per asked-for id from an execute_sql result; an id with two rows is dropped (neither is evidence). */
+function rowsById(text: string, ids: string[], at: number): Record<string, CatalogCtx> {
+  const got: Record<string, CatalogCtx> = {}
+  const dup = new Set<string>()
+  for (const row of sqlRows(text)) {
+    const id = row.webflow_id
+    if (typeof id !== 'string' || !ids.includes(id)) continue
+    if (id in got) dup.add(id)
+    got[id] = { row, readAt: at }
+  }
+  for (const id of dup) delete got[id]
+  return got
 }
 
 export type CatalogItem = { collection: string; id: string }
@@ -819,7 +888,7 @@ function judged(e: any, field: 'query' | 'command', check: (v: unknown) => strin
 async function catalogCheck($: any, items: CatalogItem[]): Promise<{ allow: boolean; receipts: Receipt[] } | null> {
   try {
     const now = await $.clock.now()
-    const payload = { now_ms: now, items, seen: await read($, catalogSeen), ctx: await read($, catalogCtx) }
+    const payload = { now_ms: now, items, seen: await read($, catalogSeen), ctx: await read($, catalogCtx), dead: await read($, deadLinks) }
     const r = await $.process.run(['python3', '-I', `${$.plugin.root}/hooks/catalog_publish.py`], { stdin: JSON.stringify(payload), timeoutMs: 20_000 })
     return parseCatalogVerdict(r, items)
   } catch {
@@ -835,21 +904,20 @@ export const register: Register = on => {
     const ran: any = await next(e)
     // Rule 5 bookkeeping: a canonical catalog-context read records its rows. A failure here only loses
     // evidence (the publish then reads NOT CHECKED), so it never touches the result.
+    // LCH-370: the canonical dead-link read is recorded the same way, into its own map.
     try {
       const copies = [e?.query, e?.input?.query].filter(q => q !== undefined)
-      const ids = copies.length === 1 ? contextSqlIds(copies[0]) : null
-      if (ids && ran.deny === undefined && ran.isError !== true) {
-        const at = await $.clock.now()
-        const got: Record<string, CatalogCtx> = {}
-        const dup = new Set<string>()
-        for (const row of sqlRows(typeof ran.text === 'string' ? ran.text : '')) {
-          const id = row.webflow_id
-          if (typeof id !== 'string' || !ids.includes(id)) continue
-          if (id in got) dup.add(id) // two rows for one id: neither is evidence
-          got[id] = { row, readAt: at }
-        }
-        for (const id of dup) delete got[id]
+      const ok = copies.length === 1 && ran.deny === undefined && ran.isError !== true
+      const text = typeof ran.text === 'string' ? ran.text : ''
+      const ctxIds = ok ? contextSqlIds(copies[0]) : null
+      if (ctxIds) {
+        const got = rowsById(text, ctxIds, await $.clock.now())
         if (Object.keys(got).length) await update($, catalogCtx, m => cap({ ...m, ...got }))
+      }
+      const deadIds = ok ? deadLinkSqlIds(copies[0]) : null
+      if (deadIds) {
+        const got = rowsById(text, deadIds, await $.clock.now())
+        if (Object.keys(got).length) await update($, deadLinks, m => cap({ ...m, ...got }))
       }
     } catch { /* evidence lost, result intact */ }
     return ran
@@ -957,7 +1025,9 @@ export const register: Register = on => {
         ),
       }
     }
-    const verdict = payloadVerdict(e, await read($, pills))
+    const verdict = clearsLink(e)
+      ? payloadVerdict(e, await read($, pills), await read($, deadLinks), await $.clock.now())
+      : payloadVerdict(e, await read($, pills))
     if (verdict.deny) return { deny: say($, verdict.deny) }
 
     const ran: any = await next(e)
@@ -1028,7 +1098,9 @@ export const register: Register = on => {
         ),
       }
     }
-    const verdict = payloadVerdict(e.input, await read($, pills))
+    const verdict = clearsLink(e.input)
+      ? payloadVerdict(e.input, await read($, pills), await read($, deadLinks), await $.clock.now())
+      : payloadVerdict(e.input, await read($, pills))
     if (verdict.deny) return { decision: 'deny', reason: say($, verdict.deny) }
     if (verdict.ask) return { decision: 'ask', reason: say($, verdict.ask) }
     return next(e)

@@ -34,6 +34,8 @@ declare module 'claude-code' {
       catalogSeen: Record<string, CatalogSeen>
       /** Webflow item id -> its canonical Supabase context row */
       catalogCtx: Record<string, CatalogCtx>
+      /** Webflow item id -> its canonical dead-link read row (LCH-370) */
+      deadLinks: Record<string, CatalogCtx>
     }
   }
 }

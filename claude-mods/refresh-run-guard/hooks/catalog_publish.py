@@ -176,7 +176,22 @@ def brand_gaps(fd: dict, dr=None) -> list[str]:
     return gaps
 
 
-def product_verdict(pr, fd: dict, row: Optional[dict], now_ms: float) -> tuple[str, str]:
+def dead_link_proven(rec: Any, now_ms: float) -> bool:
+    """LCH-370: the session's canonical dead-link read (DEAD_LINK_SQL_HEAD in register.ts) shows, within
+    60 minutes, no redirect_slug, no affiliate_url, a brand partnership_status of inactive and
+    is_affiliated false. Judged here from the raw row, not from any flag register.ts computed."""
+    if not isinstance(rec, dict) or not isinstance(rec.get("row"), dict):
+        return False
+    at = rec.get("readAt")
+    if not isinstance(at, (int, float)) or abs(now_ms - at) > READ_MAX_AGE_MS:
+        return False
+    r = rec["row"]
+    return ("redirect_slug" in r and _blank(r.get("redirect_slug")) and "affiliate_url" in r
+            and _blank(r.get("affiliate_url")) and r.get("partnership_status") == "inactive"
+            and r.get("is_affiliated") is False)
+
+
+def product_verdict(pr, fd: dict, row: Optional[dict], now_ms: float, dead: Any = None) -> tuple[str, str]:
     if not isinstance(row, dict):
         return NOT_CHECKED, ("no canonical Supabase context read for this item in this session "
                              "(run the context query the deny message gives)")
@@ -186,6 +201,15 @@ def product_verdict(pr, fd: dict, row: Optional[dict], now_ms: float) -> tuple[s
     card = {"card_sale_price": row.get("card_sale_price")} if row.get("card_row_found") is True else None
     ctx = pr.context_from_rows(product, line, card)
     gaps = pr.product_gaps(fd, ctx)
+    # LCH-370 (operator decision 2026-11-25): a proven-dead product goes out with its link cleared. Only the
+    # "product-link is empty" gap is dropped (a raw URL stays a gap), and the 24 h price rule is waived because
+    # a product that no longer exists cannot have its price re-verified. Every other gap still blocks.
+    if _blank(fd.get("product-link")) and dead_link_proven(dead, now_ms):
+        rest = [g for g in gaps if not (g.field == "product-link" and g.code == "missing")]
+        if rest:
+            return BLOCK, "product_readiness gaps: " + pr.describe(rest)
+        return PASS, ("dead product (LCH-370): link cleared, no redirect_slug or affiliate_url, brand inactive; "
+                      "product_readiness otherwise clean; price check waived")
     if gaps:
         return BLOCK, "product_readiness gaps: " + pr.describe(gaps)
     at = _parse_ts(row.get("price_verified_at"))
@@ -205,6 +229,7 @@ def decide(payload: dict, roots: Optional[list[str]] = None) -> dict:
     items = payload.get("items")
     seen = payload.get("seen") or {}
     ctx = payload.get("ctx") or {}
+    dead = payload.get("dead") or {}
     receipts: list[dict] = []
     if not isinstance(now_ms, (int, float)) or not isinstance(items, list) or not items:
         return {"allow": False, "receipts": [_receipt("", "*", NOT_CHECKED, "the check got no items or no clock")]}
@@ -258,7 +283,7 @@ def decide(payload: dict, roots: Optional[list[str]] = None) -> dict:
             receipts.append(_receipt(coll, iid, NOT_CHECKED, "the Supabase context read is over 60 minutes old; run it again"))
             continue
         try:
-            verdict, why = product_verdict(pr, fd, row, now_ms)
+            verdict, why = product_verdict(pr, fd, row, now_ms, dead.get(iid) if isinstance(dead, dict) else None)
         except Exception as e:  # noqa: BLE001 - a readiness crash becomes a NOT CHECKED receipt naming the error
             verdict, why = NOT_CHECKED, f"product_readiness raised {type(e).__name__}: {e}"
         receipts.append(_receipt(coll, iid, verdict, why))
@@ -317,8 +342,8 @@ def _selftest() -> int:  # noqa: C901 — a flat list of small assertions
         r.update(over)
         return r
 
-    def run(items, seen, ctx=None, roots_=roots, now=NOW):
-        return decide({"now_ms": now, "items": items, "seen": seen, "ctx": ctx or {}}, roots_)
+    def run(items, seen, ctx=None, roots_=roots, now=NOW, dead=None):
+        return decide({"now_ms": now, "items": items, "seen": seen, "ctx": ctx or {}, "dead": dead or {}}, roots_)
 
     def pfd(**over):
         fd = product_fd()
@@ -361,6 +386,33 @@ def _selftest() -> int:  # noqa: C901 — a flat list of small assertions
         ck(r["allow"] is False, "no card row = sale unknown = context gap, never a pass")
         r = run([P], seenP(pfd()), ctxP(prow(product_line_id="l1", line_id=None)))
         ck(r["allow"] is False, "a line that could not be read is unknown, never 'no family'")
+
+        # LCH-370: a proven-dead product passes with its link cleared; the price rule is waived for it only.
+        drow = lambda **o: {"webflow_id": "p1", "redirect_slug": None, "affiliate_url": None,  # noqa: E731 - fixture
+                            "partnership_status": "inactive", "is_affiliated": False, **o}
+        deadP = lambda row, at=NOW - 60_000: {"p1": {"row": row, "readAt": at}}  # noqa: E731 - fixture
+        stale_price = ctxP(prow(price_verified_at=None))
+        r = run([P], seenP(pfd(**{"product-link": None})), stale_price, dead=deadP(drow()))
+        ck(r["allow"] is True and "LCH-370" in r["receipts"][0]["reason"], f"a proven-dead product with a cleared link passes: {r}")
+        r = run([P], seenP(pfd(**{"product-link": ""})), stale_price, dead=deadP(drow()))
+        ck(r["allow"] is True, "an empty-string link counts as cleared")
+        r = run([P], seenP(pfd(**{"product-link": None})), stale_price)
+        ck(r["allow"] is False and "product-link" in r["receipts"][0]["reason"], "a cleared link with no dead-link read blocks")
+        for bad, msg in ((drow(redirect_slug="tile-mat"), "a redirect_slug"), (drow(affiliate_url="https://a.x/y"), "an affiliate_url"),
+                         (drow(partnership_status="active"), "an active brand"), (drow(is_affiliated=True), "an affiliated brand"),
+                         (drow(is_affiliated=None), "an unknown is_affiliated"), ({"webflow_id": "p1", "partnership_status": "inactive",
+                          "is_affiliated": False}, "a row missing the link columns")):
+            r = run([P], seenP(pfd(**{"product-link": None})), stale_price, dead=deadP(bad))
+            ck(r["allow"] is False, f"{msg} means not dead: blocks")
+        r = run([P], seenP(pfd(**{"product-link": None})), stale_price, dead=deadP(drow(), at=NOW - READ_MAX_AGE_MS - 1))
+        ck(r["allow"] is False, "a dead-link read over 60 minutes old blocks")
+        r = run([P], seenP(pfd(**{"product-link": "https://letterfolk.com/x"})), stale_price, dead=deadP(drow()))
+        ck(r["allow"] is False and "product-link" in r["receipts"][0]["reason"], "a raw URL on a dead product still blocks")
+        r = run([P], seenP(pfd(**{"product-link": None, "alt-text-for-feature-image": "Albany Sofa"})), stale_price, dead=deadP(drow()))
+        ck(r["allow"] is False and "alt-text" in r["receipts"][0]["reason"], "other gaps still block a dead product")
+        r = run([P], seenP(pfd()), ctxP(prow(price_verified_at=None)), dead=deadP(drow()))
+        ck(r["allow"] is False and "missing or unreadable" in r["receipts"][0]["reason"],
+           "a dead product that still carries a go link keeps the price rule")
 
         r = run([P], seenP(pfd()), {})
         ck(r["allow"] is False and r["receipts"][0]["verdict"] == NOT_CHECKED, "no context read is NOT CHECKED")
