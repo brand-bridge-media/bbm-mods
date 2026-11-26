@@ -198,7 +198,10 @@ def _selftest() -> int:
     EW = "mcp__Atlassian_MCP__executeWrite"
 
     def d(tool, inp):
-        r = evaluate(tool, inp, epics)
+        # The LC parent rules are checked with the LCH lock unset: from the lock day on, the shipped date would
+        # deny every LCH case below and turn these checks red by the calendar (2026-11-26). The lock has its own
+        # dated checks (dl, LCH-794).
+        r = evaluate(tool, inp, epics, lock="")
         return r[1] if r else None
 
     base = {"cloudId": "c", "projectKey": "LC", "issueTypeName": "Task", "summary": "s"}
