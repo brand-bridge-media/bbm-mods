@@ -206,6 +206,12 @@ def product_verdict(pr, fd: dict, row: Optional[dict], now_ms: float, dead: Any 
     # a product that no longer exists cannot have its price re-verified. Every other gap still blocks.
     if _blank(fd.get("product-link")) and dead_link_proven(dead, now_ms):
         rest = [g for g in gaps if not (g.field == "product-link" and g.code == "missing")]
+        # LCH-370 follow-up (board #325, 2026-11-26): a dead product has no v_product_card_price row and never
+        # will, so "is a sale claimed?" can never be read from Supabase. With no card row AND an empty
+        # sale-price on the item there is no sale claim anywhere, so that one context gap is dropped. A dead
+        # product whose item still shows a sale-price keeps the gap (nothing can back that number).
+        if row.get("card_row_found") is not True and _blank(fd.get("sale-price")):
+            rest = [g for g in rest if not (g.field == "sale-price" and g.code == "context")]
         if rest:
             return BLOCK, "product_readiness gaps: " + pr.describe(rest)
         return PASS, ("dead product (LCH-370): link cleared, no redirect_slug or affiliate_url, brand inactive; "
@@ -413,6 +419,31 @@ def _selftest() -> int:  # noqa: C901 — a flat list of small assertions
         r = run([P], seenP(pfd()), ctxP(prow(price_verified_at=None)), dead=deadP(drow()))
         ck(r["allow"] is False and "missing or unreadable" in r["receipts"][0]["reason"],
            "a dead product that still carries a go link keeps the price rule")
+
+        # Board #325: a dead product has no card row, so the sale question is unanswerable; with an empty
+        # sale-price there is no claim and it passes. Both sides, plus the live-product control.
+        no_card = ctxP(prow(price_verified_at=None, card_row_found=False))
+        for empty in (None, ""):
+            r = run([P], seenP(pfd(**{"product-link": None, "sale-price": empty})), no_card, dead=deadP(drow()))
+            ck(r["allow"] is True and "LCH-370" in r["receipts"][0]["reason"],
+               f"a dead product with no card row and sale-price={empty!r} passes (Tile Mat shape): {r}")
+        r = run([P], seenP(pfd(**{"product-link": None, "sale-price": "$99"})), no_card, dead=deadP(drow()))
+        ck(r["allow"] is False and "sale-price" in r["receipts"][0]["reason"],
+           "a dead product with no card row but a sale-price on the item still blocks")
+        r = run([P], seenP(pfd()), ctxP(prow(card_row_found=False)), dead=deadP(drow()))
+        ck(r["allow"] is False and "sale-price" in r["receipts"][0]["reason"],
+           "a live product (link kept) with no card row still blocks on the unknown sale")
+        r = run([P], seenP(pfd(**{"product-link": None})), no_card)
+        ck(r["allow"] is False and "sale-price" in r["receipts"][0]["reason"],
+           "a cleared link with no dead-link read keeps the sale gap")
+        r = run([P], seenP(pfd(**{"product-link": None})), ctxP(prow(price_verified_at=None, card_sale_price="10.00")),
+                dead=deadP(drow()))
+        ck(r["allow"] is False and "sale-price" in r["receipts"][0]["reason"],
+           "a dead product whose card row claims a sale still needs the sale-price")
+        r = run([P], seenP(pfd(**{"product-link": None})),
+                ctxP(prow(price_verified_at=None, card_row_found=False, product_line_id="l1", line_id=None)), dead=deadP(drow()))
+        ck(r["allow"] is False and "sale-price" not in r["receipts"][0]["reason"],
+           "only the sale-price context gap is waived: an unread family still blocks a dead product")
 
         r = run([P], seenP(pfd()), {})
         ck(r["allow"] is False and r["receipts"][0]["verdict"] == NOT_CHECKED, "no context read is NOT CHECKED")
