@@ -1,6 +1,6 @@
 {
   "name": "lch600-review-gate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Refuses to open a PR that changes CI, CD, deploy or test-runner files until the session has asked the Deploy and CI speed desk (LC-2484) for review on the cross-track request board and closed the request, or recorded a skip with a reason (LC-2207, LC-2265).",
   "types": "./types/index.d.ts",
   "author": {

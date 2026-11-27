@@ -513,7 +513,7 @@ def flow_text(files: list[str], ask_seconds: bool = False) -> str:
         f"5. Read the closed row (`{READ_ROW.format(id='<id>')}`), add `LCH-600-Review: request <id> closed` to the "
         "PR body, and repeat this call.\n"
         "A T2 PR: finish this review before the approval request goes out, so the operator approves once. Urgent: "
-        "`LCH-600-Review: skipped <reason, 10 characters or more>`. A PR titled with an LCH key is exempt."
+        "`LCH-600-Review: skipped <reason, 10 characters or more>`. A PR titled with an LCH or HEALTH-<issue#> key is exempt."
         + ("\nThis PR adds or changes a check that runs on every PR: the question must state the seconds it adds "
            "per PR and which existing check it folds into or retires (LCH-620)." if ask_seconds else "")
     )
@@ -948,6 +948,10 @@ def _selftest() -> int:
     check("exempt default: shipped file loads", load_exempt()[1] >= {"LCH"}, True)
     check("exempt default: LCH title, no config arg", is_exempt("LCH-794 x", "y"), True)
     check("exempt default: unlisted LC key, no config arg", is_exempt("LC-2999 x", "lc2999-y"), False)
+    check("exempt default: HEALTH title, shipped file", is_exempt("HEALTH-138 fix x", "y"), True)
+    check("exempt default: health branch, shipped file", is_exempt("t", "health138-fix"), True)
+    check("exempt default: HEALTH mid-title is not", is_exempt("LC-2300 tune (refs HEALTH-138)", "y"), False)
+    check("exempt default: health branch without a number is not", is_exempt("t", "healthcheck-fix"), False)
     with tempfile.TemporaryDirectory() as xd:
         def xfile(text):
             f = os.path.join(xd, "e.json")
