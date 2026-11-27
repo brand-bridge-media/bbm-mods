@@ -53,7 +53,7 @@ export function statusSql(w: Pick<Watch, 'workflow' | 'since'>): string {
   const body = JSON.stringify({ action: 'status', workflow: w.workflow, since: w.since }).replace(/'/g, "''")
   // LCH-543: the secret travels in the x-cron-secret header; request logs record the URL.
   return `select net.http_post(url := '${FN_URL}', headers := jsonb_build_object('Content-Type', 'application/json', ` +
-    `'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'edge_function_shared_secret')), ` +
+    `'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'edge_function_shared_secret_v2')), ` +
     `body := '${body}'::jsonb, timeout_milliseconds := ${STATUS_TIMEOUT_MS}) as req_id`
 }
 
